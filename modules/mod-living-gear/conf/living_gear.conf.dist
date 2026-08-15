@@ -1,0 +1,27 @@
+###############################################
+# Living Gear
+###############################################
+
+# Enable the module
+LivingGear.Enable = 1
+
+# XP per kill type
+LivingGear.XpPerKill = 1
+LivingGear.XpEliteKill = 3
+LivingGear.XpBossKill = 10
+
+# Hard cap on item level
+LivingGear.MaxLevel = 50
+
+# Power per level: (base + roll) * (1 + (level-1) * this)
+# 0.10 = +100% every 10 levels. Level 10 ~2x, 30 ~4x, 50 ~6x (+500% over base).
+LivingGear.GrowthPerLevel = 0.10
+
+# Fraction of grown stats granted to the account when the item is sacrificed
+LivingGear.AbsorbPct = 0.10
+
+# Chance (0-100) that a new eligible item rolls bonus random stats
+LivingGear.RollChance = 25
+
+# How many primary stats a successful roll adds (1-5)
+LivingGear.RollStatCount = 1

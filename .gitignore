@@ -1,0 +1,10 @@
+tools/client-patch/cache/
+tools/client-patch/staging/
+tools/client-patch/dist/
+tools/client-update/Bonesaw.manifest.json
+*.exe
+*.dll
+*.pdb
+*.lib
+*.MPQ
+*.mpq
