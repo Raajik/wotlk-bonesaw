@@ -1,8 +1,5 @@
 ## Interface: 30300
 ## Title: Living Gear
-## Notes: Server-backed item XP / attune (Bonesaw)
-## Author: Bonesaw
-## Version: 0.2.1
-## SavedVariables: LivingGearDB
-
+## Notes: Account perks and living gear UI
+## DefaultState: enabled
 LivingGear.lua

@@ -13,6 +13,7 @@ $Allow = @(
     "Wow.exe",
     "Data\patch-Y.MPQ",
     "Data\enUS\patch-enUS-4.MPQ",
+    "Data\enGB\patch-enGB-4.MPQ",
     "Bonesaw.version"
 )
 

@@ -13,6 +13,7 @@ CLIENT = Path(r"B:\Games\WoW 3.3.5\Bonesaw")
 FILES = [
     ("Data/patch-Y.MPQ", "patch-Y.MPQ"),
     ("Data/enUS/patch-enUS-4.MPQ", "patch-enUS-4.MPQ"),
+    ("Data/enGB/patch-enGB-4.MPQ", "patch-enGB-4.MPQ"),
 ]
 EXE = ("Wow.exe", "Wow.exe")
 
