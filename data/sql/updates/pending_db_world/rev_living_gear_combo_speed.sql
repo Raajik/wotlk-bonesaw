@@ -1,5 +1,8 @@
 -- Kill Combo (910089): +3% run/mount speed per stack, 60s from last kill, cap 50.
 -- Stack count is tracked in LivingGear.cpp; recast with custom BP. XP +5%/stack stays.
+-- Supersedes rev_living_gear_combo_party.sql and rev_living_gear_combo_rework.sql
+-- (both applied earlier in the same release and fully overwritten by this file,
+-- since AzerothCore applies pending SQL alphabetically by filename).
 
 UPDATE `spell_dbc` SET
  `DurationIndex` = 3,
