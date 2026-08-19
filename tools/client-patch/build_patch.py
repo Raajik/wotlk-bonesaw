@@ -86,6 +86,43 @@ CUSTOM_SPELLS = {
     910103: ("Shadow Clone", "Summon a permanent shadow clone that mirrors your rogue abilities. One clone at a time.", 250),
     910104: ("*Movement: Mounted Opener", "While mounted: jump forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap. Unlocked at level 40.", 1299),
     910105: ("*Auto-Mount", "Automatically mount when you leave combat. Toggle on the World tab or by casting this perk. Unlocked by learning a mount.", 132),
+    910106: ("*Class Buffs", "After you clear Naxxramas 25 on a class, that class applies 10% primary stats to you and nearby party.", 149),
+    910107: ("*Riding", "Riding skill is account-wide. Alts can mount from level 1 once anyone trained riding.", 132),
+    910108: ("*Auto-Accept", "Auto-accept quests when you talk to an NPC. Hold Shift to skip. Does not accept on login.", 141),
+    910109: ("*Mine: 150", "Mining nodes yield 2x. Unlocked by Mining 150. Stacks: 2x / 4x / 8x at 150 / 300 / 450.", 361),
+    910110: ("*Mine: 300", "Mining nodes yield 4x. Unlocked by Mining 300.", 361),
+    910111: ("*Mine: 450", "Mining nodes yield 8x. Unlocked by Mining 450.", 361),
+    910112: ("*Mine: Reach 75", "Auto-gather mining nodes from +3 yards. Unlocked by Mining 75. Stacks to +9 yards at 375.", 361),
+    910113: ("*Mine: Reach 225", "Auto-gather mining nodes from +6 yards. Unlocked by Mining 225.", 361),
+    910114: ("*Mine: Reach 375", "Auto-gather mining nodes from +9 yards. Unlocked by Mining 375.", 361),
+    910115: ("*Herb: 150", "Herb nodes yield 2x. Unlocked by Herbalism 150. Stacks: 2x / 4x / 8x at 150 / 300 / 450.", 960),
+    910116: ("*Herb: 300", "Herb nodes yield 4x. Unlocked by Herbalism 300.", 960),
+    910117: ("*Herb: 450", "Herb nodes yield 8x. Unlocked by Herbalism 450.", 960),
+    910118: ("*Herb: Reach 75", "Auto-gather herbs from +3 yards. Unlocked by Herbalism 75. Stacks to +9 yards at 375.", 960),
+    910119: ("*Herb: Reach 225", "Auto-gather herbs from +6 yards. Unlocked by Herbalism 225.", 960),
+    910120: ("*Herb: Reach 375", "Auto-gather herbs from +9 yards. Unlocked by Herbalism 375.", 960),
+    910121: ("*Skin: 150", "Skinning yields 2x. Unlocked by Skinning 150. Stacks: 2x / 4x / 8x at 150 / 300 / 450.", 277),
+    910122: ("*Skin: 300", "Skinning yields 4x. Unlocked by Skinning 300.", 277),
+    910123: ("*Skin: 450", "Skinning yields 8x. Unlocked by Skinning 450.", 277),
+    910124: ("*Skin: Reach 75", "Auto-skin from +3 yards. Unlocked by Skinning 75. Stacks to +9 yards at 375.", 277),
+    910125: ("*Skin: Reach 225", "Auto-skin from +6 yards. Unlocked by Skinning 225.", 277),
+    910126: ("*Skin: Reach 375", "Auto-skin from +9 yards. Unlocked by Skinning 375.", 277),
+    910127: ("*Fish: 150", "Fishing yields 2x. Unlocked by Fishing 150. Stacks: 2x / 4x / 8x at 150 / 300 / 450.", 580),
+    910128: ("*Fish: 300", "Fishing yields 4x. Unlocked by Fishing 300.", 580),
+    910129: ("*Fish: 450", "Fishing yields 8x. Unlocked by Fishing 450.", 580),
+    910130: ("*Fish: Reach 75", "Auto-loot fishing pools from +3 yards. Unlocked by Fishing 75. Stacks to +9 yards at 375.", 580),
+    910131: ("*Fish: Reach 225", "Auto-loot fishing pools from +6 yards. Unlocked by Fishing 225.", 580),
+    910132: ("*Fish: Reach 375", "Auto-loot fishing pools from +9 yards. Unlocked by Fishing 375.", 580),
+    910133: ("*Eng: 150", "Engineering crafts and blasting/salvage loot yield 2x. Unlocked by Engineering 150.", 333),
+    910134: ("*Eng: 300", "Engineering crafts and blasting/salvage loot yield 4x. Unlocked by Engineering 300.", 333),
+    910135: ("*Eng: 450", "Engineering crafts and blasting/salvage loot yield 8x. Unlocked by Engineering 450.", 333),
+    910136: ("*Eng: Reach 75", "Auto-gather engineering blasting nodes and salvage from +3 yards. Unlocked by Engineering 75.", 333),
+    910137: ("*Eng: Reach 225", "Auto-gather engineering blasting nodes and salvage from +6 yards. Unlocked by Engineering 225.", 333),
+    910138: ("*Eng: Reach 375", "Auto-gather engineering blasting nodes and salvage from +9 yards. Unlocked by Engineering 375.", 333),
+    910139: ("*Gather Sparkle Herb", "Herb node sparkle visual (Beacon of Light).", 149),
+    910140: ("*Gather Sparkle Mine", "Mining node sparkle visual (Beacon of Light heal).", 361),
+    910141: ("*Gather Sparkle Fish", "Fishing pool sparkle visual.", 580),
+    910142: ("*Rare Pulse", "Rare creature pulse visual (Beacon of Light).", 149),
     910038: ("*Quest: Wayfarer", "Movement speed +40%. Stacks with other speed effects. Unlocked by completing 100 quests.", 516),
     910039: ("*Jump: Double", "Jumps go twice as high and far. 10 sec cooldown between boosted jumps. Boosted jumps grant +40% movement speed for 30 sec. Unlocked at level 10.", 1299),
     910040: ("*Jump: Triple", "Jumps go three times as high and far. 10 sec cooldown between boosted jumps. Boosted jumps grant +40% movement speed for 30 sec. Unlocked at level 30.", 1762),
@@ -135,6 +172,15 @@ CUSTOM_SPELLS = {
     910101: ("*Gear: Curator", "Passively levels your 5 lowest collection pieces. Unlocked at 1000 attuned items.", 249),
 }
 
+# Copy SpellVisualID[2] from vanilla spells onto hidden sparkle/pulse dummies.
+# 53563 Beacon of Light, 53652 Beacon heal, 7731 Fishing rank 2.
+VISUAL_COPY = {
+    910139: 53563,
+    910140: 53652,
+    910141: 7731,
+    910142: 53563,
+}
+
 # Usable abilities only. World-tab ticks stay in Spell.dbc for names but are not
 # added to SkillLineAbility, so they do not appear as spellbook skills.
 CASTABLE_SPELLS = {
@@ -143,7 +189,7 @@ CASTABLE_SPELLS = {
     910102, 910103,
     910069, 910070, 910071,
     910083, 910084, 910085,
-    910042, 910088, 910090, 910091, 910092, 910105,
+    910042, 910088, 910090, 910091, 910092, 910105, 910106, 910107, 910108,
 }
 
 # Hidden HoT used by First Aid Instant. Not added to SkillLineAbility / spellbook.
@@ -178,6 +224,9 @@ ATTR_NOT_IN_COMBAT = 0x10000000
 INTERRUPT_ON_HIT = 0x08 | 0x10
 # Pick Lock + Opening / Treasure / kneeling / tinkering / vehicle.
 CHEST_OPEN_LOCKTYPES = {1, 5, 6, 10, 12, 13, 14, 17, 21}
+# SPELL_AURA_MOUNTED = 78. Instant cast and usable while moving.
+SPELL_AURA_MOUNTED = 78
+INTERRUPT_FLAG_MOVEMENT = 0x08
 
 
 def load_storm():
@@ -262,8 +311,10 @@ def patch_spell_dbc():
     combat_open = 0
     blizzard_n = 0
     bladestorm_n = 0
+    mount_n = 0
     for i in keep_indices:
         rec = read_rec(i)
+        is_mount = SPELL_AURA_MOUNTED in (rec[95], rec[96], rec[97])
         if rec[0] in BLIZZARD_RANKS:
             rec[5] &= ~CHANNELED_ATTR
             rec[28] = 1
@@ -290,12 +341,18 @@ def patch_spell_dbc():
             rec[31] &= ~INTERRUPT_ON_HIT
             new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
             combat_open += 1
+        elif is_mount:
+            rec[28] = 1
+            rec[31] &= ~INTERRUPT_FLAG_MOVEMENT
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            mount_n += 1
         else:
             off = 20 + i * recsize
             new_records_data.extend(data[off : off + recsize])
     print(f"Chest-open spells usable in combat: {combat_open}")
     print(f"Blizzard ranks made instant: {blizzard_n}")
     print(f"Bladestorm action-during-channel, no rage: {bladestorm_n}")
+    print(f"Mount spells instant while moving: {mount_n}")
 
     def make_custom(spell_id: int, name: str, desc: str, icon: int) -> bytes:
         rec = list(template)
@@ -357,6 +414,11 @@ def patch_spell_dbc():
         rec[133] = icon
         rec[134] = 0
         rec[135] = 0
+        visual_src = VISUAL_COPY.get(spell_id)
+        if visual_src and visual_src in idx_by_id:
+            src = read_rec(idx_by_id[visual_src])
+            rec[131] = src[131]
+            rec[132] = src[132]
         rec[205] = 0
         rec[206] = 0
         rec[208] = 0

@@ -1,7 +1,12 @@
 -- Living Gear window. Loaded from patch-enUS-4.MPQ via FrameXML, or Interface/AddOns.
 -- Server pushes numbers over addon whispers (prefix LG). ASCII-only strings.
 
-local LG_UI_REV = 14
+local LG_UI_REV = 23
+
+LivingGearDB = LivingGearDB or {}
+if LivingGearDB.showChat == nil then
+    LivingGearDB.showChat = false
+end
 
 -- FrameXML copy yields to Interface/AddOns/LivingGear so a stale MPQ cannot hide newer buttons.
 local function LgLoadedFromAddon()
@@ -14,7 +19,7 @@ if not LgLoadedFromAddon() and GetAddOnInfo then
         return
     end
 end
-if LivingGear_Rev and LivingGear_Rev >= LG_UI_REV then
+if LivingGear_Rev and LivingGear_Rev >= LG_UI_REV and not LgLoadedFromAddon() then
     return
 end
 LivingGear_Rev = LG_UI_REV
@@ -29,6 +34,9 @@ local DEFAULT_RULES = {
     { match = 2, action = 2, negate = 0, quality = 0, text = "" },
     { match = 3, action = 3, negate = 0, quality = 0, text = "" },
     { match = 9, action = 6, negate = 0, quality = 0, text = "" },
+    { match = 10, action = 4, negate = 0, quality = 0, text = "" },
+    { match = 11, action = 4, negate = 0, quality = 0, text = "" },
+    { match = 12, action = 4, negate = 0, quality = 0, text = "" },
     { match = 7, action = 0, negate = 0, quality = 0, text = "" },
     { match = 8, action = 1, negate = 0, quality = 0, text = "" },
     { match = 1, action = 1, negate = 0, quality = 0, text = "" },
@@ -37,20 +45,24 @@ local DEFAULT_RULES = {
 local RULE_FIELDS = { "Type", "Quality", "Name" }
 local RULE_OPS = { "==", "!=" }
 local RULE_NAME_OPS = { "Matches", "Does not match" }
-local RULE_TYPES = { "All", "Quest", "Reagent", "Living", "Unattuned", "Attuned", "Recipe" }
-local RULE_TYPE_MATCH = { 0, 2, 3, 4, 7, 8, 9 }
+local RULE_TYPES = { "All", "Quest", "Reagent", "Living", "Unattuned", "Attuned", "Recipe", "Food", "Potion", "Bags" }
+local RULE_TYPE_MATCH = { 0, 2, 3, 4, 7, 8, 9, 10, 11, 12 }
 local RULE_QUALS = { "Grey", "White", "Green", "Blue", "Epic", "Legendary" }
 local RULE_ROWS = 10
 local WORLD_UNLOCKS = {
-    { id = 910092, name = "Solo Queue", how = "Queue for dungeons and raids by yourself. No group required.", toggle = true },
+    { id = 910092, name = "Solo Queue", how = "Queue for dungeons and raids by yourself. No group required.", toggle = true, toggleKey = "solo" },
+    { id = 910105, name = "Auto-Mount", how = "Automatically mount when you leave combat. Unlocked by learning a mount.", toggle = true, toggleKey = "autoMount" },
+    { id = 910106, name = "Class Buffs", how = "Clear Naxxramas 25 on a class. That class then applies 10% primary stats to you and nearby party." },
+    { id = 910107, name = "Riding", how = "Train riding on any character. Alts can mount from level 1." },
+    { id = 910108, name = "Auto-Accept", how = "Accept a quest. Then auto-accept when you talk to an NPC. Hold Shift to skip." },
     { id = 910091, name = "Armory", how = "Copy an attuned item into your bags to wear." },
     { id = 910003, name = "Auction", how = "List or bid at an auction house." },
-    { id = 910090, name = "Auto-Quest", how = "Complete 1 quest. Summons questgivers for completed log quests for 60 sec. Turn in and take follow-ups." },
+    { id = 910090, name = "Quests - Finish", how = "Complete 1 quest. Summons questgivers for completed log quests for 60 sec. Turn in and take follow-ups." },
     { id = 910008, name = "Autoloot", how = "Manually loot 10 corpses." },
     { id = 910005, name = "Bank", how = "Open a world bank." },
     { id = 910007, name = "Bind Hearthstone", how = "Enter a dungeon." },
     { id = 910009, name = "Flight", how = "Learn a flight path." },
-    { id = 910088, name = "Find Quests", how = "Complete 50 quests. Adds up to 5 zone quests per use." },
+    { id = 910088, name = "Quests - Find", how = "Complete 50 quests. Adds up to 5 zone quests per use." },
     { id = 910002, name = "Mailbox", how = "Send or receive mail." },
     { id = 910006, name = "Stable", how = "Hunters: take on a pet." },
     { id = 910004, name = "Trainer", how = "Enter a dungeon." },
@@ -58,14 +70,20 @@ local WORLD_UNLOCKS = {
 
 local WORLD_TRACKS = {
     {
+        name = "Attune",
+        ticks = {
+            { id = 910101, name = "Curator", how = "Attune 1000 items on the account. Passively grants Living Gear XP to your 5 lowest collection pieces (bags, bank, armory) not currently worn.", bonus = 0 },
+        },
+    },
+    {
         name = "Cooking",
         ticks = {
-            { id = 910063, name = "75", how = "Reach Cooking 75. Out of combat, heal 1% of max health every second.", bonus = 1 },
-            { id = 910064, name = "150", how = "Reach Cooking 150. Out of combat, heal 2% of max health every second.", bonus = 2 },
-            { id = 910065, name = "225", how = "Reach Cooking 225. Out of combat, heal 3% of max health every second.", bonus = 3 },
-            { id = 910066, name = "300", how = "Reach Cooking 300. Out of combat, heal 4% of max health every second.", bonus = 4 },
-            { id = 910067, name = "375", how = "Reach Cooking 375. Out of combat, heal 5% of max health every second.", bonus = 5 },
-            { id = 910068, name = "450", how = "Reach Cooking 450. Out of combat, heal 6% of max health every second.", bonus = 6 },
+            { id = 910063, name = "75", how = "Reach Cooking 75. Out of combat, heal 1% of max health and mana every second.", bonus = 1 },
+            { id = 910064, name = "150", how = "Reach Cooking 150. Out of combat, heal 2% of max health and mana every second.", bonus = 2 },
+            { id = 910065, name = "225", how = "Reach Cooking 225. Out of combat, heal 3% of max health and mana every second.", bonus = 3 },
+            { id = 910066, name = "300", how = "Reach Cooking 300. Out of combat, heal 4% of max health and mana every second.", bonus = 4 },
+            { id = 910067, name = "375", how = "Reach Cooking 375. Out of combat, heal 5% of max health and mana every second.", bonus = 5 },
+            { id = 910068, name = "450", how = "Reach Cooking 450. Out of combat, heal 6% of max health and mana every second.", bonus = 6 },
         },
     },
     {
@@ -107,6 +125,34 @@ local WORLD_TRACKS = {
             { id = 910043, name = "Cast", how = "Train Fishing. After you cast Fishing, it recasts and catches for you.", bonus = 0 },
             { id = 910044, name = "Pools", how = "Catch 250 fish. While autofishing, loot pools within 25 yards.", bonus = 0 },
             { id = 910045, name = "Speed", how = "Earn the 500 Fish achievement. Bites come twice as fast.", bonus = 0 },
+            { id = 910127, name = "150", how = "Reach Fishing 150. Fish yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
+            { id = 910128, name = "300", how = "Reach Fishing 300. Fish yield 4x.", bonus = 0 },
+            { id = 910129, name = "450", how = "Reach Fishing 450. Fish yield 8x.", bonus = 0 },
+            { id = 910130, name = "Reach 75", how = "Reach Fishing 75. Auto-loot pools from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
+            { id = 910131, name = "Reach 225", how = "Reach Fishing 225. Auto-loot pools from +6 yards.", bonus = 6 },
+            { id = 910132, name = "Reach 375", how = "Reach Fishing 375. Auto-loot pools from +9 yards.", bonus = 9 },
+        },
+    },
+    {
+        name = "Engineering",
+        ticks = {
+            { id = 910133, name = "150", how = "Reach Engineering 150. Crafts and blasting/salvage yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
+            { id = 910134, name = "300", how = "Reach Engineering 300. Crafts and blasting/salvage yield 4x.", bonus = 0 },
+            { id = 910135, name = "450", how = "Reach Engineering 450. Crafts and blasting/salvage yield 8x.", bonus = 0 },
+            { id = 910136, name = "Reach 75", how = "Reach Engineering 75. Auto-gather blasting nodes and salvage from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
+            { id = 910137, name = "Reach 225", how = "Reach Engineering 225. Auto-gather blasting nodes and salvage from +6 yards.", bonus = 6 },
+            { id = 910138, name = "Reach 375", how = "Reach Engineering 375. Auto-gather blasting nodes and salvage from +9 yards.", bonus = 9 },
+        },
+    },
+    {
+        name = "Herbalism",
+        ticks = {
+            { id = 910115, name = "150", how = "Reach Herbalism 150. Herbs yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
+            { id = 910116, name = "300", how = "Reach Herbalism 300. Herbs yield 4x.", bonus = 0 },
+            { id = 910117, name = "450", how = "Reach Herbalism 450. Herbs yield 8x.", bonus = 0 },
+            { id = 910118, name = "Reach 75", how = "Reach Herbalism 75. Auto-gather herbs from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
+            { id = 910119, name = "Reach 225", how = "Reach Herbalism 225. Auto-gather herbs from +6 yards.", bonus = 6 },
+            { id = 910120, name = "Reach 375", how = "Reach Herbalism 375. Auto-gather herbs from +9 yards.", bonus = 9 },
         },
     },
     {
@@ -138,6 +184,18 @@ local WORLD_TRACKS = {
             { id = 910038, name = "Wayfarer", how = "Complete 100 quests. +40% movement speed (stacks).", bonus = 40 },
             { id = 910039, name = "Double Jump", how = "Reach level 10. Jumps go twice as high and far. 10 sec cooldown. Boosted jumps grant +40% speed for 30 sec.", bonus = 0 },
             { id = 910040, name = "Triple Jump", how = "Reach level 30. Jumps go three times as high and far. 10 sec cooldown. Boosted jumps grant +40% speed for 30 sec.", bonus = 0 },
+            { id = 910104, name = "Mounted Opener", how = "Reach level 40. While mounted: jump while moving forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap.", bonus = 0 },
+        },
+    },
+    {
+        name = "Mining",
+        ticks = {
+            { id = 910109, name = "150", how = "Reach Mining 150. Ore yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
+            { id = 910110, name = "300", how = "Reach Mining 300. Ore yield 4x.", bonus = 0 },
+            { id = 910111, name = "450", how = "Reach Mining 450. Ore yield 8x.", bonus = 0 },
+            { id = 910112, name = "Reach 75", how = "Reach Mining 75. Auto-gather ore from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
+            { id = 910113, name = "Reach 225", how = "Reach Mining 225. Auto-gather ore from +6 yards.", bonus = 6 },
+            { id = 910114, name = "Reach 375", how = "Reach Mining 375. Auto-gather ore from +9 yards.", bonus = 9 },
         },
     },
     {
@@ -160,8 +218,20 @@ local WORLD_TRACKS = {
         },
     },
     {
+        name = "Skinning",
+        ticks = {
+            { id = 910121, name = "150", how = "Reach Skinning 150. Skins yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
+            { id = 910122, name = "300", how = "Reach Skinning 300. Skins yield 4x.", bonus = 0 },
+            { id = 910123, name = "450", how = "Reach Skinning 450. Skins yield 8x.", bonus = 0 },
+            { id = 910124, name = "Reach 75", how = "Reach Skinning 75. Auto-skin from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
+            { id = 910125, name = "Reach 225", how = "Reach Skinning 225. Auto-skin from +6 yards.", bonus = 6 },
+            { id = 910126, name = "Reach 375", how = "Reach Skinning 375. Auto-skin from +9 yards.", bonus = 9 },
+        },
+    },
+    {
         name = "Travel",
         ticks = {
+            { id = 910098, name = "Swim", how = "Reach level 10. Swim speed +500%.", bonus = 500 },
             { id = 910073, name = "1", how = "Use your Hearthstone 1 time. Cast time and cooldown -20%.", bonus = 20 },
             { id = 910074, name = "2", how = "Use your Hearthstone 2 times. Cast time and cooldown -20%.", bonus = 20 },
             { id = 910075, name = "3", how = "Use your Hearthstone 3 times. Cast time and cooldown -20%.", bonus = 20 },
@@ -217,6 +287,20 @@ local GEAR_SLOTS = {
     { slot = 17, name = "Ranged", tex = "Interface\\PaperDoll\\UI-PaperDoll-Slot-Ranged" },
 }
 
+local ARM_TYPES = { "All", "Armor", "Weapon", "Accessory" }
+local ARM_ATTRS = { "All", "Str", "Agi", "Sta", "Int", "Spi", "Armor" }
+local ARM_ATTR_KEYS = {
+    Str = "str",
+    Agi = "agi",
+    Sta = "sta",
+    Int = "intel",
+    Spi = "spi",
+    Armor = "armor",
+}
+local ARM_FILTER_Y = -26
+local ARM_SLOT_Y = -66
+local ARM_LIST_X = 260
+
 local CLASS_PERKS = {
     MAGE = {
         { id = 910032, name = "Arcane", how = "In combat, Mirror Images appear and chain-cast. They linger 60 sec after combat." },
@@ -226,7 +310,7 @@ local CLASS_PERKS = {
     ROGUE = {
         { id = 910035, name = "Assassination", how = "Poisons deal +300% damage. DoTs spread within 10 yards." },
         { id = 910036, name = "Combat", how = "Blade Flurry always on. +50% energy regen. 30% free Killing Spree on builders." },
-        { id = 910037, name = "Subtlety", how = "Shadowstep has no cooldown and grants +40% speed for 30 sec. Clones Ambush, throw a poisoned dagger at the nearest enemy, then Vanish. Hops to nearby enemies." },
+        { id = 910037, name = "Subtlety", how = "Shadowstep has no cooldown and grants Stealth. Chains up to 5 Ambushes (+500% damage). Jack in the Box trap and Shadow Clone pet." },
     },
     PALADIN = {
         { id = 910069, name = "Holy", how = "Consecration follows you and toggles off if recast. Consecration damage +1000%. Holy Shock damage +300% and hits enemies within 10 yards of the target." },
@@ -272,13 +356,20 @@ local db = {
     vaultOff = { [1] = 0, [2] = 0 },
     armory = {},
     armoryOff = 0,
+    armorySlot = -1,
+    armoryType = "All",
+    armoryAttr = "All",
     reagentCat = "All",
     jump = { mode = 2, max = 0 },
     solo = 0,
+    autoMount = 0,
+    speedCap = 500,
+    reagentSearch = "",
     scale = 1,
 }
 
 local syncing = false
+local vaultLayoutPending = false
 
 local ui = {}
 local RefreshOverlays
@@ -376,13 +467,6 @@ local function StyleBtn(btn, r, g, b)
     end)
 end
 
-local function RequestSync()
-    local name = UnitName("player")
-    if name then
-        SendAddonMessage(PREFIX, "REQ", "WHISPER", name)
-    end
-end
-
 local function SendAttune(slot)
     local name = UnitName("player")
     if name and slot then
@@ -394,6 +478,103 @@ local function SendLine(line)
     local name = UnitName("player")
     if name and line then
         SendAddonMessage(PREFIX, line, "WHISPER", name)
+    end
+end
+
+local function IsCriticalChatText(text)
+    if not text then
+        return false
+    end
+    if string.find(text, "|cffff6666", 1, true) then
+        return true
+    end
+    if string.find(text, "|cffffcc00", 1, true) then
+        return true
+    end
+    return false
+end
+
+local function IsLivingGearChatText(text)
+    if not text then
+        return false
+    end
+    if string.find(text, "[Living Gear]", 1, true) then
+        return true
+    end
+    if string.find(text, "[Account Perks]", 1, true) then
+        return true
+    end
+    if string.find(text, "[Zone Scale]", 1, true) then
+        return true
+    end
+    if string.find(text, "[LG]", 1, true) then
+        return true
+    end
+    return false
+end
+
+local function ShouldFilterChatText(text)
+    if LivingGearDB.showChat then
+        return false
+    end
+    if not IsLivingGearChatText(text) then
+        return false
+    end
+    if IsCriticalChatText(text) then
+        return false
+    end
+    return true
+end
+
+local chatFilterInstalled = false
+
+local function InstallChatFilter()
+    if chatFilterInstalled then
+        return
+    end
+    chatFilterInstalled = true
+    local function hookFrame(frame)
+        if not frame or frame._lgChatHook then
+            return
+        end
+        local orig = frame.AddMessage
+        if not orig then
+            return
+        end
+        frame._lgChatHook = true
+        frame.AddMessage = function(self, text, ...)
+            if ShouldFilterChatText(text) then
+                return
+            end
+            orig(self, text, ...)
+        end
+    end
+    hookFrame(DEFAULT_CHAT_FRAME)
+    for i = 1, (NUM_CHAT_WINDOWS or 10) do
+        hookFrame(_G["ChatFrame" .. i])
+    end
+end
+
+local function SyncChatSetting()
+    SendLine("CHATSET|" .. (LivingGearDB.showChat and "1" or "0"))
+end
+
+local function SetShowChat(on)
+    LivingGearDB.showChat = on and true or false
+    SyncChatSetting()
+    if ui.chatToggle then
+        LayoutWorld()
+    end
+end
+
+local function RequestSync()
+    if syncing then
+        return
+    end
+    local name = UnitName("player")
+    if name then
+        SendAddonMessage(PREFIX, "REQ", "WHISPER", name)
+        SyncChatSetting()
     end
 end
 
@@ -1028,11 +1209,17 @@ end
 
 local function VaultOf(kind, cat)
     local out = {}
+    local q = ""
+    if kind == VAULT_REAGENT then
+        q = string.lower(db.reagentSearch or "")
+    end
     for i = 1, #db.vault do
         local it = db.vault[i]
         if tonumber(it.kind) == kind then
             if not cat or cat == "All" or ReagentCat(it.entry) == cat then
-                table.insert(out, it)
+                if q == "" or string.find(string.lower(it.name or ""), q, 1, true) then
+                    table.insert(out, it)
+                end
             end
         end
     end
@@ -1276,6 +1463,24 @@ local function UpdateWorldScroll()
     end
 end
 
+local function WorldToggleOn(info)
+    if not info or not info.toggle or not info.toggleKey then
+        return false
+    end
+    if not PerkKnown(info.id) then
+        return false
+    end
+    return (tonumber(db[info.toggleKey]) or 0) == 1
+end
+
+local function SendWorldToggle(info)
+    if info.id == 910092 then
+        SendLine("SOLOSET|" .. (WorldToggleOn(info) and "0" or "1"))
+    elseif info.id == 910105 then
+        SendLine("AMSET|" .. (WorldToggleOn(info) and "0" or "1"))
+    end
+end
+
 local function LayoutWorld()
     if not ui.worldUnlocks then
         return
@@ -1283,9 +1488,10 @@ local function LayoutWorld()
     for i = 1, #WORLD_UNLOCKS do
         local info = WORLD_UNLOCKS[i]
         local btn = ui.worldUnlocks[i]
-        local on = PerkKnown(info.id)
+        local known = PerkKnown(info.id)
+        local on = known
         if info.toggle then
-            on = (tonumber(db.solo) or 0) == 1
+            on = WorldToggleOn(info)
         end
         btn.tip = info.name .. " - " .. info.how
         if info.toggle then
@@ -1296,7 +1502,7 @@ local function LayoutWorld()
         if on then
             btn._ir, btn._ig, btn._ib = 0.12, 0.32, 0.14
             btn.label:SetTextColor(0.85, 0.95, 0.85, 1)
-        elseif info.toggle then
+        elseif info.toggle and known then
             btn._ir, btn._ig, btn._ib = 0.32, 0.12, 0.12
             btn.label:SetTextColor(0.95, 0.8, 0.8, 1)
         else
@@ -1357,6 +1563,33 @@ local function LayoutWorld()
                 Solid(btn.bg, btn._ir, btn._ig, btn._ib, 1)
             end
         end
+    end
+    if ui.chatToggle then
+        local on = LivingGearDB.showChat and true or false
+        ui.chatToggle.tip = "Show Living Gear progress and unlock messages in chat. Errors always show."
+        ui.chatToggle.label:SetText(on and "Show Living Gear chat: ON" or "Show Living Gear chat: OFF")
+        if on then
+            ui.chatToggle._ir, ui.chatToggle._ig, ui.chatToggle._ib = 0.12, 0.32, 0.14
+            ui.chatToggle.label:SetTextColor(0.85, 0.95, 0.85, 1)
+        else
+            ui.chatToggle._ir, ui.chatToggle._ig, ui.chatToggle._ib = 0.32, 0.12, 0.12
+            ui.chatToggle.label:SetTextColor(0.95, 0.8, 0.8, 1)
+        end
+        Solid(ui.chatToggle.bg, ui.chatToggle._ir, ui.chatToggle._ig, ui.chatToggle._ib, 1)
+    end
+    if ui.speedCap then
+        local cap = tonumber(db.speedCap) or 500
+        if cap < 100 then
+            cap = 100
+        end
+        if cap > 500 then
+            cap = 500
+        end
+        db.speedCap = cap
+        ui.speedCap.label:SetText("Speed cap: " .. tostring(cap) .. "%")
+        ui.speedCap.tip = "Movement speed bonuses add together. Hard cap 500%. Click to lower."
+        ui.speedCap._ir, ui.speedCap._ig, ui.speedCap._ib = 0.14, 0.14, 0.22
+        Solid(ui.speedCap.bg, ui.speedCap._ir, ui.speedCap._ig, ui.speedCap._ib, 1)
     end
     SetWorldTip()
     UpdateWorldScroll()
@@ -1444,31 +1677,139 @@ local function LayoutAttune()
     end
 end
 
+local function ItemLinkText(entry, fallback)
+    if not entry or entry == 0 then
+        return fallback or "Item"
+    end
+    local name, link = GetItemInfo(entry)
+    if link then
+        return link
+    end
+    if name then
+        return "|cff9d9d9d|Hitem:" .. tostring(entry) .. ":0:0:0:0:0:0:0|h[" .. name .. "]|h|r"
+    end
+    return fallback or ("Item " .. tostring(entry))
+end
+
+local function ArmoryEquipType(slot)
+    slot = tonumber(slot) or -1
+    if slot == 15 or slot == 16 or slot == 17 then
+        return "Weapon"
+    end
+    if slot == 1 or slot == 10 or slot == 11 or slot == 12 or slot == 13 or slot == 14 then
+        return "Accessory"
+    end
+    if slot >= 0 and slot <= 9 then
+        return "Armor"
+    end
+    return "Other"
+end
+
+local function ArmoryItemMatches(it)
+    if not it then
+        return false
+    end
+    local slot = tonumber(db.armorySlot)
+    if slot and slot >= 0 and tonumber(it.slot) ~= slot then
+        return false
+    end
+    local typ = db.armoryType or "All"
+    if typ ~= "All" and ArmoryEquipType(it.slot) ~= typ then
+        return false
+    end
+    local attr = db.armoryAttr or "All"
+    if attr ~= "All" then
+        local key = ARM_ATTR_KEYS[attr]
+        if not key or (tonumber(it[key]) or 0) <= 0 then
+            return false
+        end
+    end
+    return true
+end
+
 local function LayoutArmory()
     if not ui.armory or not ui.armRows then
         return
     end
     local list = db.armory or {}
+    local slot = tonumber(db.armorySlot) or -1
+    local filtered = {}
+    for i = 1, #list do
+        local it = list[i]
+        if ArmoryItemMatches(it) then
+            table.insert(filtered, it)
+        end
+    end
     local off = db.armoryOff or 0
-    if off > 0 and off >= #list then
-        off = math.max(0, #list - #ui.armRows)
+    if off > 0 and off >= #filtered then
+        off = math.max(0, #filtered - #ui.armRows)
         db.armoryOff = off
     end
-    if #list == 0 then
+    if #filtered == 0 then
         ui.armEmpty:Show()
+        ui.armEmpty:SetText("No attuned items match these filters.")
     else
         ui.armEmpty:Hide()
     end
+    if ui.armAllSlot then
+        local allOn = slot < 0
+        StyleBtn(ui.armAllSlot, allOn and 0.14 or 0.10, allOn and 0.22 or 0.10, allOn and 0.28 or 0.10)
+        if allOn then
+            ui.armAllSlot.label:SetTextColor(0.85, 0.95, 0.95, 1)
+        else
+            ui.armAllSlot.label:SetTextColor(0.75, 0.75, 0.75, 1)
+        end
+    end
+    if ui.armSlotBtns then
+        for i = 1, #ui.armSlotBtns do
+            local btn = ui.armSlotBtns[i]
+            local on = btn.slot == slot
+            btn._ir, btn._ig, btn._ib = on and 0.14 or 0.10, on and 0.22 or 0.10, on and 0.28 or 0.10
+            Solid(btn.bg, btn._ir, btn._ig, btn._ib, 1)
+            if on then
+                btn.label:SetTextColor(0.85, 0.95, 0.95, 1)
+            else
+                btn.label:SetTextColor(0.75, 0.75, 0.75, 1)
+            end
+        end
+    end
+    if ui.armTypeBtns then
+        for i = 1, #ui.armTypeBtns do
+            local btn = ui.armTypeBtns[i]
+            local on = btn.typ == (db.armoryType or "All")
+            StyleBtn(btn, on and 0.14 or 0.10, on and 0.22 or 0.10, on and 0.28 or 0.10)
+            if on then
+                btn.label:SetTextColor(0.85, 0.95, 0.95, 1)
+            else
+                btn.label:SetTextColor(0.75, 0.75, 0.75, 1)
+            end
+        end
+    end
+    if ui.armAttrBtns then
+        for i = 1, #ui.armAttrBtns do
+            local btn = ui.armAttrBtns[i]
+            local on = btn.attr == (db.armoryAttr or "All")
+            StyleBtn(btn, on and 0.14 or 0.10, on and 0.22 or 0.10, on and 0.28 or 0.10)
+            if on then
+                btn.label:SetTextColor(0.85, 0.95, 0.95, 1)
+            else
+                btn.label:SetTextColor(0.75, 0.75, 0.75, 1)
+            end
+        end
+    end
     for i = 1, #ui.armRows do
         local row = ui.armRows[i]
-        local it = list[off + i]
+        local it = filtered[off + i]
         if it then
             row:Show()
             row.entry = it.entry
-            row.text:SetText(string.format("ilvl %s  %s", tostring(it.ilvl or "?"), it.name or "Item"))
+            row.slot = tonumber(it.slot) or slot
+            row.link = ItemLinkText(it.entry, it.name)
+            row.text:SetText(row.link)
         else
             row:Hide()
             row.entry = nil
+            row.link = nil
         end
     end
 end
@@ -1494,6 +1835,14 @@ end
 
 local function LayoutRows()
     LayoutAll()
+end
+
+local function RefreshVaultPanel()
+    if not ui.reagents then
+        return
+    end
+    LayoutReagentCats()
+    LayoutVault(VAULT_REAGENT, ui.reagentRows, ui.reagentEmpty, ui.reagentHint, db.reagentCat)
 end
 
 local function MakePanel(parent)
@@ -1523,11 +1872,37 @@ local function MakeVaultPanel(parent, kind, withCats)
         dep:SetScript("OnClick", function()
             SendLine("DEPOSITALL")
         end)
-        hint:ClearAllPoints()
-        hint:SetPoint("TOPLEFT", listX, -4)
         hint:SetPoint("RIGHT", dep, "LEFT", -8, 0)
         ui.reagentDeposit = dep
         dep:Show()
+        local searchWrap = CreateFrame("Frame", nil, p)
+        searchWrap:SetSize(160, 18)
+        searchWrap:SetPoint("TOPRIGHT", dep, "TOPLEFT", -8, 0)
+        searchWrap:SetBackdrop({
+            bgFile = WHITE,
+            edgeFile = WHITE,
+            edgeSize = 1,
+            insets = { left = 1, right = 1, top = 1, bottom = 1 },
+        })
+        searchWrap:SetBackdropColor(0.08, 0.08, 0.08, 1)
+        searchWrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
+        local search = CreateFrame("EditBox", nil, searchWrap)
+        search:SetPoint("TOPLEFT", 4, -1)
+        search:SetPoint("BOTTOMRIGHT", -4, 1)
+        search:SetFont("Fonts\\FRIZQT__.TTF", 10, "")
+        search:SetTextColor(0.9, 0.9, 0.9, 1)
+        search:SetAutoFocus(false)
+        search:SetMaxLetters(32)
+        search:SetText(db.reagentSearch or "")
+        search:SetScript("OnTextChanged", function(self)
+            db.reagentSearch = self:GetText() or ""
+            db.vaultOff[VAULT_REAGENT] = 0
+            RefreshVaultPanel()
+        end)
+        ui.reagentSearch = search
+        hint:ClearAllPoints()
+        hint:SetPoint("TOPLEFT", listX, -4)
+        hint:SetPoint("RIGHT", searchWrap, "LEFT", -8, 0)
     else
         hint:SetPoint("RIGHT", -10, 0)
     end
@@ -1713,6 +2088,9 @@ local function BuildUI()
                 ui.scaleMenu:Hide()
             end
             ShowTab(info.id)
+            if info.id == "reagents" and #VaultOf(VAULT_REAGENT) == 0 then
+                RequestSync()
+            end
             LayoutAll()
         end)
         ui.tabs[i] = btn
@@ -1884,7 +2262,7 @@ local function BuildUI()
         ui.aaRows[i] = row
     end
 
-    local ARM_ROWS = 12
+    local ARM_ROWS = 10
     local arm = CreateFrame("Frame", nil, f)
     arm:SetFrameStrata("DIALOG")
     arm:SetPoint("TOPLEFT", 8, -48)
@@ -1902,7 +2280,7 @@ local function BuildUI()
     ui.armory = arm
     ui.armTitle = Font(arm, 12, 0.9, 0.9, 0.9)
     ui.armTitle:SetPoint("TOPLEFT", 10, -8)
-    ui.armTitle:SetText("Attuned Armory - click to copy")
+    ui.armTitle:SetText("Attuned Armory - click to equip")
     local armClose = CreateFrame("Button", nil, arm)
     armClose:SetSize(56, 18)
     armClose:SetPoint("TOPRIGHT", -8, -6)
@@ -1914,29 +2292,123 @@ local function BuildUI()
     armClose:SetScript("OnClick", function()
         arm:Hide()
     end)
+    ui.armTypeBtns = {}
+    local typeX = 10
+    for i = 1, #ARM_TYPES do
+        local name = ARM_TYPES[i]
+        local w = 10 + string.len(name) * 7
+        if w < 52 then
+            w = 52
+        end
+        local btn = CreateFrame("Button", nil, arm)
+        btn:SetSize(w, 18)
+        btn:SetPoint("TOPLEFT", typeX, ARM_FILTER_Y)
+        btn.typ = name
+        StyleBtn(btn, 0.10, 0.10, 0.10)
+        btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
+        btn.label:SetPoint("CENTER", 0, 0)
+        btn.label:SetJustifyH("CENTER")
+        btn.label:SetText(name)
+        btn:SetScript("OnClick", function()
+            db.armoryType = name
+            db.armoryOff = 0
+            LayoutArmory()
+        end)
+        ui.armTypeBtns[i] = btn
+        typeX = typeX + w + 4
+    end
+    ui.armAttrBtns = {}
+    local attrX = ARM_LIST_X
+    for i = 1, #ARM_ATTRS do
+        local name = ARM_ATTRS[i]
+        local w = 10 + string.len(name) * 7
+        if w < 44 then
+            w = 44
+        end
+        local btn = CreateFrame("Button", nil, arm)
+        btn:SetSize(w, 18)
+        btn:SetPoint("TOPLEFT", attrX, ARM_FILTER_Y)
+        btn.attr = name
+        StyleBtn(btn, 0.10, 0.10, 0.10)
+        btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
+        btn.label:SetPoint("CENTER", 0, 0)
+        btn.label:SetJustifyH("CENTER")
+        btn.label:SetText(name)
+        btn:SetScript("OnClick", function()
+            db.armoryAttr = name
+            db.armoryOff = 0
+            LayoutArmory()
+        end)
+        ui.armAttrBtns[i] = btn
+        attrX = attrX + w + 4
+    end
+    local armAllSlot = CreateFrame("Button", nil, arm)
+    armAllSlot:SetSize(246, 18)
+    armAllSlot:SetPoint("TOPLEFT", 10, ARM_SLOT_Y)
+    StyleBtn(armAllSlot, 0.10, 0.10, 0.10)
+    armAllSlot.label = Font(armAllSlot, 10, 0.85, 0.85, 0.85)
+    armAllSlot.label:SetPoint("CENTER", 0, 0)
+    armAllSlot.label:SetJustifyH("CENTER")
+    armAllSlot.label:SetText("All slots")
+    armAllSlot:SetScript("OnClick", function()
+        db.armorySlot = -1
+        db.armoryOff = 0
+        LayoutArmory()
+    end)
+    ui.armAllSlot = armAllSlot
+    ui.armSlotBtns = {}
+    for i = 1, #GEAR_SLOTS do
+        local info = GEAR_SLOTS[i]
+        local btn = CreateFrame("Button", nil, arm)
+        btn:SetSize(118, 18)
+        btn.slot = info.slot
+        local col = (i - 1) % 2
+        local row = math.floor((i - 1) / 2)
+        btn:SetPoint("TOPLEFT", 10 + col * 124, ARM_SLOT_Y - 20 - row * 20)
+        StyleBtn(btn, 0.10, 0.10, 0.10)
+        btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
+        btn.label:SetPoint("CENTER", 0, 0)
+        btn.label:SetJustifyH("CENTER")
+        btn.label:SetText(info.name)
+        btn:SetScript("OnClick", function()
+            db.armorySlot = info.slot
+            db.armoryOff = 0
+            LayoutArmory()
+        end)
+        ui.armSlotBtns[i] = btn
+    end
     ui.armEmpty = Font(arm, 11, 0.6, 0.6, 0.6)
-    ui.armEmpty:SetPoint("TOPLEFT", 10, -32)
-    ui.armEmpty:SetText("No attuned items for this class.")
+    ui.armEmpty:SetPoint("TOPLEFT", ARM_LIST_X, ARM_SLOT_Y)
+    ui.armEmpty:SetText("No attuned items match these filters.")
     ui.armRows = {}
     for i = 1, ARM_ROWS do
         local row = CreateFrame("Button", nil, arm)
-        row:SetSize(500, 18)
-        row:SetPoint("TOPLEFT", 10, -32 - (i - 1) * 20)
+        row:SetSize(260, 18)
+        row:SetPoint("TOPLEFT", ARM_LIST_X, ARM_SLOT_Y - (i - 1) * 20)
         row.bg = row:CreateTexture(nil, "BACKGROUND")
         row.bg:SetAllPoints(row)
         Solid(row.bg, 0.10, 0.10, 0.10, 0)
         row.text = Font(row, 11, 0.85, 0.85, 0.85)
-        row.text:SetPoint("LEFT", 6, 0)
-        row.text:SetPoint("RIGHT", -6, 0)
+        row.text:SetPoint("LEFT", 4, 0)
+        row.text:SetPoint("RIGHT", -4, 0)
+        row.text:SetJustifyH("LEFT")
         row:SetScript("OnEnter", function(self)
             Solid(self.bg, 0.16, 0.16, 0.16, 1)
+            if self.link and GameTooltip then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetHyperlink(self.link)
+                GameTooltip:Show()
+            end
         end)
         row:SetScript("OnLeave", function(self)
             Solid(self.bg, 0.10, 0.10, 0.10, 0)
+            if GameTooltip then
+                GameTooltip:Hide()
+            end
         end)
-        row:SetScript("OnClick", function()
-            if row.entry then
-                SendLine("ARMTAKE|" .. tostring(row.entry))
+        row:SetScript("OnClick", function(self)
+            if self.entry then
+                SendLine("ARMEQUIP|" .. tostring(self.slot or db.armorySlot or 0) .. "|" .. tostring(self.entry))
             end
         end)
         row:Hide()
@@ -2399,15 +2871,26 @@ local function BuildUI()
         end)
         if info.toggle then
             btn:SetScript("OnClick", function()
-                local on = (tonumber(db.solo) or 0) == 1
-                SendLine("SOLOSET|" .. (on and "0" or "1"))
-            end)
-        elseif info.id == 910090 then
-            btn:SetScript("OnClick", function()
-                if not PerkKnown(910090) then
+                if not PerkKnown(info.id) then
                     return
                 end
-                local name = GetSpellInfo(910090)
+                SendWorldToggle(info)
+            end)
+        else
+            btn:SetScript("OnClick", function()
+                if not PerkKnown(info.id) then
+                    return
+                end
+                if info.id == 910091 then
+                    local name = GetSpellInfo(910091)
+                    if name then
+                        CastSpellByName(name)
+                    else
+                        SendLine("ARMOPEN")
+                    end
+                    return
+                end
+                local name = GetSpellInfo(info.id)
                 if name then
                     CastSpellByName(name)
                 end
@@ -2492,7 +2975,63 @@ local function BuildUI()
         end)
         ui.jumpBtns[i] = btn
     end
-    content._h = math.abs(trackY) + 48
+
+    ui.chatLabel = Font(content, 10, 0.7, 0.7, 0.7)
+    ui.chatLabel:SetPoint("TOPLEFT", 6, trackY - 30)
+    ui.chatLabel:SetText("Chat")
+    ui.chatToggle = CreateFrame("Button", nil, content)
+    ui.chatToggle:SetSize(220, 18)
+    ui.chatToggle:SetPoint("TOPLEFT", 46, trackY - 32)
+    StyleBtn(ui.chatToggle, 0.32, 0.12, 0.12)
+    ui.chatToggle.label = Font(ui.chatToggle, 10, 0.9, 0.95, 0.9)
+    ui.chatToggle.label:SetPoint("CENTER", 0, 0)
+    ui.chatToggle.label:SetJustifyH("CENTER")
+    ui.chatToggle.label:SetText("Show Living Gear chat: OFF")
+    ui.chatToggle.tip = "Show Living Gear progress and unlock messages in chat. Errors always show."
+    ui.chatToggle:SetScript("OnClick", function()
+        SetShowChat(not LivingGearDB.showChat)
+    end)
+    ui.chatToggle:SetScript("OnEnter", function(self)
+        Solid(self.bg, math.min(1, self._ir + 0.08), math.min(1, self._ig + 0.08), math.min(1, self._ib + 0.08), 1)
+        SetWorldTip(self.tip)
+    end)
+    ui.chatToggle:SetScript("OnLeave", function(self)
+        Solid(self.bg, self._ir, self._ig, self._ib, 1)
+        SetWorldTip()
+    end)
+
+    ui.speedLabel = Font(content, 10, 0.7, 0.7, 0.7)
+    ui.speedLabel:SetPoint("TOPLEFT", 6, trackY - 54)
+    ui.speedLabel:SetText("Speed")
+    ui.speedCap = CreateFrame("Button", nil, content)
+    ui.speedCap:SetSize(220, 18)
+    ui.speedCap:SetPoint("TOPLEFT", 46, trackY - 56)
+    StyleBtn(ui.speedCap, 0.14, 0.14, 0.22)
+    ui.speedCap.label = Font(ui.speedCap, 10, 0.9, 0.9, 0.95)
+    ui.speedCap.label:SetPoint("CENTER", 0, 0)
+    ui.speedCap.label:SetJustifyH("CENTER")
+    ui.speedCap.label:SetText("Speed cap: 500%")
+    ui.speedCap.tip = "Movement speed bonuses add together. Hard cap 500%. Click to lower."
+    ui.speedCap:SetScript("OnClick", function()
+        local cap = tonumber(db.speedCap) or 500
+        cap = cap + 50
+        if cap > 500 then
+            cap = 100
+        end
+        db.speedCap = cap
+        SendLine("SCAP|" .. tostring(cap))
+        LayoutWorld()
+    end)
+    ui.speedCap:SetScript("OnEnter", function(self)
+        Solid(self.bg, math.min(1, self._ir + 0.08), math.min(1, self._ig + 0.08), math.min(1, self._ib + 0.08), 1)
+        SetWorldTip(self.tip)
+    end)
+    ui.speedCap:SetScript("OnLeave", function(self)
+        Solid(self.bg, self._ir, self._ig, self._ib, 1)
+        SetWorldTip()
+    end)
+
+    content._h = math.abs(trackY) + 100
     content:SetHeight(content._h)
 
     SaveScale(LoadScale())
@@ -2898,7 +3437,7 @@ HookJump()
 local comboHud
 local function ShowCombo(stacks, seconds)
     stacks = tonumber(stacks) or 0
-    seconds = tonumber(seconds) or 60
+    seconds = tonumber(seconds) or 180
     if not comboHud then
         comboHud = CreateFrame("Frame", "LivingGearCombo", UIParent)
         comboHud:SetFrameStrata("HIGH")
@@ -2927,6 +3466,96 @@ local function ShowCombo(stacks, seconds)
     comboHud:Show()
 end
 
+local dungeonHud
+local function FormatTimer(sec)
+    sec = math.max(0, math.floor(tonumber(sec) or 0))
+    return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+end
+
+local function ShowDungeonTimer(mode, parSec, clearSec, tier, speedPct, pacePct)
+    if not dungeonHud then
+        dungeonHud = CreateFrame("Frame", "LivingGearDungeonTimer", UIParent)
+        dungeonHud:SetFrameStrata("HIGH")
+        dungeonHud:SetSize(180, 22)
+        dungeonHud:SetPoint("TOP", UIParent, "TOP", 0, -60)
+        local bg = dungeonHud:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        Solid(bg, 0.07, 0.07, 0.07, 0.85)
+        dungeonHud.text = Font(dungeonHud, 12, 0.75, 0.88, 1)
+        dungeonHud.text:SetPoint("CENTER")
+        dungeonHud.text:SetJustifyH("CENTER")
+        dungeonHud:SetScript("OnUpdate", function(self)
+            if self.mode == "run" and self.startAt and self.parSec then
+                local elapsed = math.max(0, math.floor(GetTime() - self.startAt))
+                self.text:SetText(string.format("Dungeon %s / %s", FormatTimer(elapsed), FormatTimer(self.parSec)))
+            end
+        end)
+    end
+    if mode == "stop" then
+        dungeonHud.mode = nil
+        dungeonHud.startAt = nil
+        dungeonHud.parSec = nil
+        dungeonHud:Hide()
+        return
+    end
+    if mode == "start" then
+        parSec = tonumber(parSec) or 1800
+        dungeonHud.mode = "run"
+        dungeonHud.startAt = GetTime()
+        dungeonHud.parSec = parSec
+        dungeonHud.text:SetText(string.format("Dungeon 0:00 / %s", FormatTimer(parSec)))
+        dungeonHud:Show()
+        return
+    end
+    if mode == "clear" then
+        clearSec = tonumber(clearSec) or 0
+        tier = tonumber(tier) or 0
+        speedPct = tonumber(speedPct) or 0
+        pacePct = tonumber(pacePct) or 0
+        local tierName = "Clear"
+        if tier == 3 then tierName = "Gold"
+        elseif tier == 2 then tierName = "Silver"
+        elseif tier == 1 then tierName = "Bronze"
+        end
+        dungeonHud.mode = "clear"
+        dungeonHud.startAt = nil
+        if tier > 0 then
+            dungeonHud.text:SetText(string.format("%s %s +%d%% spd +%d%% pace", tierName, FormatTimer(clearSec), speedPct, pacePct))
+        else
+            dungeonHud.text:SetText(string.format("Clear %s (over par)", FormatTimer(clearSec)))
+        end
+        dungeonHud:Show()
+        return
+    end
+end
+
+local zoneScaleHud
+local function ShowZoneScale(eff, real, zone)
+    eff = tonumber(eff) or 0
+    real = tonumber(real) or 0
+    zone = tonumber(zone) or 0
+    if eff < 1 or real < 1 or eff >= real then
+        if zoneScaleHud then
+            zoneScaleHud:Hide()
+        end
+        return
+    end
+    if not zoneScaleHud then
+        zoneScaleHud = CreateFrame("Frame", "LivingGearZoneScale", UIParent)
+        zoneScaleHud:SetFrameStrata("HIGH")
+        zoneScaleHud:SetSize(220, 22)
+        zoneScaleHud:SetPoint("TOP", UIParent, "TOP", 0, -58)
+        local bg = zoneScaleHud:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints()
+        Solid(bg, 0.07, 0.07, 0.07, 0.85)
+        zoneScaleHud.text = Font(zoneScaleHud, 12, 0.75, 0.88, 1)
+        zoneScaleHud.text:SetPoint("CENTER")
+        zoneScaleHud.text:SetJustifyH("CENTER")
+    end
+    zoneScaleHud.text:SetText(string.format("Effective %d | Rewards %d (zone ~%d)", eff, real, zone))
+    zoneScaleHud:Show()
+end
+
 local function HandleAddon(prefix, message)
     if prefix ~= PREFIX or not message then
         return
@@ -2941,10 +3570,12 @@ local function HandleAddon(prefix, message)
     end
     if message == "BANKOPEN" then
         ShowBankDeposit()
+        RequestSync()
         return
     end
     if message == "CLR" then
         syncing = true
+        vaultLayoutPending = false
         db.items = {}
         db.byKey = {}
         db.asked = {}
@@ -2957,10 +3588,16 @@ local function HandleAddon(prefix, message)
         db.attune = { on = 1, count = 0, off = 0 }
         db.jump = { mode = 2, max = 0 }
         db.solo = 0
+        db.autoMount = 0
+        db.speedCap = db.speedCap or 500
+        if ui.reagents and ui.reagents:IsShown() then
+            RefreshVaultPanel()
+        end
         return
     end
     if message == "END" then
         syncing = false
+        vaultLayoutPending = false
         BuildUI()
         LayoutRows()
         RefreshOverlays()
@@ -3007,8 +3644,33 @@ local function HandleAddon(prefix, message)
         db.solo = tonumber(p[2]) or 0
         return
     end
+    if p[1] == "AM" then
+        db.autoMount = tonumber(p[2]) or 0
+        return
+    end
+    if p[1] == "SCAP" then
+        db.speedCap = tonumber(p[2]) or 500
+        if ui.speedCap then
+            LayoutWorld()
+        end
+        return
+    end
     if p[1] == "COMBO" then
-        ShowCombo(tonumber(p[2]) or 0, tonumber(p[4]) or 60)
+        ShowCombo(tonumber(p[2]) or 0, tonumber(p[4]) or 180)
+        return
+    end
+    if p[1] == "DTIMER" then
+        if p[2] == "start" then
+            ShowDungeonTimer("start", p[3])
+        elseif p[2] == "stop" then
+            ShowDungeonTimer("stop")
+        elseif p[2] == "clear" then
+            ShowDungeonTimer("clear", nil, p[3], p[4], p[5], p[6])
+        end
+        return
+    end
+    if p[1] == "ZSCALE" then
+        ShowZoneScale(p[2], p[3], p[4])
         return
     end
     if p[1] == "SCALE" then
@@ -3041,6 +3703,9 @@ local function HandleAddon(prefix, message)
                 count = count,
                 name = name,
             })
+            if ui.reagents and ui.reagents:IsShown() then
+                vaultLayoutPending = true
+            end
             return
         end
         UpsertVault(kind, entry, count, name)
@@ -3057,14 +3722,24 @@ local function HandleAddon(prefix, message)
     end
     if p[1] == "ARM" then
         table.insert(db.armory, {
-            entry = tonumber(p[2]) or 0,
-            ilvl = tonumber(p[3]) or 0,
-            name = p[4] or "Item",
+            slot = tonumber(p[2]) or 0,
+            entry = tonumber(p[3]) or 0,
+            ilvl = tonumber(p[4]) or 0,
+            str = tonumber(p[5]) or 0,
+            agi = tonumber(p[6]) or 0,
+            sta = tonumber(p[7]) or 0,
+            intel = tonumber(p[8]) or 0,
+            spi = tonumber(p[9]) or 0,
+            armor = tonumber(p[10]) or 0,
+            name = p[11] or "Item",
         })
         return
     end
     if p[1] == "ARMEND" then
         if ui.armory then
+            if db.armorySlot == nil then
+                db.armorySlot = -1
+            end
             ui.armory:Show()
             LayoutArmory()
             if ui.frame then
@@ -3588,6 +4263,18 @@ AutoAcceptBindPopup("EQUIP_BIND")
 AutoAcceptBindPopup("EQUIP_BIND_TRADEABLE")
 AutoAcceptBindPopup("AUTOEQUIP_BIND")
 
+local function TryAutoAccept()
+    if IsShiftKeyDown and IsShiftKeyDown() then
+        return
+    end
+    if not PerkKnown(910108) then
+        return
+    end
+    if AcceptQuest then
+        AcceptQuest()
+    end
+end
+
 local origPopupShow = StaticPopup_Show
 if origPopupShow then
     StaticPopup_Show = function(which, text1, text2, data, inserted)
@@ -3615,8 +4302,12 @@ ev:RegisterEvent("UNIT_SPELLCAST_SENT")
 ev:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
 ev:RegisterEvent("BANKFRAME_OPENED")
 ev:RegisterEvent("BANKFRAME_CLOSED")
+ev:RegisterEvent("GOSSIP_SHOW")
+ev:RegisterEvent("QUEST_GREETING")
+ev:RegisterEvent("QUEST_DETAIL")
 ev:SetScript("OnEvent", function(_, event, a1, a2)
     if event == "PLAYER_LOGIN" then
+        InstallChatFilter()
         BuildUI()
         HookTooltip(GameTooltip)
         HookTooltip(ItemRefTooltip)
@@ -3636,8 +4327,23 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
         HandleAddon(a1, a2)
     elseif event == "BANKFRAME_OPENED" then
         ShowBankDeposit()
+        RequestSync()
     elseif event == "BANKFRAME_CLOSED" then
         HideBankDeposit()
+    elseif event == "QUEST_DETAIL" then
+        TryAutoAccept()
+    elseif event == "QUEST_GREETING" then
+        if PerkKnown(910108) and not (IsShiftKeyDown and IsShiftKeyDown()) then
+            if GetNumAvailableQuests and SelectAvailableQuest and GetNumAvailableQuests() == 1 then
+                SelectAvailableQuest(1)
+            end
+        end
+    elseif event == "GOSSIP_SHOW" then
+        if PerkKnown(910108) and not (IsShiftKeyDown and IsShiftKeyDown()) then
+            if GetNumGossipAvailableQuests and SelectGossipAvailableQuest and GetNumGossipAvailableQuests() == 1 then
+                SelectGossipAvailableQuest(1)
+            end
+        end
     elseif event == "UNIT_SPELLCAST_SENT" or event == "UNIT_SPELLCAST_SUCCEEDED" then
         if a1 == "player" and IsAccountPerksName(a2) then
             OpenFromCast()
@@ -3645,7 +4351,17 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
     end
 end)
 ev:SetScript("OnUpdate", function(self, elapsed)
+    if vaultLayoutPending and ui.reagents and ui.reagents:IsShown() then
+        vaultLayoutPending = false
+        RefreshVaultPanel()
+    end
     if not self._reqRetry then
+        return
+    end
+    if syncing then
+        if GetTime() >= self._reqRetry then
+            self._reqRetry = GetTime() + 1
+        end
         return
     end
     if GetTime() < self._reqRetry then

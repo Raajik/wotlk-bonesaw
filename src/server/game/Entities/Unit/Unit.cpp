@@ -11197,6 +11197,21 @@ void Unit::UpdateSpeed(UnitMoveType mtype, bool forced)
 
     // now we ready for speed calculation
     float speed = std::max(non_stack_bonus, stack_bonus);
+    if (IsPlayer() && (mtype == MOVE_RUN || mtype == MOVE_SWIM || mtype == MOVE_FLIGHT) && !IsMounted())
+    {
+        AuraType speedAura = SPELL_AURA_MOD_INCREASE_SPEED;
+        if (mtype == MOVE_SWIM)
+            speedAura = SPELL_AURA_MOD_INCREASE_SWIM_SPEED;
+        else if (mtype == MOVE_FLIGHT)
+            speedAura = SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED;
+        int32 additive = 0;
+        Unit::AuraEffectList const& speedAuras = GetAuraEffectsByType(speedAura);
+        for (AuraEffect const* aurEff : speedAuras)
+            if (aurEff && aurEff->GetAmount() > 0)
+                additive += aurEff->GetAmount();
+        if (additive)
+            main_speed_mod = additive;
+    }
     if (main_speed_mod)
         AddPct(speed, main_speed_mod);
 
@@ -11266,6 +11281,12 @@ void Unit::UpdateSpeed(UnitMoveType mtype, bool forced)
     int32 slow = GetMaxNegativeAuraModifier(SPELL_AURA_MOD_DECREASE_SPEED);
     if (slow)
         AddPct(speed, slow);
+
+    if (IsPlayer() && (mtype == MOVE_RUN || mtype == MOVE_SWIM || mtype == MOVE_FLIGHT))
+    {
+        if (speed > 5.0f)
+            speed = 5.0f;
+    }
 
     if (float minSpeedMod = (float)GetMaxPositiveAuraModifier(SPELL_AURA_MOD_MINIMUM_SPEED))
     {
