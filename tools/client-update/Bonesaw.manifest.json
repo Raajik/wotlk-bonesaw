@@ -1,0 +1,20 @@
+{
+  "version": "0.1.19",
+  "files": [
+    {
+      "path": "Data/patch-Y.MPQ",
+      "asset": "patch-Y.MPQ",
+      "sha256": "1b729ae230859b5cceb78bd3500a3fd339e08d9af552b6a81e075a092607c3ee"
+    },
+    {
+      "path": "Data/enUS/patch-enUS-4.MPQ",
+      "asset": "patch-enUS-4.MPQ",
+      "sha256": "aef4429fb05b130af6f88f8726b4c7aa5088c96ddfd7292c454e294ee97ddfe4"
+    },
+    {
+      "path": "Data/enGB/patch-enGB-4.MPQ",
+      "asset": "patch-enGB-4.MPQ",
+      "sha256": "aef4429fb05b130af6f88f8726b4c7aa5088c96ddfd7292c454e294ee97ddfe4"
+    }
+  ]
+}

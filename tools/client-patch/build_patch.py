@@ -81,7 +81,11 @@ CUSTOM_SPELLS = {
     910034: ("*Mage: Frost", "Blizzard is instant, no cooldown, and lingers like Death and Decay. In combat, Ice Lance hits enemies within 15 yards every 2 sec.", 188),
     910035: ("*Rogue: Assassination", "Poisons deal 300% increased damage. DoT poisons spread to enemies within 10 yards.", 500),
     910036: ("*Rogue: Combat", "Blade Flurry is always active. Energy regeneration increased by 50%. Combo builders have a 30% chance to cast free Killing Spree.", 514),
-    910037: ("*Rogue: Subtlety", "Gain Shadowstep with no cooldown. Shadowstep grants +40% movement speed for 30 sec. Clones Ambush, throw a poisoned dagger at the nearest enemy, then Vanish, hopping to nearby enemies.", 250),
+    910037: ("*Rogue: Subtlety", "Gain Shadowstep with no cooldown. Shadowstep grants Stealth and chains up to 5 Ambushes (+500% damage). Learn Jack in the Box and Shadow Clone.", 250),
+    910102: ("Jack in the Box", "Place a stealthed trap. Triggers Howl of Terror, then Deadly Throws with random poisons.", 1330),
+    910103: ("Shadow Clone", "Summon a permanent shadow clone that mirrors your rogue abilities. One clone at a time.", 250),
+    910104: ("*Movement: Mounted Opener", "While mounted: jump forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap. Unlocked at level 40.", 1299),
+    910105: ("*Auto-Mount", "Automatically mount when you leave combat. Toggle on the World tab or by casting this perk. Unlocked by learning a mount.", 132),
     910038: ("*Quest: Wayfarer", "Movement speed +40%. Stacks with other speed effects. Unlocked by completing 100 quests.", 516),
     910039: ("*Jump: Double", "Jumps go twice as high and far. 10 sec cooldown between boosted jumps. Boosted jumps grant +40% movement speed for 30 sec. Unlocked at level 10.", 1299),
     910040: ("*Jump: Triple", "Jumps go three times as high and far. 10 sec cooldown between boosted jumps. Boosted jumps grant +40% movement speed for 30 sec. Unlocked at level 30.", 1762),
@@ -97,12 +101,12 @@ CUSTOM_SPELLS = {
     910060: ("*Leveling: 8", "XP gains +50%. Unlocked by 8 characters at level 80.", 148),
     910061: ("*Leveling: 9", "XP gains +50%. Unlocked by 9 characters at level 80.", 148),
     910062: ("*Leveling: 10", "XP gains +50%. Unlocked by 10 characters at level 80.", 148),
-    910063: ("*Cooking: 75", "Out of combat, heal 1% of max health every second. Unlocked by Cooking 75.", 1467),
-    910064: ("*Cooking: 150", "Out of combat, heal 2% of max health every second. Unlocked by Cooking 150.", 1467),
-    910065: ("*Cooking: 225", "Out of combat, heal 3% of max health every second. Unlocked by Cooking 225.", 1467),
-    910066: ("*Cooking: 300", "Out of combat, heal 4% of max health every second. Unlocked by Cooking 300.", 1467),
-    910067: ("*Cooking: 375", "Out of combat, heal 5% of max health every second. Unlocked by Cooking 375.", 1467),
-    910068: ("*Cooking: 450", "Out of combat, heal 6% of max health every second. Unlocked by Cooking 450.", 1467),
+    910063: ("*Cooking: 75", "Out of combat, heal 1% of max health and mana every second. Unlocked by Cooking 75.", 1467),
+    910064: ("*Cooking: 150", "Out of combat, heal 2% of max health and mana every second. Unlocked by Cooking 150.", 1467),
+    910065: ("*Cooking: 225", "Out of combat, heal 3% of max health and mana every second. Unlocked by Cooking 225.", 1467),
+    910066: ("*Cooking: 300", "Out of combat, heal 4% of max health and mana every second. Unlocked by Cooking 300.", 1467),
+    910067: ("*Cooking: 375", "Out of combat, heal 5% of max health and mana every second. Unlocked by Cooking 375.", 1467),
+    910068: ("*Cooking: 450", "Out of combat, heal 6% of max health and mana every second. Unlocked by Cooking 450.", 1467),
     910069: ("*Paladin: Holy", "Consecration follows you and toggles off if recast. Consecration damage +1000%. Holy Shock damage +300% and hits enemies within 10 yards of the target.", 51),
     910070: ("*Paladin: Protection", "Avenger's Shield bounces 30 times and can rehit. Range 60 yards. Devotion Aura: 10% damage reduction and +20% run/mount speed for allies. You deal Holy thorns equal to 50% of your armor.", 2172),
     910071: ("*Paladin: Retribution", "Divine Storm radius doubled and each press hits 4 times. Learn Crusader Strike. While Retribution Aura is up, Crusader Strike also casts Exorcism on nearby enemies.", 3027),
@@ -117,9 +121,9 @@ CUSTOM_SPELLS = {
     910085: ("*Warrior: Protection", "Learn Shockwave with no cooldown and +300% damage. Thunder Clap radius doubled. Thunder Clap applies your Rend and Deep Wounds if trained.", 1672),
     910086: ("*Warrior: Fury Haste", "Melee haste from the Fury class perk.", 38),
     910087: ("*Living Gear Speed", "Movement speed +40% for 30 seconds.", 516),
-    910088: ("*Find Quests", "Adds up to 5 available quests in your current zone, lowest level first. Unlocked by completing 50 quests.", 141),
-    910089: ("*Kill Combo", "Party kills stack this. Kill XP +5% and movement speed +3% per stack. Lasts 60 seconds after the last party kill. Stacks up to 50 times.", 95),
-    910090: ("*Auto-Quest", "Summon the questgivers for completed quests in your log for 60 sec. Turn in and take follow-ups from them. Unlocked by completing 1 quest.", 141),
+    910088: ("*Quests - Find", "Adds up to 5 available quests in your current zone, lowest level first. Unlocked by completing 50 quests.", 141),
+    910089: ("*Kill Combo", "Party kills stack this. Kill XP +3% and movement speed +1% per stack. Each stack lasts 3 minutes and falls off one at a time. Stacks up to 100 times.", 95),
+    910090: ("*Quests - Finish", "Summon the questgivers for completed quests in your log for 60 sec. Turn in and take follow-ups from them. Unlocked by completing 1 quest.", 141),
     910091: ("*Attuned Armory", "Make a wearable copy of an item you have attuned. The attunement stays on the account.", 249),
     910092: ("*Solo Queue", "Queue for dungeons and raids by yourself. No group required.", 169),
     910093: ("*Craft: 1", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 75 in a crafting profession.", 326),
@@ -127,6 +131,8 @@ CUSTOM_SPELLS = {
     910095: ("*Craft: 3", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 225 in a crafting profession.", 326),
     910096: ("*Craft: 4", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 300 in a crafting profession.", 326),
     910097: ("*Craft: 5", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 375 in a crafting profession.", 326),
+    910098: ("*Travel: Swim", "Swim speed +500%. Unlocked at level 10.", 348),
+    910101: ("*Gear: Curator", "Passively levels your 5 lowest collection pieces. Unlocked at 1000 attuned items.", 249),
 }
 
 # Usable abilities only. World-tab ticks stay in Spell.dbc for names but are not
@@ -134,9 +140,10 @@ CUSTOM_SPELLS = {
 CASTABLE_SPELLS = {
     910001, 910002, 910003, 910004, 910005, 910006, 910007, 910008, 910009,
     910032, 910033, 910034, 910035, 910036, 910037,
+    910102, 910103,
     910069, 910070, 910071,
     910083, 910084, 910085,
-    910042, 910088, 910090, 910091, 910092,
+    910042, 910088, 910090, 910091, 910092, 910105,
 }
 
 # Hidden HoT used by First Aid Instant. Not added to SkillLineAbility / spellbook.
@@ -144,13 +151,14 @@ HOT_SPELLS = {
     910052: ("First Aid", "Heals the target over time.", 104),
 }
 
-# Timed buffs shown on the aura bar. DurationIndex 21 = 30 seconds, 3 = 60 seconds.
+# Timed buffs shown on the aura bar. DurationIndex 21 = 30 seconds, 3 = 60 seconds, 32 = 180 seconds.
 # Fields: duration, stacks, then (effect, aura, die_sides, base_points, target_a) per effect.
 # 6 = APPLY_AURA. Do not mark PASSIVE (0x40) or the client hides the icon.
-# 129/130 = run/mount speed. Server recasts Kill Combo with BP = stacks*3.
+# 129/130 = run/mount speed. Server recasts Kill Combo with BP = stacks*1.
 VISIBLE_AURAS = {
     910087: (21, 1, ((6, 129, 1, 39, 1), (6, 130, 1, 39, 1))),
-    910089: (3, 1, ((6, 129, 1, 2, 1), (6, 130, 1, 2, 1))),
+    910089: (32, 100, ((6, 129, 1, 0, 1), (6, 130, 1, 0, 1))),
+    910098: (0, 0, ((6, 58, 1, 499, 1),)),
 }
 BANDAGE_TEMPLATE_ID = 746
 CHANNELED_ATTR = 0x4 | 0x40

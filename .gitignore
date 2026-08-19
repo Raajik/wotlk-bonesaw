@@ -1,10 +1,133 @@
-tools/client-patch/cache/
-tools/client-patch/staging/
-tools/client-patch/dist/
-tools/client-update/Bonesaw.manifest.json
-*.exe
-*.dll
-*.pdb
-*.lib
-*.MPQ
-*.mpq
+#
+# AzerothCore
+#
+
+.cache
+/conf/*
+!/conf/dist
+/modules/*
+!/modules/*.md
+!/modules/*.sh
+!/modules/CMakeLists.txt
+!/modules/*.h
+!/modules/*.cmake
+/build*/
+/var/*
+!/var/build/.gitkeep
+!/var/ccache/.gitkeep
+/env/dist/*
+!/env/dist/.gitkeep
+/env/user/*
+/.env*
+/apps/joiner
+/deps/deno
+/data/sql/custom/*
+/src/server/scripts/Custom/*
+!/src/server/scripts/Custom/README.md
+
+/*.override.yml
+/*.override.yaml
+
+!.gitkeep
+
+# default build directory if not specified by CMAKE configuration
+/out/*
+
+#
+#Generic
+#
+
+.directory
+.mailmap
+*.orig
+*.rej
+*~
+.hg/
+*.kdev*
+.DS_Store
+CMakeLists.txt.user
+*.bak
+*.patch
+*.diff
+*.REMOTE.*
+*.BACKUP.*
+*.BASE.*
+*.LOCAL.*
+
+#
+# Claude
+#
+.claude/worktrees
+.claude/settings.local.json
+.claude/plans/**
+
+#
+# IDE & other software
+#
+/.settings/
+/.externalToolBuilders/*
+/.vs
+/out
+# exclude in all levels
+nbproject/
+.sync.ffs_db
+*.kate-swp
+.browse.VC*
+.idea
+cmake-build-*/*
+coverage-report/
+.vs
+
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+#
+# Eclipse
+#
+*.pydevproject
+.metadata
+.gradle
+tmp/
+*.tmp
+*.swp
+*~.nib
+local.properties
+.settings/
+.loadpath
+.project
+.cproject
+
+# vcpkg integration
+/vcpkg/
+/vcpkg-ports/
+
+# Python bytecode cache
+__pycache__/
+*.py[cod]
+
+
+# ==================
+#
+#  CUSTOM
+#
+#  put below your custom ignore rules
+#  for example , if you want to include a
+#  module directly in repositoryyou can do:
+#
+#  !modules/yourmodule
+#
+# ==================
+.cache
+compile_commands.json
+
+# Discord Incoming Webhook secrets (Bonesaw patch-notes MCP)
+*.webhook
+!*.webhook.example
+tools/client-update/discord.webhook
+
+# SOAP GM credentials for tools/save_world.ps1 (never commit)
+tools/soap.env
+tools/client-update/soap.env

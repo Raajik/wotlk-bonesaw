@@ -1,0 +1,20 @@
+---
+description: When Bonesaw / Living Gear / playerbots features ship, include Discord-ready player-facing patch notes
+alwaysApply: true
+---
+
+# Discord patch notes
+
+Until the user explicitly says to ship, draft patch notes in chat or wiki as pending. Do not post Discord "this is live" notes.
+
+Whenever Bonesaw, Living Gear, or playerbots features actually ship, include a short Discord-ready patch notes bullet list in the reply.
+
+- Player-facing only: no file paths, no spell IDs unless a player needs them
+- ASCII-friendly plain `-` bullets, grouped by theme
+- Title: `Bonesaw X.Y.Z - patch notes` from `tools/client-update/Bonesaw.version` after bumping it for this ship
+- Bump `Bonesaw.version` on every ship, including server-only, so launcher and Discord stay aligned. Do not skip numbers.
+- List only what is actually in worldserver or the client; omit in-progress work
+- Bold sparingly if Discord-flavored markdown helps
+- Keep it simple and paste-ready for their Discord channel
+- Extra jump is disabled; do not advertise it
+- Append durable learnings to `A:\obsidian\jeremy\wiki\Bonesaw.md` (crashes, UI, deploy, spell IDs); ASCII-only client strings

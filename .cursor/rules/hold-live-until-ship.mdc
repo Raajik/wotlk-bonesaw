@@ -1,0 +1,19 @@
+---
+description: Default is accumulate changes only. Do not restart, deploy, release, or announce live until the user explicitly ships.
+alwaysApply: true
+---
+
+# Hold live until explicit ship
+
+Default for Bonesaw work: write the fix, save it in git-ready files, and wait. Apply nothing to the live realm until the user explicitly says to ship, restart, deploy, or push live.
+
+Until that explicit go-ahead:
+
+- Keep writing C++, pending SQL, client-patch sources. `Bonesaw.version` may bump in the repo; do not publish it.
+- Do not `docker compose up` / replace / restart `ac-worldserver`.
+- Do not run `tools/restart_worldserver.ps1` or saveall-for-reboot. `saveall` without a reboot is also unnecessary unless they ask.
+- Do not run `tools/client-update/deploy_client.ps1`.
+- Do not `gh release`, push updater MPQs, or git push unless they asked.
+- Do not Discord "this is live" notes. Draft pending notes in chat or wiki is OK.
+
+When they later say ship: 45s in-game warn, `saveall`, rebuild, client deploy, GitHub latest, numbered Discord. Follow `save-before-worldserver-restart.mdc` at that point only.
