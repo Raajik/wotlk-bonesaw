@@ -648,11 +648,8 @@ def main():
     patch_skill_line_ability()
     patch_framexml()
     sys.path.insert(0, str(ROOT))
-    try:
-        from patch_lfg_raids import patch as patch_lfg
-        patch_lfg()
-    except ImportError:
-        print("patch_lfg_raids.py missing; packing existing LFG DBC from staging")
+    from patch_lfg_raids import patch as patch_lfg
+    patch_lfg()
     build_mpq()
     print("Done. Copy patch-Y.MPQ to Data/ and patch-<locale>-4.MPQ to Data/<locale>/.")
 
