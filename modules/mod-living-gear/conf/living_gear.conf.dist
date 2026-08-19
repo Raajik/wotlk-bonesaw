@@ -25,3 +25,22 @@ LivingGear.RollChance = 25
 
 # How many primary stats a successful roll adds (1-5)
 LivingGear.RollStatCount = 1
+
+# Zone scaling: overleveled players deal less and take more in open world.
+LivingGear.ZoneScale.Enable = 1
+LivingGear.ZoneScale.CombatBuffer = 3
+LivingGear.ZoneScale.MinPlayerLevel = 10
+LivingGear.ZoneScale.RewardFloor = 0.35
+LivingGear.ZoneScale.RewardGapDecay = 12.0
+LivingGear.ZoneScale.IncomingPerLevel = 0.12
+
+# Mount: instant cast, use highest known mount speed, auto-mount after combat.
+LivingGear.InstantMount = 1
+LivingGear.UniformMountSpeed = 1
+LivingGear.AutoMount = 1
+
+# Dungeon clear timer par (seconds) when lg_dungeon_par has no row.
+LivingGear.DungeonTimer.DefaultParSec = 1800
+
+# Curator: Living Gear XP tick to 5 lowest stored pieces.
+LivingGear.CollectionPassive.TickMs = 60000
