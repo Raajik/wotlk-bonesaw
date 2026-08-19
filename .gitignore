@@ -11,6 +11,10 @@
 !/modules/CMakeLists.txt
 !/modules/*.h
 !/modules/*.cmake
+!/modules/mod-living-gear/
+# scratch/backup copies left in src/ during development — never ship these
+/modules/mod-living-gear/src/*.cpp.*
+/modules/mod-living-gear/src/_*
 /build*/
 /var/*
 !/var/build/.gitkeep
