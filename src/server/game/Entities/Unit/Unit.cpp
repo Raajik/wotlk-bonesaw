@@ -11199,23 +11199,18 @@ void Unit::UpdateSpeed(UnitMoveType mtype, bool forced)
     float speed = std::max(non_stack_bonus, stack_bonus);
     if (IsPlayer() && (mtype == MOVE_RUN || mtype == MOVE_SWIM || mtype == MOVE_FLIGHT) && !IsMounted())
     {
-        // Living Gear's own travel perks are meant to stack additively with each
-        // other on top of the strongest vanilla speed buff (main_speed_mod above),
-        // rather than following the normal single-strongest-aura rule. Scoped to
-        // this module's spell id range (910000-919999) so Sprint, speed potions,
-        // and PvP trinkets keep their normal non-stacking behavior.
         AuraType speedAura = SPELL_AURA_MOD_INCREASE_SPEED;
         if (mtype == MOVE_SWIM)
             speedAura = SPELL_AURA_MOD_INCREASE_SWIM_SPEED;
         else if (mtype == MOVE_FLIGHT)
             speedAura = SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED;
-        int32 livingGearBonus = 0;
+        int32 additive = 0;
         Unit::AuraEffectList const& speedAuras = GetAuraEffectsByType(speedAura);
         for (AuraEffect const* aurEff : speedAuras)
-            if (aurEff && aurEff->GetAmount() > 0 && aurEff->GetId() >= 910000 && aurEff->GetId() < 920000)
-                livingGearBonus += aurEff->GetAmount();
-        if (livingGearBonus)
-            main_speed_mod += livingGearBonus;
+            if (aurEff && aurEff->GetAmount() > 0)
+                additive += aurEff->GetAmount();
+        if (additive)
+            main_speed_mod = additive;
     }
     if (main_speed_mod)
         AddPct(speed, main_speed_mod);
@@ -11287,13 +11282,10 @@ void Unit::UpdateSpeed(UnitMoveType mtype, bool forced)
     if (slow)
         AddPct(speed, slow);
 
-    if (IsPlayer() && (mtype == MOVE_RUN || mtype == MOVE_SWIM || mtype == MOVE_FLIGHT) && !IsMounted())
+    if (IsPlayer() && (mtype == MOVE_RUN || mtype == MOVE_SWIM || mtype == MOVE_FLIGHT))
     {
-        // *Travel: Swim grants +500% swim speed (base 1.0 -> 6.0), so the cap must
-        // clear that with headroom for stacking with other Living Gear speed perks.
-        // Mounted speed (fast/epic mounts) is intentionally excluded from this cap.
-        if (speed > 8.0f)
-            speed = 8.0f;
+        if (speed > 5.0f)
+            speed = 5.0f;
     }
 
     if (float minSpeedMod = (float)GetMaxPositiveAuraModifier(SPELL_AURA_MOD_MINIMUM_SPEED))
