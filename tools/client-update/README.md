@@ -2,76 +2,88 @@
 
 Repo: https://github.com/Raajik/wotlk-bonesaw
 
-The launcher only replaces allowlisted files, and only after a SHA256 match:
+Players run **`Bonesaw.exe`** (source in `tools/launcher/`). It is a single self-contained
+file: the client patch MPQs are embedded inside it, so a release is one asset with one hash.
 
-- `Data/patch-Y.MPQ`
-- `Data/enUS/patch-enUS-4.MPQ`
-- `Data/enGB/patch-enGB-4.MPQ`
-- `Bonesaw.version`
-- `Wow.exe` (optional, private releases only)
+Each launch it:
 
-It will not update while `Wow.exe` is running.
+1. refuses to run unless it is sitting in a real 3.3.5a folder (`Wow.exe` + `Data\common.MPQ`);
+2. reads `Bonesaw.manifest.txt` from raw.githubusercontent.com and, if a newer version exists,
+   downloads the new exe, verifies size + SHA256, swaps itself out and relaunches;
+3. writes `Data\patch-Y.MPQ` and the locale patch into whichever of `Data\enUS` / `Data\enGB`
+   the client actually has, skipping anything already correct;
+4. patches the player's own `Wow.exe` (backup at `Wow.exe.stock`) so custom FrameXML loads;
+5. writes `realmlist.wtf` if the manifest carries a `realmlist` line;
+6. starts `Wow.exe`.
 
-Players get files from **GitHub Releases/latest**, not from a local copy on one machine. `Bonesaw.bat` checks `https://github.com/Raajik/wotlk-bonesaw/releases/latest`. A deploy that never creates that release leaves everyone else on the old MPQs.
+Every failure short of "you are not in a client folder" is non-fatal: the game still starts.
+`BonesawLauncher.log` (in `Logs\` if that folder exists) records what happened.
 
-## Local install
+`Wow.exe` is never downloaded and must never be attached to a public release. It is a Blizzard
+binary; we only patch the copy the player already owns.
 
-Copy into the Bonesaw client folder:
+## The manifest
 
-- `Bonesaw.bat`
-- `BonesawLauncher.ps1`
-- `Bonesaw.version`
-- `Bonesaw.update.json`
-
-Launch with `Bonesaw.bat` so the updater can run. `Wow.exe` still starts the game with no check.
-
-`Bonesaw.update.json` is set to `Raajik/wotlk-bonesaw`.
-
-To push a newly built MPQ / patched exe onto this machine after closing Wow:
+`Bonesaw.manifest.txt` is committed to `main` and read over raw.githubusercontent.com, which has
+no API rate limit. `build_launcher.py` regenerates it:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/client-update/deploy_client.ps1
+BONESAW 1
+version 0.1.50
+realmlist logon.example.com
+file <sha256> <size> Bonesaw.exe
+url https://github.com/Raajik/wotlk-bonesaw/releases/download/v0.1.50/Bonesaw.exe
 ```
+
+The launcher refuses any `url` outside `https://github.com/Raajik/wotlk-bonesaw/releases/download/`
+and any `file` line naming something other than `Bonesaw.exe`. Unknown keys are ignored, so new
+fields do not break older launchers.
+
+The `realmlist` line is hand-written once and carried forward by `build_launcher.py`. Without it
+the launcher leaves `realmlist.wtf` alone.
 
 ## Ship to all players
 
-Do this on every Bonesaw / Living Gear ship that changes client files (MPQs, addon, launcher). Server-only ships still bump the version and Discord notes.
+Do this on every Bonesaw / Living Gear ship that changes client files (MPQs, addon, launcher).
+Server-only ships still bump the version and get Discord notes.
 
-Push **only** to origin `Raajik/wotlk-bonesaw`. Never push to remote `playerbots` / `mod-playerbots/azerothcore-wotlk`. Do not force-push `main`. The `Playerbot` branch does not share history with `origin/main`; put updater files on a branch based on `origin/main`, or create the GitHub release from the built assets.
+Push **only** to origin `Raajik/wotlk-bonesaw`. Never push to remote `playerbots` /
+`mod-playerbots/azerothcore-wotlk`. Do not force-push `main`. The `Playerbot` branch does not
+share history with `origin/main`; put updater files on a branch based on `origin/main`, or create
+the GitHub release from the built assets.
 
 1. Close Wow (MPQs are locked while it is open).
-2. Bump `Bonesaw.version` (every ship, including server-only; Discord notes use this number). Do not skip versions.
+2. Bump `Bonesaw.version` (every ship, including server-only; Discord notes use this number).
+   Do not skip versions.
 3. `python tools/client-patch/build_patch.py`
-4. `powershell -NoProfile -ExecutionPolicy Bypass -File tools/client-update/deploy_client.ps1`
-5. `python tools/client-update/make_manifest.py` (hashes the **client folder** after deploy)
-6. Commit and push updater files (`Bonesaw.version`, `Bonesaw.manifest.json`, launcher, README) to origin. Prefer a branch from `origin/main`.
-7. Create a GitHub release tagged `vX.Y.Z` (same as the version) and attach:
-   - `Bonesaw.manifest.json`
-   - `patch-Y.MPQ`
-   - `patch-enUS-4.MPQ`
-   - `patch-enGB-4.MPQ`
-   - `BonesawPatchExe.bat`
-   - `BonesawPatchExe.ps1`
-   - `Bonesaw.bat`
-   - `BonesawLauncher.ps1`
-   - `Bonesaw.update.json`
-8. Discord: numbered `Bonesaw X.Y.Z - patch notes`. Tell players to close Wow and run `Bonesaw.bat`.
-
-Do not attach `Wow.exe` to a public release. Players already have a client; they patch it once locally with `BonesawPatchExe.bat` (or `tools/client-patch/patch_wow_exe.py`).
-
-If worldserver must reboot for C++: `powershell tools/restart_worldserver.ps1` (45s warn + saveall) before docker replace.
-
-Example:
+4. `python tools/launcher/build_launcher.py`  -  copies the new MPQs into the launcher payload,
+   builds the exe, copies it to `tools/launcher/dist/Bonesaw.exe`, and rewrites
+   `Bonesaw.manifest.txt`. Safe to re-run: it rebuilds only when something actually changed.
+5. `powershell -NoProfile -ExecutionPolicy Bypass -File tools/client-update/deploy_client.ps1`
+   to put the build on this machine.
+6. Create the GitHub release **before** pushing the manifest, because the manifest points at it.
+   Upload `dist/Bonesaw.exe`, which is the exact file the manifest hashed:
 
 ```
-gh release create v0.1.17 --repo Raajik/wotlk-bonesaw --latest --title "Bonesaw client 0.1.17" --notes "Close Wow, then run Bonesaw.bat." ^
-  tools/client-update/Bonesaw.manifest.json ^
-  tools/client-patch/dist/patch-Y.MPQ ^
-  tools/client-patch/dist/patch-enUS-4.MPQ ^
-  tools/client-patch/dist/patch-enGB-4.MPQ ^
-  tools/client-update/BonesawPatchExe.bat ^
-  tools/client-update/BonesawPatchExe.ps1 ^
-  tools/client-update/Bonesaw.bat ^
-  tools/client-update/BonesawLauncher.ps1 ^
-  tools/client-update/Bonesaw.update.json
+gh release create v0.1.50 --repo Raajik/wotlk-bonesaw --latest --title "Bonesaw client 0.1.50" --notes "Run Bonesaw.exe." tools/launcher/dist/Bonesaw.exe
 ```
+
+7. `python tools/launcher/build_launcher.py --verify`  -  confirms the manifest still describes the
+   uploaded file. The exe is not byte-reproducible, so a rebuild between hashing and uploading
+   would leave every player unable to update.
+8. Commit and push `Bonesaw.version` and `Bonesaw.manifest.txt` to origin. Prefer a branch from
+   `origin/main`. Players see the update on their next launch.
+9. Discord: numbered `Bonesaw X.Y.Z - patch notes`. Tell players to close Wow and run
+   `Bonesaw.exe`.
+
+If worldserver must reboot for C++: `powershell tools/restart_worldserver.ps1` (45s warn +
+saveall) before docker replace.
+
+## Legacy .bat updater
+
+`Bonesaw.bat` + `BonesawLauncher.ps1` + `Bonesaw.update.json` + `Bonesaw.manifest.json` are the
+old path. They still work, but they cannot update themselves, they need `BonesawPatchExe.bat` run
+by hand once, and they use the rate-limited GitHub API. Keep attaching them (plus the three MPQs
+and `make_manifest.py` output) to releases for a few versions so nobody is stranded, then drop
+them. Rebuilding those assets still means running `python tools/client-update/make_manifest.py`
+after a deploy.

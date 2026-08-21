@@ -4,11 +4,15 @@ WotLK 3.3.5a private realm.
 
 ## Play
 
-Close Wow, then run `Bonesaw.bat` from your client folder. It pulls the latest patches from [Releases](https://github.com/Raajik/wotlk-bonesaw/releases/latest) and starts the game. `Wow.exe` alone does not check for updates.
+Download **`Bonesaw.exe`** from [Releases](https://github.com/Raajik/wotlk-bonesaw/releases/latest), drop it into your 3.3.5a client folder (the one with `Wow.exe` and `Data`), and run it. Pin it to your taskbar and use it from then on.
 
-You need a 3.3.5a client (enUS or enGB). The updater never downloads `Wow.exe`.
+Every time you run it, `Bonesaw.exe` updates itself if there is a newer version, writes the current client patches, patches `Wow.exe` the first time so our custom interface will load, and starts the game. There is nothing else to install and nothing to copy by hand.
 
-First time: copy `Bonesaw.bat`, `BonesawLauncher.ps1`, `Bonesaw.update.json`, `BonesawPatchExe.bat`, and `BonesawPatchExe.ps1` into the client folder. Run `BonesawPatchExe.bat` once. Stock Wow.exe will refuse our FrameXML patch with "interface files are corrupt." Then always launch with `Bonesaw.bat`.
+You need your own 3.3.5a client (enUS or enGB). Bonesaw never downloads `Wow.exe`; it patches the copy you already have and keeps the original as `Wow.exe.stock`.
+
+If something goes wrong, `BonesawLauncher.log` next to the exe says what happened.
+
+The old `Bonesaw.bat` + `BonesawLauncher.ps1` pair still works for now, but it cannot update itself. Switch to `Bonesaw.exe` when you get the chance.
 
 ## Living Gear
 
