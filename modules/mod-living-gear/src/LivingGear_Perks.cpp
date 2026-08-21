@@ -52,6 +52,7 @@
 
 class Player;
 void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp); // LivingGear.cpp
+uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 
 namespace LivingGearPerks
 {
@@ -538,7 +539,7 @@ void NeutralizeStealthSpeed(Unit* unit, Aura* aura)
         return;
     if (aura->GetSpellInfo()->Id != SPELL_STEALTH)
         return;
-    if (!HasPerk(unit->ToPlayer(), SPELL_SUBTLETY))
+    if (GetClassPerk(unit->ToPlayer()) != SPELL_SUBTLETY)
         return;
     for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
     {
@@ -651,7 +652,7 @@ static void ChainAmbushHit(ObjectGuid playerGuid, ObjectGuid targetGuid, uint32 
 
 static void ChainAmbushImpl(Player* player, Unit* first)
 {
-    if (!player || !first || !HasPerk(player, SPELL_SUBTLETY))
+    if (!player || !first || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
     player->CastSpell(player, SPELL_STEALTH, true);
     // Removing the cooldown here (after Shadowstep's own cast() has already
@@ -702,7 +703,7 @@ static void ChainAmbushImpl(Player* player, Unit* first)
 // m_Events lets the triggering Shadowstep cast finish and unwind first.
 void ChainAmbush(Player* player, Unit* first)
 {
-    if (!player || !first || !HasPerk(player, SPELL_SUBTLETY))
+    if (!player || !first || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
     ObjectGuid playerGuid = player->GetGUID();
     ObjectGuid firstGuid = first->GetGUID();
@@ -724,7 +725,7 @@ void ChainAmbush(Player* player, Unit* first)
 // box doesn't fight over box slots with the player's own.
 void SummonJackBox(Player* player, Unit* caster)
 {
-    if (!player || !caster || !HasPerk(player, SPELL_SUBTLETY))
+    if (!player || !caster || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
     auto it = g_boxGuid.find(player->GetGUID().GetCounter());
     if (it != g_boxGuid.end())
@@ -742,7 +743,7 @@ void SummonJackBox(Player* player, Unit* caster)
 
 void SummonClone(Player* player)
 {
-    if (!player || !HasPerk(player, SPELL_SUBTLETY))
+    if (!player || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
     auto it = g_cloneGuid.find(player->GetGUID().GetCounter());
     if (it != g_cloneGuid.end())
@@ -1169,7 +1170,7 @@ public:
             g_autoMountOn[acc] = true;
         if (HasPerk(player, SPELL_SWIM))
             player->CastSpell(player, SPELL_SWIM, true);
-        if (HasPerk(player, SPELL_SUBTLETY))
+        if (GetClassPerk(player) == SPELL_SUBTLETY)
         {
             player->learnSpell(SPELL_SHADOWSTEP);
             // UnlockPerk (not raw learnSpell) so the client's db.perks
@@ -1273,7 +1274,7 @@ public:
             return;
         if (info->HasAura(SPELL_AURA_MOUNTED))
             g_lastMount[player->GetGUID().GetCounter()] = info->Id;
-        if (info->Id == SPELL_SHADOWSTEP && HasPerk(player, SPELL_SUBTLETY))
+        if (info->Id == SPELL_SHADOWSTEP && GetClassPerk(player) == SPELL_SUBTLETY)
         {
             Unit* t = spell->m_targets.GetUnitTarget();
             if (t)
@@ -1332,7 +1333,7 @@ public:
                         player->GetPositionZ() + 0.5f, 20.0f, 8.0f);
             player->CastSpell(player, SPELL_THUNDER_CLAP, true);
         }
-        if (HasPerk(player, SPELL_SUBTLETY) && info->SpellFamilyName == SPELLFAMILY_ROGUE
+        if (GetClassPerk(player) == SPELL_SUBTLETY && info->SpellFamilyName == SPELLFAMILY_ROGUE
             && info->Id != SPELL_SHADOW_CLONE)
         {
             auto it = g_cloneGuid.find(player->GetGUID().GetCounter());
@@ -1428,7 +1429,7 @@ public:
             damage = uint32(float(damage) * ZoneCombatRatio(p));
             if (!damage)
                 damage = 1;
-            if (HasPerk(p, SPELL_ASSASSINATION) && roll_chance_i(20))
+            if (GetClassPerk(p) == SPELL_ASSASSINATION && roll_chance_i(20))
                 ApplyRandomPoison(p, victim);
         }
         if (Player* v = victim->ToPlayer())

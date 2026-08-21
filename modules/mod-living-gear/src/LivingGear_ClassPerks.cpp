@@ -2542,6 +2542,11 @@ private:
 
 } // namespace LivingGearClassPerks
 
+uint32 GetClassPerk(Player* player)
+{
+    return LivingGearClassPerks::GetClassPerk(player);
+}
+
 void AddSC_LivingGearClassPerks()
 {
     new LivingGearClassPerks::ClassPerksWorld();
