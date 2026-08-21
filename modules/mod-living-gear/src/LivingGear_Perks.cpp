@@ -43,11 +43,15 @@
 #include "WorldSession.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+class Player;
+void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp); // LivingGear.cpp
 
 namespace LivingGearPerks
 {
@@ -74,7 +78,13 @@ uint32 const NPC_SHADOW_CLONE = 910201;
 uint32 const SPELL_STEALTH = 1784;
 uint32 const SPELL_SHADOWSTEP = 36554;
 uint32 const SPELL_AMBUSH = 8676;
+uint32 const SPELL_VANISH = 1856;
+uint32 const SPELL_PICKPOCKET = 921;
 uint32 const SPELL_DEADLY_THROW = 26679;
+uint32 const SPELL_SINISTER_STRIKE = 1752;
+uint32 const SPELL_EVISCERATE = 2098;
+uint32 const SPELL_KICK = 1766;
+uint32 const SPELL_RUPTURE = 1943;
 uint32 const SPELL_HOWL = 5484;
 uint32 const SPELL_THUNDER_CLAP = 6343;
 uint32 const SPELL_CRIPPLING = 3408;
@@ -206,6 +216,27 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg)
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
         Say(player, msg);
+}
+
+// A player's own DisplayId only carries the bare racial body model --
+// skin/face/hair customization lives in PLAYER_BYTES-family fields that
+// only exist on Player objects (a Creature's update-field array doesn't
+// have room for them at all), so copying it onto a Creature-based clone
+// renders as a blank, untextured white mesh -- confirmed live 2026-08-20.
+// There is no way to get a pixel-exact match on a Creature; this picks a
+// same-race/gender NPC model that actually has real textures instead, so
+// it at least looks like a textured person of the right race/gender.
+// Only Human is populated with any confidence right now (the only race
+// actually tested); everything else falls back to the raw (broken) player
+// DisplayId until someone tests a different race and it can be filled in.
+uint32 LookAlikeDisplayId(Player* player)
+{
+    if (!player)
+        return 0;
+    if (player->getRace() == RACE_HUMAN)
+        return player->getGender() == GENDER_FEMALE ? 3344 /* Priestess Anetta, Stormwind */
+            : 3167 /* Stormwind City Guard */;
+    return player->GetDisplayId();
 }
 
 uint32 BestOwned(Player* player, uint32 firstId)
@@ -480,49 +511,213 @@ void UniformMount(Unit* unit, Aura* aura)
     }
 }
 
-void ChainAmbush(Player* player, Unit* first)
+// Stealth's built-in movement-speed penalty is zeroed out for Subtlety
+// perk holders (requested: match, and exceed via real talents, normal
+// movement speed while stealthed). Neutralizes whatever negative speed
+// effect(s) the Stealth aura carries rather than hardcoding a percentage,
+// so it stays correct regardless of rank/exact DBC value. Leaves every
+// other speed source (talents, other auras) untouched, so real speed
+// talents still stack on top normally.
+void NeutralizeStealthSpeed(Unit* unit, Aura* aura)
+{
+    if (!unit || !aura || !unit->IsPlayer())
+        return;
+    if (aura->GetSpellInfo()->Id != SPELL_STEALTH)
+        return;
+    if (!HasPerk(unit->ToPlayer(), SPELL_SUBTLETY))
+        return;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        AuraEffect* eff = aura->GetEffect(i);
+        if (!eff)
+            continue;
+        AuraType const type = eff->GetAuraType();
+        if ((type == SPELL_AURA_MOD_DECREASE_SPEED || type == SPELL_AURA_MOD_SPEED_ALWAYS
+            || type == SPELL_AURA_MOD_INCREASE_SPEED) && eff->GetAmount() < 0)
+            eff->ChangeAmount(0);
+    }
+}
+
+// Performs a single chain-ambush hit: summons a short-lived clone at the
+// target, has it Pickpocket (humanoids only, and BEFORE Ambush since Ambush
+// can kill the target outright), then Ambush, then Vanish, then despawn.
+// Each hit is scheduled as its own standalone m_Events callback (see
+// ChainAmbushImpl below) rather than run back-to-back in a tight loop --
+// doing all 5 summon+cast+despawn sequences synchronously in one call was
+// itself enough to trip Unit::_AddAura's "!m_cleanupDone" assert on the
+// player (2026-08-20), even after the whole chain was already deferred out
+// of the triggering Shadowstep cast's call stack.
+// Summons `entry` with its display ID already set to `displayId` before the
+// creature is ever added to the map (i.e. before any client can see it).
+// Unit::SummonCreature() creates+broadcasts the creature and returns it
+// already-visible with its default template model; calling SetDisplayId()
+// on the result afterward (the obvious approach) makes every nearby client
+// render a model-swap transition -- the "level up"-looking flash the clones
+// were showing on spawn. Mirrors Map::SummonCreature()'s own Create()/
+// AddToMap() sequence with the display override inserted between them.
+static TempSummon* SummonCloneWithDisplay(Player* player, uint32 entry, Position const& pos,
+    uint32 despawnMs, uint32 displayId)
+{
+    if (!player || !player->IsInWorld())
+        return nullptr;
+    Map* map = player->GetMap();
+    TempSummon* summon = new TempSummon(nullptr, player->GetGUID());
+    if (!summon->Create(map->GenerateLowGuid<HighGuid::Unit>(), map, player->GetPhaseMask(),
+        entry, 0, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), pos.GetOrientation()))
+    {
+        delete summon;
+        return nullptr;
+    }
+    summon->SetHomePosition(pos);
+    summon->InitStats(despawnMs);
+    summon->SetDisplayId(displayId);
+    if (!map->AddToMap(summon->ToCreature(), true)) // owner is always a player here
+    {
+        delete summon;
+        return nullptr;
+    }
+    summon->InitSummon();
+    return summon;
+}
+
+static void ChainAmbushHit(ObjectGuid playerGuid, ObjectGuid targetGuid, uint32 ambush, int32 dmg)
+{
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!player || !player->IsInWorld())
+        return;
+    Unit* t = ObjectAccessor::GetUnit(*player, targetGuid);
+    if (!t || !t->IsInWorld() || !t->IsAlive())
+        return;
+    Position pos;
+    pos.Relocate(t->GetPositionX(), t->GetPositionY(), t->GetPositionZ(), t->GetOrientation());
+    TempSummon* clone = SummonCloneWithDisplay(player, NPC_SHADOW_CLONE, pos, 1500, LookAlikeDisplayId(player));
+    if (!clone)
+        return;
+    clone->SetOwnerGUID(player->GetGUID());
+    clone->SetFaction(player->GetFaction());
+    clone->SetLevel(player->GetLevel());
+    // Mirror the player's weapons onto the clone -- Ambush is a
+    // weapon-damage-based ability, so an unarmed clone deals ~0 real
+    // damage from its own swing no matter what bp0 override is passed to
+    // CastCustomSpell (that only replaces the flat-bonus effect).
+    if (Item* mh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
+        clone->SetVirtualItem(0, mh->GetEntry());
+    if (Item* oh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
+        clone->SetVirtualItem(1, oh->GetEntry());
+    if (Item* rh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
+        clone->SetVirtualItem(2, rh->GetEntry());
+    // Shadowform (15473) was tried here as a cosmetic dark-tint overlay per
+    // request, but it's a full shapeshift/transform spell with its own
+    // prominent "swirl" visual on application -- almost certainly what was
+    // being seen and reported as a "level up"-looking flash on spawn.
+    // Removed rather than guessed-at further without a way to see it live.
+
+    if (t->GetCreatureType() == CREATURE_TYPE_HUMANOID)
+        clone->CastSpell(t, SPELL_PICKPOCKET, true);
+    clone->CastCustomSpell(t, ambush, &dmg, nullptr, nullptr, true,
+        nullptr, nullptr, player->GetGUID());
+    // Ambush is a weapon-damage-based ability -- CastCustomSpell's bp0
+    // override only replaces its flat bonus effect, not the weapon-damage
+    // component, and the clone has no weapon equipped, so the cast above
+    // plays the impact visual but deals ~0 real damage. Force the actual
+    // damage through directly so the chain hits for something real.
+    if (t->IsAlive())
+        Unit::DealDamage(clone, t, uint32(std::max(1, dmg)), nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    // The clone (not the player) is the one actually swinging, so without
+    // this the target's threat table only ever sees a summon that vanishes
+    // a moment later -- it loses its target and tries to evade/reset even
+    // though the player is standing right next to it fighting the chain.
+    player->SetInCombatWith(t);
+    if (t->IsAlive())
+        t->GetThreatMgr().AddThreat(player, float(dmg), nullptr, true, true);
+    clone->CastSpell(clone, SPELL_VANISH, true);
+    clone->DespawnOrUnsummon(std::chrono::milliseconds(400));
+}
+
+static void ChainAmbushImpl(Player* player, Unit* first)
 {
     if (!player || !first || !HasPerk(player, SPELL_SUBTLETY))
         return;
     player->CastSpell(player, SPELL_STEALTH, true);
+    // Removing the cooldown here (after Shadowstep's own cast() has already
+    // finished and applied its normal cooldown) is what actually sticks --
+    // doing it from OnPlayerSpellCast happens too early, before the spell
+    // sets its own cooldown, so it just gets overwritten.
+    player->RemoveSpellCooldown(SPELL_SHADOWSTEP, true);
+
     uint32 ambush = BestOwned(player, SPELL_AMBUSH);
     if (!ambush)
         ambush = SPELL_AMBUSH;
-    std::vector<Unit*> targets;
-    targets.push_back(first);
+    SpellInfo const* ambushInfo = sSpellMgr->GetSpellInfo(ambush);
+    int32 dmg = int32(player->GetLevel() * 12.0f * AMBUSH_MULT);
+    if (ambushInfo)
+        dmg = int32(float(std::max(1, ambushInfo->Effects[EFFECT_0].CalcValue(player))) * AMBUSH_MULT);
+
+    std::vector<ObjectGuid> targets;
+    targets.push_back(first->GetGUID());
     std::list<Unit*> around;
-    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, 15.0f);
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, 40.0f);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
-    Cell::VisitObjects(player, searcher, 15.0f);
+    Cell::VisitObjects(player, searcher, 40.0f);
     for (Unit* u : around)
         if (u && u != first && u->IsAlive() && player->IsValidAttackTarget(u))
-            targets.push_back(u);
+            targets.push_back(u->GetGUID());
     if (targets.empty())
         return;
+
+    ObjectGuid playerGuid = player->GetGUID();
     for (uint32 i = 0; i < 5; ++i)
     {
-        Unit* t = targets[i % targets.size()];
-        if (!t || !t->IsAlive())
-            continue;
-        player->NearTeleportTo(t->GetPositionX(), t->GetPositionY(), t->GetPositionZ(),
-            player->GetOrientation());
-        int32 dmg = int32(player->GetLevel() * 12.0f * AMBUSH_MULT);
-        if (SpellInfo const* ai = sSpellMgr->GetSpellInfo(ambush))
-            dmg = int32(float(std::max(1, ai->Effects[EFFECT_0].CalcValue(player))) * AMBUSH_MULT);
-        player->CastCustomSpell(t, ambush, &dmg, nullptr, nullptr, true);
+        ObjectGuid tg = targets[i % targets.size()];
+        player->m_Events.AddEventAtOffset([playerGuid, tg, ambush, dmg]()
+        {
+            ChainAmbushHit(playerGuid, tg, ambush, dmg);
+        }, std::chrono::milliseconds(200 * (i + 1)));
     }
 }
 
-void SummonJackBox(Player* player)
+// Public entry point: defers to the next world tick instead of running
+// ChainAmbushImpl() synchronously. OnPlayerSpellCast fires mid-way through
+// the triggering Spell::cast() call (before that spell's own effects have
+// finished applying), so casting more spells on the same player from in
+// here is a reentrant call into the aura/spell system on a unit that is
+// still "in progress" -- this is what caused the recurring
+// Unit::_AddAura assert "!m_cleanupDone" crashes (2026-08-20), even after
+// removing the earlier NearTeleportTo loop. Scheduling the real work via
+// m_Events lets the triggering Shadowstep cast finish and unwind first.
+void ChainAmbush(Player* player, Unit* first)
 {
-    if (!player || !HasPerk(player, SPELL_SUBTLETY))
+    if (!player || !first || !HasPerk(player, SPELL_SUBTLETY))
+        return;
+    ObjectGuid playerGuid = player->GetGUID();
+    ObjectGuid firstGuid = first->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid, firstGuid]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !p->IsInWorld())
+            return;
+        Unit* t = ObjectAccessor::GetUnit(*p, firstGuid);
+        if (!t || !t->IsInWorld())
+            return;
+        ChainAmbushImpl(p, t);
+    }, std::chrono::milliseconds(1));
+}
+
+// caster provides the drop position (the player when they cast it
+// themselves, the Shadow Clone when it does) -- ownership/perk-check/
+// tracking always stays keyed to the real player, so the clone dropping a
+// box doesn't fight over box slots with the player's own.
+void SummonJackBox(Player* player, Unit* caster)
+{
+    if (!player || !caster || !HasPerk(player, SPELL_SUBTLETY))
         return;
     auto it = g_boxGuid.find(player->GetGUID().GetCounter());
     if (it != g_boxGuid.end())
         if (Creature* c = player->GetMap()->GetCreature(it->second))
             c->DespawnOrUnsummon();
-    Position pos = player->GetPosition();
-    if (TempSummon* s = player->SummonCreature(NPC_JACK_BOX, pos, TEMPSUMMON_TIMED_DESPAWN, 60000))
+    Position pos = caster->GetPosition();
+    if (TempSummon* s = caster->SummonCreature(NPC_JACK_BOX, pos, TEMPSUMMON_TIMED_DESPAWN, 60000))
     {
         g_boxGuid[player->GetGUID().GetCounter()] = s->GetGUID();
         s->SetFaction(player->GetFaction());
@@ -539,16 +734,29 @@ void SummonClone(Player* player)
     if (it != g_cloneGuid.end())
         if (Creature* c = player->GetMap()->GetCreature(it->second))
             c->DespawnOrUnsummon();
-    if (TempSummon* s = player->SummonCreature(NPC_SHADOW_CLONE, player->GetPosition(),
-        TEMPSUMMON_MANUAL_DESPAWN))
+    // SummonCloneWithDisplay (see ChainAmbushHit) sets the display ID
+    // before the summon is ever visible to any client -- the plain
+    // SummonCreature()+SetDisplayId() this used to do caused a client-side
+    // model-swap glitch (reported as "spawns with no textures").
+    // TempSummon defaults to TEMPSUMMON_MANUAL_DESPAWN (see
+    // TempSummon::TempSummon), so despawnMs here has no auto-expiry effect
+    // -- this clone persists until DespawnOrUnsummon() is called on it
+    // explicitly, exactly like the old TEMPSUMMON_MANUAL_DESPAWN summon did.
+    if (TempSummon* s = SummonCloneWithDisplay(player, NPC_SHADOW_CLONE, player->GetPosition(),
+        0, LookAlikeDisplayId(player)))
     {
         g_cloneGuid[player->GetGUID().GetCounter()] = s->GetGUID();
         s->SetOwnerGUID(player->GetGUID());
         s->SetFaction(player->GetFaction());
         s->SetLevel(player->GetLevel());
-        s->SetDisplayId(player->GetDisplayId());
         s->SetMaxHealth(player->GetMaxHealth());
         s->SetHealth(player->GetMaxHealth());
+        if (Item* mh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
+            s->SetVirtualItem(0, mh->GetEntry());
+        if (Item* oh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
+            s->SetVirtualItem(1, oh->GetEntry());
+        if (Item* rh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
+            s->SetVirtualItem(2, rh->GetEntry());
         s->SetPower(POWER_ENERGY, player->GetMaxPower(POWER_ENERGY));
     }
 }
@@ -629,6 +837,16 @@ void CatchUpProfession(Player* player)
             UnlockPerk(player, SPELL_CURATOR, nullptr);
 }
 
+// Curator's 5 lowest-attunement bag/bank/armory pieces are treated as if
+// equipped for attunement purposes (2026-08-20 redesign, see Bonesaw.md):
+// each gets +1 xp per tick, rolled over and banked through the exact same
+// LivingGear_GrantItemXp path an equipped item's kill XP goes through. The
+// selection filter is `level < 25`, not `< 50` -- once a piece reaches
+// attunement's cap level it stops adding anything further to the account
+// (see LivingGear.cpp AbsorbPctForLevel), so there's no reason for
+// Curator's limited tick budget to keep growing it past that instead of
+// moving on to the next least-attuned piece. 25 must match LivingGear.cpp's
+// `LivingGear.Attune.CapLevel` config (default 25) if that's ever changed.
 void TickCurator(Player* player, uint32 diff)
 {
     if (!player || !HasPerk(player, SPELL_CURATOR))
@@ -638,12 +856,16 @@ void TickCurator(Player* player, uint32 diff)
     if (g_curatorAcc[id] < g_cfg.curatorTick)
         return;
     g_curatorAcc[id] = 0;
-    CharacterDatabase.Execute(
-        "UPDATE `lg_item` i INNER JOIN ("
-        " SELECT `item_guid` FROM `lg_item` WHERE `owner_guid` = {} AND `level` < 50 "
-        " ORDER BY `level` ASC, `xp` ASC LIMIT 5) x ON i.`item_guid` = x.`item_guid` "
-        " SET i.`xp` = i.`xp` + 1",
-        player->GetGUID().GetCounter());
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `item_guid` FROM `lg_item` WHERE `owner_guid` = {} AND `level` < 25 "
+        "ORDER BY `level` ASC, `xp` ASC LIMIT 5", player->GetGUID().GetCounter()))
+    {
+        do
+        {
+            uint32 const itemGuid = (*result)[0].Get<uint32>();
+            LivingGear_GrantItemXp(player, itemGuid, 1);
+        } while (result->NextRow());
+    }
 }
 
 void CheckDungeonClear(Player* player, Creature* killed)
@@ -830,11 +1052,30 @@ bool HandleLgChat(Player* player, std::string msg)
     }
     if (sscanf(msg.c_str(), "ARMEQUIP|%u|%u", &slot, &entry) == 2)
     {
-        uint16 dest = 0;
-        if (player->CanEquipNewItem(uint8(slot), dest, entry, true) == EQUIP_ERR_OK)
-            player->EquipNewItem(dest, entry, true);
-        else
-            player->StoreNewItemInBestSlots(entry, 1);
+        // The client only ever offers entries from the account's own
+        // attuned list, but a whisper addon message is not a trusted
+        // boundary -- without this check, a crafted ARMEQUIP message could
+        // conjure any item entry for free. Require the account to actually
+        // have it attuned first.
+        if (QueryResult q = CharacterDatabase.Query(
+            "SELECT 1 FROM `lg_absorb` WHERE `account_id` = {} AND `item_entry` = {}", acc, entry))
+        {
+            Item* created = nullptr;
+            uint16 dest = 0;
+            if (player->CanEquipNewItem(uint8(slot), dest, entry, true) == EQUIP_ERR_OK)
+                created = player->EquipNewItem(dest, entry, true);
+            else
+            {
+                ItemPosCountVec destVec;
+                if (player->CanStoreNewItem(NULL_BAG, NULL_SLOT, destVec, entry, 1) == EQUIP_ERR_OK)
+                    created = player->StoreNewItem(destVec, entry, true);
+            }
+            // Recreated copies are soulbound -- they're a free re-materialization
+            // of something already permanently converted to account stats, not
+            // a tradeable item, so this closes off selling/trading duplicates.
+            if (created)
+                created->SetBinding(true);
+        }
         return true;
     }
     return false;
@@ -866,6 +1107,33 @@ public:
         DetectSchema();
         uint32 acc = player->GetSession()->GetAccountId();
         LoadPerks(acc);
+        if (!g_perks[acc].empty())
+        {
+            // WotLK's addon-whisper channel silently truncates messages
+            // around ~255 bytes -- a single account can have 50+ unlocked
+            // perks, so one giant "PKALL|910002,910003,..." line can blow
+            // past that and drop whatever IDs land after the cutoff (e.g.
+            // Auto-Mount, 910105, always unlocking server-side but never
+            // reaching db.perks client-side, so its World Perks toggle
+            // looked locked and clicking it silently did nothing). The
+            // client's PKALL handler is purely additive (no db.perks = {}
+            // reset), so it's safe to split across multiple PKALL sends.
+            std::string ids;
+            for (uint32 spellId : g_perks[acc])
+            {
+                std::string next = std::to_string(spellId);
+                if (!ids.empty() && ids.size() + 1 + next.size() > 200)
+                {
+                    SendLine(player, "PKALL|" + ids);
+                    ids.clear();
+                }
+                if (!ids.empty())
+                    ids += ',';
+                ids += next;
+            }
+            if (!ids.empty())
+                SendLine(player, "PKALL|" + ids);
+        }
         CatchUpProfession(player);
         if (g_hasAutoMountCol)
         {
@@ -881,8 +1149,12 @@ public:
         if (HasPerk(player, SPELL_SUBTLETY))
         {
             player->learnSpell(SPELL_SHADOWSTEP);
-            player->learnSpell(SPELL_JACK_BOX);
-            player->learnSpell(SPELL_SHADOW_CLONE);
+            // UnlockPerk (not raw learnSpell) so the client's db.perks
+            // actually gets a PK|id|1 for these -- otherwise the addon UI
+            // can never show them as known even though the character has
+            // them, since nothing else ever tells the client.
+            UnlockPerk(player, SPELL_JACK_BOX, nullptr);
+            UnlockPerk(player, SPELL_SHADOW_CLONE, nullptr);
         }
         RecastCombo(player);
         NotifyZoneScale(player);
@@ -969,9 +1241,9 @@ public:
             amount = 1;
     }
 
-    void OnPlayerSpellCast(Player* player, Spell* spell, bool skip) override
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override
     {
-        if (skip || !player || !spell)
+        if (!player || !spell)
             return;
         SpellInfo const* info = spell->GetSpellInfo();
         if (!info)
@@ -980,13 +1252,12 @@ public:
             g_lastMount[player->GetGUID().GetCounter()] = info->Id;
         if (info->Id == SPELL_SHADOWSTEP && HasPerk(player, SPELL_SUBTLETY))
         {
-            player->RemoveSpellCooldown(SPELL_SHADOWSTEP, true);
             Unit* t = spell->m_targets.GetUnitTarget();
             if (t)
                 ChainAmbush(player, t);
         }
         if (info->Id == SPELL_JACK_BOX)
-            SummonJackBox(player);
+            SummonJackBox(player, player);
         if (info->Id == SPELL_SHADOW_CLONE)
             SummonClone(player);
         if (info->Id == SPELL_FIND_QUESTS)
@@ -1136,6 +1407,7 @@ public:
     void OnAuraApply(Unit* unit, Aura* aura) override
     {
         UniformMount(unit, aura);
+        NeutralizeStealthSpeed(unit, aura);
     }
 };
 
@@ -1234,15 +1506,143 @@ public:
     }
 };
 
+// Not a real playerbot (see the 2026-08-20 wiki note on why that's not
+// feasible for a temporary summon -- mod-playerbots hard-requires a real
+// Player+WorldSession). Instead this reads the owning player's actual
+// known Rogue spells each decision and applies a simple priority rotation
+// with them, so it fights using the owner's real kit rather than a
+// hand-picked fixed ability. Follows the owner out of combat; auto-engages
+// whatever the owner is fighting.
 struct npc_lg_shadow_cloneAI : public ScriptedAI
 {
     npc_lg_shadow_cloneAI(Creature* c) : ScriptedAI(c) { }
 
-    void UpdateAI(uint32 /*diff*/) override
+    void Reset() override
     {
-        if (!UpdateVictim())
+        // REACT_DEFENSIVE so being attacked actually registers as combat
+        // at the engine level; the immediate-response part (was taking
+        // ~10s to react) is handled explicitly below since this AI doesn't
+        // go through the standard UpdateVictim()/threat-list path at all.
+        me->SetReactState(REACT_DEFENSIVE);
+        _boxCooldownMs = 0;
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_boxCooldownMs > diff)
+            _boxCooldownMs -= diff;
+        else
+            _boxCooldownMs = 0;
+
+        Unit* ownerUnit = me->GetOwner();
+        Player* owner = ownerUnit ? ownerUnit->ToPlayer() : nullptr;
+        if (!owner || !owner->IsInWorld() || !me->IsWithinDistInMap(owner, 60.0f))
+        {
+            me->DespawnOrUnsummon();
             return;
+        }
+
+        // Pet-aggressive: if something is actively hitting the clone and it
+        // isn't already fighting back, engage immediately -- this is the
+        // fix for "took ~10 seconds to react", since without it the clone
+        // only ever picked a target from the owner's current selection.
+        if (!me->GetVictim())
+        {
+            if (Unit* attacker = me->getAttackerForHelper())
+            {
+                AttackStart(attacker);
+                RunRotation(owner, attacker);
+                DoMeleeAttackIfReady();
+                return;
+            }
+        }
+
+        Unit* ownerTarget = owner->GetSelectedUnit();
+        bool const ownerFighting = owner->IsInCombat() && ownerTarget && ownerTarget->IsAlive()
+            && owner->IsValidAttackTarget(ownerTarget);
+
+        if (!ownerFighting)
+        {
+            if (me->GetVictim())
+                me->AttackStop();
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+                me->GetMotionMaster()->MoveFollow(owner, 2.0f, frand(0.0f, 2.0f * float(M_PI)));
+            return;
+        }
+
+        if (me->GetVictim() != ownerTarget)
+            AttackStart(ownerTarget);
+
+        TryDropTrap(owner);
+
+        if (!me->IsWithinMeleeRange(ownerTarget))
+        {
+            TryShadowstepTo(owner, ownerTarget);
+            return;
+        }
+
+        RunRotation(owner, ownerTarget);
         DoMeleeAttackIfReady();
+    }
+
+private:
+    // Jack in the Box has no meaningful baked-in spell cooldown of its own
+    // (its real recast timer only ever existed as client GCD/UI, never
+    // enforced server-side for a raw CastSpell), so relying on
+    // HasSpellCooldown() here could spam-drop boxes every tick. Tracked
+    // with our own timer instead, independent of anything spell-cooldown
+    // related.
+    uint32 _boxCooldownMs = 0;
+
+    void TryShadowstepTo(Player* owner, Unit* target)
+    {
+        uint32 const step = BestOwned(owner, SPELL_SHADOWSTEP);
+        if (!step || me->HasSpellCooldown(step))
+            return;
+        me->CastSpell(target, step, false);
+    }
+
+    // Never add SPELL_SHADOW_CLONE (910103) to anything this AI can cast --
+    // a clone summoning another clone was flagged explicitly as something
+    // to never let happen (2026-08-20 request). Jack in the Box (910102) is
+    // a stationary trap NPC, not another copy of the player, so it's fine.
+    void TryDropTrap(Player* owner)
+    {
+        if (_boxCooldownMs || !BestOwned(owner, SPELL_JACK_BOX))
+            return;
+        _boxCooldownMs = 45000;
+        SummonJackBox(owner, me);
+    }
+
+    void RunRotation(Player* owner, Unit* target)
+    {
+        if (target->HasUnitState(UNIT_STATE_CASTING))
+        {
+            uint32 const kick = BestOwned(owner, SPELL_KICK);
+            if (kick && !me->HasSpellCooldown(kick))
+            {
+                me->CastSpell(target, kick, false);
+                return;
+            }
+        }
+        if (target->GetHealthPct() < 35.0f)
+        {
+            uint32 const finisher = BestOwned(owner, SPELL_EVISCERATE);
+            if (finisher && !me->HasSpellCooldown(finisher))
+            {
+                me->CastSpell(target, finisher, false);
+                return;
+            }
+        }
+        uint32 const rupture = BestOwned(owner, SPELL_RUPTURE);
+        if (rupture && !me->HasSpellCooldown(rupture) && !target->HasAura(rupture, me->GetGUID()))
+        {
+            me->CastSpell(target, rupture, false);
+            return;
+        }
+        uint32 const builder = BestOwned(owner, SPELL_SINISTER_STRIKE);
+        if (builder && !me->HasSpellCooldown(builder))
+            me->CastSpell(target, builder, false);
     }
 };
 

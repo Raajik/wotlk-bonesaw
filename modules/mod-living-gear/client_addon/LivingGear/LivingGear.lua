@@ -3,6 +3,20 @@
 
 local LG_UI_REV = 23
 
+-- Lua 5.1 (what the WotLK 3.3.5 client actually runs) also hard-caps the
+-- main chunk -- the whole file, treated as one implicit function -- at 200
+-- local variables, and every top-level `local`/`local function` declaration
+-- consumes one slot for the rest of the file (see Bonesaw.md, "Lua 5.1's
+-- 200-local main-chunk limit", 2026-08-20). Functions that only ever have
+-- one or two call sites are attached here as fields instead of getting
+-- their own top-level `local function` -- `function LG2.Foo()` doesn't
+-- consume a main-chunk local slot the way `local function Foo()` does,
+-- while still being a real top-level function with its own independent
+-- 60-upvalue budget (nesting depth, not table-field-vs-local, is what the
+-- upvalue ceiling cares about). New low-call-count helpers should default
+-- to going here rather than adding another top-level `local function`.
+local LG2 = {}
+
 LivingGearDB = LivingGearDB or {}
 if LivingGearDB.showChat == nil then
     LivingGearDB.showChat = false
@@ -262,11 +276,36 @@ local ATTUNE_QUALS = {
 local VAULT_QUEST = 1
 local VAULT_REAGENT = 2
 local VAULT_ROWS = 14
-local FRAME_W = 540
-local FRAME_H = 420
+local FRAME_W = 640
+local FRAME_H = 520
+-- Centralized color tokens. Every semantic on/off/hover/danger state used to
+-- be a separately-typed-out RGB literal at each call site (slightly
+-- different every time), which is how the UI ended up looking inconsistent
+-- across tabs. Use these everywhere instead of new literals.
+local COLOR_BG = { 0.10, 0.10, 0.10 }
+local COLOR_BTN = { 0.16, 0.16, 0.16 }
+local COLOR_BTN_HOVER = { 0.24, 0.24, 0.24 }
+local COLOR_ON = { 0.14, 0.36, 0.16 }
+local COLOR_OFF = { 0.30, 0.13, 0.13 }
+local COLOR_DANGER = { 0.42, 0.12, 0.12 }
+local COLOR_ACCENT = { 0.20, 0.45, 0.75 }
+local COLOR_ADD = { 0.14, 0.22, 0.14 } -- softer green for add/apply/deposit actions, distinct from COLOR_ON's "currently toggled on" state
+local COLOR_BORDER = { 0.35, 0.35, 0.35 }
+local COLOR_ROW_HOVER = { 0.16, 0.16, 0.16 }
+local COLOR_TEXT = { 0.90, 0.90, 0.90 }
+local COLOR_TEXT_DIM = { 0.55, 0.55, 0.55 }
+local COLOR_TEXT_LOCKED = { 0.45, 0.45, 0.45 }
 local SCALES = { 0.85, 1.0, 1.15, 1.3, 1.5, 1.75 }
 local SCALE_LABELS = { "85%", "100%", "115%", "130%", "150%", "175%" }
 local LG_MAX_LEVEL = 50
+-- Matches the server's LivingGear.Attune.CapLevel default (LivingGear.cpp,
+-- 2026-08-20 attunement redesign) -- an item is fully attuned (banking
+-- 100% of its current stats to the account) at this level, so the UI
+-- treats it as "done" here even though the item keeps growing its own
+-- worn stats up to LG_MAX_LEVEL. Not synced from the server -- if that
+-- config is ever changed, update this to match, same as LG_MAX_LEVEL
+-- itself already is (not server-synced either).
+local LG_ATTUNE_CAP_LEVEL = 25
 local GEAR_SLOTS = {
     { slot = 0, name = "Head", tex = "Interface\\PaperDoll\\UI-PaperDoll-Slot-Head" },
     { slot = 1, name = "Neck", tex = "Interface\\PaperDoll\\UI-PaperDoll-Slot-Neck" },
@@ -310,7 +349,8 @@ local CLASS_PERKS = {
     ROGUE = {
         { id = 910035, name = "Assassination", how = "Poisons deal +300% damage. DoTs spread within 10 yards." },
         { id = 910036, name = "Combat", how = "Blade Flurry always on. +50% energy regen. 30% free Killing Spree on builders." },
-        { id = 910037, name = "Subtlety", how = "Shadowstep has no cooldown and grants Stealth. Chains up to 5 Ambushes (+500% damage). Jack in the Box trap and Shadow Clone pet." },
+        { id = 910037, name = "Subtlety", how = "Shadowstep has no cooldown and grants Stealth. Chains up to 5 Ambushes (+500% damage). Jack in the Box trap and Shadow Clone pet.",
+          subPerks = { { id = 910102, name = "Jack in the Box" }, { id = 910103, name = "Shadow Clone" } } },
     },
     PALADIN = {
         { id = 910069, name = "Holy", how = "Consecration follows you and toggles off if recast. Consecration damage +1000%. Holy Shock damage +300% and hits enemies within 10 yards of the target." },
@@ -322,6 +362,36 @@ local CLASS_PERKS = {
         { id = 910084, name = "Fury", how = "Titan's Grip. Each melee hit: +5% attack speed (20 stacks) and heal 1% of max health in combat. Attack speed lingers 60 sec after combat. Rend and Deep Wounds deal +300% damage." },
         { id = 910085, name = "Protection", how = "Learn Shockwave with no cooldown and +300% damage. Thunder Clap radius doubled. Thunder Clap applies your Rend and Deep Wounds if trained." },
     },
+    HUNTER = {
+        { id = 910150, name = "Marksmanship", how = "Chimera Shot has no cooldown and refreshes Serpent Sting to full duration. Ranged shots have a chance to grant a free, instant Aimed Shot." },
+        { id = 910153, name = "Beast Mastery", how = "Bestial Wrath has no cooldown/focus cost. Call up to 4 more beasts from your stable to fight alongside your pet, each at 50% stats." },
+        { id = 910154, name = "Survival", how = "Explosive Shot deals double damage. Traps lose their cooldown and get a bigger blast radius. You are immune to your own trap damage." },
+    },
+    SHAMAN = {
+        { id = 910151, name = "Elemental", how = "Thunderstorm has no cooldown. Lava Burst deals double damage. Chain Lightning has no target cap." },
+        { id = 910155, name = "Enhancement", how = "Feral Spirit is a free toggle: your 2 spirit wolves never expire while it's active and deal double damage. Stormstrike has no cooldown." },
+        { id = 910156, name = "Restoration", how = "Riptide has no cooldown and also jumps to 2 more injured allies within 15 yards. Chain Heal has no bounce cap." },
+    },
+    DEATHKNIGHT = {
+        { id = 910152, name = "Unholy", how = "Summon Gargoyle has no cooldown. Army of the Dead has no cooldown and also summons a 5-ghoul group: 1 tank, 1 healer, 3 dps." },
+        { id = 910166, name = "Blood", how = "Dancing Rune Weapon has no cooldown/runic cost. While active, melee hits heal you for 5% of the damage dealt." },
+        { id = 910167, name = "Frost", how = "Hungering Cold has no cooldown/runic cost. Frost Strike and Obliterate deal double damage." },
+    },
+    WARLOCK = {
+        { id = 910157, name = "Affliction", how = "Your DoTs spread to enemies within 15 yards every 1 sec. DoT tick damage is increased by your haste." },
+        { id = 910158, name = "Demonology", how = "Metamorphosis has no cooldown or shard cost. Your demon pet's damage is doubled." },
+        { id = 910159, name = "Destruction", how = "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt." },
+    },
+    DRUID = {
+        { id = 910160, name = "Balance", how = "Starfall has no cooldown/mana cost. You are permanently in both Solar and Lunar Eclipse at once." },
+        { id = 910161, name = "Feral", how = "Berserk is a free toggle. While active, Cat/Bear abilities cost no energy/rage and lose their cooldowns." },
+        { id = 910162, name = "Restoration", how = "Wild Growth has no cooldown and heals up to 10 allies within 30 yards. Rejuvenation spreads to injured allies within 15 yards every 3 sec." },
+    },
+    PRIEST = {
+        { id = 910163, name = "Discipline", how = "Penance has no cooldown and also applies Power Word: Shield to the target." },
+        { id = 910164, name = "Holy", how = "Guardian Spirit has no cooldown and also applies to 2 more injured allies within 20 yards." },
+        { id = 910165, name = "Shadow", how = "Shadowfiend has no cooldown. Mind Flay deals quadruple damage." },
+    },
 }
 
 -- Lookup by spell id from server CPK lines. Do not key the Class tab on UnitClass.
@@ -329,6 +399,37 @@ local CLASS_PERK_BY_ID = {}
 for _, list in pairs(CLASS_PERKS) do
     for i = 1, #list do
         CLASS_PERK_BY_ID[list[i].id] = list[i]
+    end
+end
+
+-- Fixed display order for the class-browse tabs, independent of table iteration order.
+-- Alphabetical (matches the class-tab grid, 5 per row / 2 rows).
+local CLASS_ORDER = { "DEATHKNIGHT", "DRUID", "HUNTER", "MAGE", "PALADIN", "PRIEST", "ROGUE", "SHAMAN", "WARLOCK", "WARRIOR" }
+local CLASS_LABEL = {
+    WARRIOR = "Warrior", PALADIN = "Paladin", HUNTER = "Hunter", ROGUE = "Rogue", PRIEST = "Priest",
+    DEATHKNIGHT = "Death Knight", SHAMAN = "Shaman", MAGE = "Mage", WARLOCK = "Warlock", DRUID = "Druid",
+}
+-- Standard WoW class colors, hardcoded rather than read from the client's
+-- own RAID_CLASS_COLORS global -- this addon's FrameXML-baked copy can
+-- build its UI before that global is guaranteed populated, and a wrong/nil
+-- read here would silently mis-color every tab rather than error.
+local CLASS_COLOR = {
+    DEATHKNIGHT = { 0.77, 0.12, 0.23 },
+    DRUID       = { 1.00, 0.49, 0.04 },
+    HUNTER      = { 0.67, 0.83, 0.45 },
+    MAGE        = { 0.41, 0.80, 0.94 },
+    PALADIN     = { 0.96, 0.55, 0.73 },
+    PRIEST      = { 1.00, 1.00, 1.00 },
+    ROGUE       = { 1.00, 0.96, 0.41 },
+    SHAMAN      = { 0.00, 0.44, 0.87 },
+    WARLOCK     = { 0.58, 0.51, 0.79 },
+    WARRIOR     = { 0.78, 0.61, 0.43 },
+}
+-- Only classes with an entry in CLASS_PERKS get a tab; this grows automatically as more get added.
+local CLASS_TAB_LIST = {}
+for _, token in ipairs(CLASS_ORDER) do
+    if CLASS_PERKS[token] then
+        table.insert(CLASS_TAB_LIST, token)
     end
 end
 
@@ -340,6 +441,7 @@ local db = {
     perks = {},
     classPerks = {},
     classPerk = 0,
+    classBrowse = nil, -- class token currently shown in the Class tab; defaults to the player's own class
     rules = {},
     vault = {},
     autoloot = { on = 0, corpses = 0, need = 10, de = 0 },
@@ -387,7 +489,7 @@ local function Font(parent, size, r, g, b)
     return fs
 end
 
-local function SplitPipe(s)
+function LG2.SplitPipe(s)
     local out = {}
     if not s or s == "" then
         return out
@@ -443,12 +545,6 @@ local function LevelQuality(lv)
     return 0
 end
 
-local function SetGearTip(text)
-    if ui.gearTip then
-        ui.gearTip:SetText(text or "Hover a bar for XP.")
-    end
-end
-
 local function StyleBtn(btn, r, g, b)
     r = r or 0.14
     g = g or 0.14
@@ -467,7 +563,11 @@ local function StyleBtn(btn, r, g, b)
     end)
 end
 
-local function SendAttune(slot)
+local function StyleBtnColor(btn, color)
+    StyleBtn(btn, color[1], color[2], color[3])
+end
+
+function LG2.SendAttune(slot)
     local name = UnitName("player")
     if name and slot then
         SendAddonMessage(PREFIX, "ATTUNE|" .. tostring(slot), "WHISPER", name)
@@ -481,7 +581,7 @@ local function SendLine(line)
     end
 end
 
-local function IsCriticalChatText(text)
+function LG2.IsCriticalChatText(text)
     if not text then
         return false
     end
@@ -494,7 +594,7 @@ local function IsCriticalChatText(text)
     return false
 end
 
-local function IsLivingGearChatText(text)
+function LG2.IsLivingGearChatText(text)
     if not text then
         return false
     end
@@ -513,14 +613,14 @@ local function IsLivingGearChatText(text)
     return false
 end
 
-local function ShouldFilterChatText(text)
+function LG2.ShouldFilterChatText(text)
     if LivingGearDB.showChat then
         return false
     end
-    if not IsLivingGearChatText(text) then
+    if not LG2.IsLivingGearChatText(text) then
         return false
     end
-    if IsCriticalChatText(text) then
+    if LG2.IsCriticalChatText(text) then
         return false
     end
     return true
@@ -528,7 +628,7 @@ end
 
 local chatFilterInstalled = false
 
-local function InstallChatFilter()
+function LG2.InstallChatFilter()
     if chatFilterInstalled then
         return
     end
@@ -543,7 +643,7 @@ local function InstallChatFilter()
         end
         frame._lgChatHook = true
         frame.AddMessage = function(self, text, ...)
-            if ShouldFilterChatText(text) then
+            if LG2.ShouldFilterChatText(text) then
                 return
             end
             orig(self, text, ...)
@@ -559,7 +659,7 @@ local function SyncChatSetting()
     SendLine("CHATSET|" .. (LivingGearDB.showChat and "1" or "0"))
 end
 
-local function SetShowChat(on)
+function LG2.SetShowChat(on)
     LivingGearDB.showChat = on and true or false
     SyncChatSetting()
     if ui.chatToggle then
@@ -584,7 +684,7 @@ local BANK_HOSTS = {
     "ElvUI_BankContainerFrameHolder",
 }
 
-local function BankHostFrame()
+function LG2.BankHostFrame()
     for i = 1, #BANK_HOSTS do
         local f = _G[BANK_HOSTS[i]]
         if f and f.IsShown and f:IsShown() then
@@ -594,7 +694,7 @@ local function BankHostFrame()
     return nil
 end
 
-local function EnsureBankDeposit()
+function LG2.EnsureBankDeposit()
     if ui.bankDeposit then
         return ui.bankDeposit
     end
@@ -602,7 +702,7 @@ local function EnsureBankDeposit()
     btn:SetSize(118, 22)
     btn:SetFrameStrata("HIGH")
     btn:SetFrameLevel(200)
-    StyleBtn(btn, 0.14, 0.22, 0.14)
+    StyleBtn(btn, COLOR_ADD[1], COLOR_ADD[2], COLOR_ADD[3])
     btn.label = Font(btn, 11, 0.85, 0.95, 0.85)
     btn.label:SetPoint("CENTER", 0, 0)
     btn.label:SetJustifyH("CENTER")
@@ -622,9 +722,9 @@ local function HideBankDeposit()
 end
 
 local function ShowBankDeposit()
-    local btn = EnsureBankDeposit()
+    local btn = LG2.EnsureBankDeposit()
     btn:ClearAllPoints()
-    local host = BankHostFrame()
+    local host = LG2.BankHostFrame()
     if host then
         btn:SetPoint("TOPLEFT", host, "BOTTOMLEFT", 8, -6)
     else
@@ -653,7 +753,7 @@ local function RuleText(rule)
     return string.format("Type %s %s -> %s", neg and "!=" or "==", n, act)
 end
 
-local function DefaultRules()
+function LG2.DefaultRules()
     local rules = {}
     for i = 1, #DEFAULT_RULES do
         local r = DEFAULT_RULES[i]
@@ -676,10 +776,10 @@ local function ActiveRules()
     if #db.rules > 0 then
         return db.rules
     end
-    return DefaultRules()
+    return LG2.DefaultRules()
 end
 
-local function ActionIndex(name)
+function LG2.ActionIndex(name)
     name = string.lower(name or "")
     for i = 1, #ACTION_NAMES do
         if string.lower(ACTION_NAMES[i]) == name then
@@ -689,7 +789,7 @@ local function ActionIndex(name)
     return nil
 end
 
-local function ExportRules()
+function LG2.ExportRules()
     local rules = ActiveRules()
     local lines = {}
     for i = 1, #rules do
@@ -698,7 +798,7 @@ local function ExportRules()
     return table.concat(lines, "\n")
 end
 
-local function ParseImportLine(line)
+function LG2.ParseImportLine(line)
     line = string.gsub(line or "", "^%s+", "")
     line = string.gsub(line, "%s+$", "")
     if line == "" then
@@ -708,7 +808,7 @@ local function ParseImportLine(line)
     if not left then
         return nil
     end
-    local action = ActionIndex(actName)
+    local action = LG2.ActionIndex(actName)
     if not action then
         return nil
     end
@@ -754,7 +854,7 @@ local function ParseImportLine(line)
     return nil
 end
 
-local function SendRuleAdd(rule)
+function LG2.SendRuleAdd(rule)
     SendLine(string.format("RULEADD|%s|%s|%s|%s|%s",
         tostring(rule.match or 0),
         tostring(rule.action or 0),
@@ -781,11 +881,11 @@ end
 local function ReplaceRules(rules)
     SendLine("RULECLR")
     for i = 1, #rules do
-        SendRuleAdd(rules[i])
+        LG2.SendRuleAdd(rules[i])
     end
 end
 
-local function InsertRule(rule)
+function LG2.InsertRule(rule)
     local rules = CopyRules(ActiveRules())
     local at = #rules + 1
     for i = 1, #rules do
@@ -802,7 +902,7 @@ local function PerkKnown(id)
     return (tonumber(db.perks[id]) or 0) == 1
 end
 
-local function NextLocked(ticks)
+function LG2.NextLocked(ticks)
     for i = 1, #ticks do
         if not PerkKnown(ticks[i].id) then
             return ticks[i]
@@ -811,7 +911,7 @@ local function NextLocked(ticks)
     return nil
 end
 
-local function TrackBonus(ticks)
+function LG2.TrackBonus(ticks)
     local bonus = 0
     for i = 1, #ticks do
         if PerkKnown(ticks[i].id) then
@@ -832,7 +932,7 @@ local function ClampScale(s)
     return s
 end
 
-local function LoadScale()
+function LG2.LoadScale()
     return ClampScale(db.scale)
 end
 
@@ -847,7 +947,7 @@ local function SaveScale(s)
     end
 end
 
-local function ToggleScaleMenu()
+function LG2.ToggleScaleMenu()
     if not ui.scaleMenu then
         return
     end
@@ -858,7 +958,7 @@ local function ToggleScaleMenu()
     end
 end
 
-local function DefaultWorldTip()
+function LG2.DefaultWorldTip()
     for i = 1, #WORLD_UNLOCKS do
         local info = WORLD_UNLOCKS[i]
         if not PerkKnown(info.id) then
@@ -867,7 +967,7 @@ local function DefaultWorldTip()
     end
     for t = 1, #WORLD_TRACKS do
         local track = WORLD_TRACKS[t]
-        local nxt = NextLocked(track.ticks)
+        local nxt = LG2.NextLocked(track.ticks)
         if nxt then
             return track.name .. " next: " .. nxt.name .. " - " .. nxt.how
         end
@@ -877,7 +977,7 @@ end
 
 local function SetWorldTip(text)
     if ui.worldTip then
-        ui.worldTip:SetText(text or DefaultWorldTip())
+        ui.worldTip:SetText(text or LG2.DefaultWorldTip())
     end
 end
 
@@ -930,7 +1030,7 @@ local function ShowTab(name)
     end
 end
 
-local function LayoutGear()
+function LG2.LayoutGear()
     if not ui.rows then
         return
     end
@@ -941,13 +1041,17 @@ local function LayoutGear()
         local invSlot = info.slot + 1
         local icon = GetInventoryItemTexture("player", invSlot)
         row:Show()
-        row.armed = false
-        row.attune.label:SetText("Attune")
-        StyleBtn(row.attune, 0.28, 0.10, 0.10)
         if it then
             row.slot = it.slot
+            row.invSlot = invSlot
             row.name:SetText(it.name or info.name)
-            row.name:SetTextColor(0.92, 0.92, 0.92, 1)
+            -- Real item rarity color (character-sheet style), not the old
+            -- fixed near-white -- GetInventoryItemQuality is the client's
+            -- own authority on the equipped item's actual quality, no
+            -- server data needed for this (2026-08-20).
+            local realQ = GetInventoryItemQuality("player", invSlot)
+            local nr, ng, nb = GetItemQualityColor(realQ or 1)
+            row.name:SetTextColor(nr, ng, nb, 1)
             local stats = StatLine(it.ds, it.da, it.dt, it.di, it.dp, it.dar)
             row.stats:SetText(stats)
             if icon then
@@ -962,39 +1066,37 @@ local function LayoutGear()
             local lv = tonumber(it.lv) or 1
             local xp = tonumber(it.xp) or 0
             local need = tonumber(it.need) or 0
-            local frac = 1
-            if lv < LG_MAX_LEVEL and need > 0 then
-                frac = xp / need
-                if frac < 0 then
-                    frac = 0
-                end
-                if frac > 1 then
-                    frac = 1
-                end
-            end
             local r, g, b = GetItemQualityColor(LevelQuality(lv))
-            row.bar:SetMinMaxValues(0, 1)
-            row.bar:SetValue(frac)
-            row.bar:SetStatusBarColor(r, g, b, 0.95)
-            row.bar.label:SetText(tostring(lv))
-            if lv >= LG_MAX_LEVEL then
-                row.bar.tip = info.name .. " - Level " .. tostring(lv) .. " (max)"
+            -- 25 (LG_ATTUNE_CAP_LEVEL) is where attunement actually caps
+            -- out now (2026-08-20) -- showing 26, 27, 28... up to 50 here
+            -- would read as "still capping" when there's really nothing
+            -- left to attune, just optional further personal growth.
+            if lv >= LG_ATTUNE_CAP_LEVEL then
+                row.level.label:SetText("MAX")
             else
-                row.bar.tip = string.format("%s - Level %s  %s / %s XP", info.name, lv, xp, need)
+                row.level.label:SetText(tostring(lv))
             end
-            row.bar:Show()
-            row.attune:Show()
+            row.level.label:SetTextColor(r, g, b, 1)
+            if lv >= LG_MAX_LEVEL then
+                row.level.tip = { info.name, "Level " .. tostring(lv) .. " (max)" }
+            elseif lv >= LG_ATTUNE_CAP_LEVEL then
+                row.level.tip = { info.name, "Fully attuned (level " .. tostring(lv)
+                    .. ") -- still growing toward level " .. tostring(LG_MAX_LEVEL) }
+            else
+                row.level.tip = { info.name, string.format("Level %s -- %s / %s XP to fully attuned", lv, xp, need) }
+            end
+            row.level:Show()
         else
             row.slot = nil
+            row.invSlot = nil
             row.name:SetText(info.name)
             row.name:SetTextColor(0.45, 0.45, 0.45, 1)
             row.stats:SetText("")
             row.icon:SetTexture(info.tex)
             row.icon:SetTexCoord(0, 1, 0, 1)
             row.icon:SetVertexColor(0.7, 0.7, 0.7, 0.9)
-            row.bar.tip = nil
-            row.bar:Hide()
-            row.attune:Hide()
+            row.level.tip = nil
+            row.level:Hide()
         end
     end
     if ui.empty then
@@ -1007,7 +1109,6 @@ local function LayoutGear()
     else
         ui.absorb:SetText(string.format("Absorb (%s attuned):  %s", ab.count or 0, stats))
     end
-    SetGearTip()
 end
 
 local function LayoutLoot()
@@ -1019,9 +1120,9 @@ local function LayoutLoot()
     if unlocked then
         ui.alToggle.label:SetText(tonumber(al.on) == 1 and "Autoloot: ON" or "Autoloot: OFF")
         if tonumber(al.on) == 1 then
-            StyleBtn(ui.alToggle, 0.12, 0.32, 0.14)
+            StyleBtn(ui.alToggle, COLOR_ON[1], COLOR_ON[2], COLOR_ON[3])
         else
-            StyleBtn(ui.alToggle, 0.32, 0.12, 0.12)
+            StyleBtn(ui.alToggle, COLOR_OFF[1], COLOR_OFF[2], COLOR_OFF[3])
         end
         ui.alToggle:Show()
         if ui.alAttuned then
@@ -1140,7 +1241,13 @@ local function ReagentCat(entry)
     local id = tonumber(entry) or 0
     local fam = 0
     if GetItemFamily and id > 0 then
-        fam = tonumber(GetItemFamily(id)) or 0
+        -- GetItemFamily can return zero values (not even nil) for an item
+        -- the client hasn't locally cached yet -- tonumber() called with no
+        -- argument at all throws "value expected" rather than just giving
+        -- back nil. The extra parens force the call's result down to
+        -- exactly one value (nil if it returned nothing) before tonumber
+        -- ever sees it.
+        fam = tonumber((GetItemFamily(id))) or 0
     end
     local function hasBit(mask)
         if mask <= 0 then
@@ -1241,24 +1348,7 @@ local function VaultCountOf(entry)
     return n
 end
 
-local function VaultCountForEntry(entry)
-    return VaultCountOf(entry)
-end
-
-local function VaultCountForName(name)
-    if not name or name == "" then
-        return 0
-    end
-    local n = 0
-    for i = 1, #db.vault do
-        if db.vault[i].name == name then
-            n = n + (tonumber(db.vault[i].count) or 0)
-        end
-    end
-    return n
-end
-
-local function ItemIdFromArg(item)
+function LG2.ItemIdFromArg(item)
     if type(item) == "number" then
         return item
     end
@@ -1366,20 +1456,91 @@ local function LayoutReagentCats()
     end
 end
 
+function LG2.PlayerClassToken()
+    if not UnitClass then
+        return nil
+    end
+    local _, englishClass = UnitClass("player")
+    return englishClass
+end
+
+-- Which class the Class tab is currently showing. Defaults to (and stays
+-- pinned to) the player's own class until they click another class's tab.
+function LG2.ClassBrowseToken()
+    if not db.classBrowse then
+        db.classBrowse = LG2.PlayerClassToken() or CLASS_TAB_LIST[1]
+    end
+    return db.classBrowse
+end
+
 local function LayoutClass()
     if not ui.class then
         return
     end
-    local list = db.classPerks or {}
+    local browse = LG2.ClassBrowseToken()
+    local ownClass = browse == LG2.PlayerClassToken()
+
+    if ui.classTabs then
+        for i = 1, #ui.classTabs do
+            local tabBtn = ui.classTabs[i]
+            local on = tabBtn.token == browse
+            -- Background stays the plain button color always; the class
+            -- color lives in the text, at full brightness when this is the
+            -- class currently being browsed and dimmed otherwise. The
+            -- background still gets a faint tint when selected so the
+            -- active tab reads clearly even at a glance.
+            local c = tabBtn.classColor or COLOR_TEXT
+            if on then
+                StyleBtnColor(tabBtn, { c[1] * 0.22, c[2] * 0.22, c[3] * 0.22 })
+                tabBtn.label:SetTextColor(c[1], c[2], c[3], 1)
+            else
+                StyleBtnColor(tabBtn, COLOR_BTN)
+                tabBtn.label:SetTextColor(c[1] * 0.6, c[2] * 0.6, c[3] * 0.6, 1)
+            end
+        end
+    end
+
+    -- Own class uses the server-synced pick (db.classPerks); other classes
+    -- are preview-only, so just show every perk that class has defined.
+    local list
+    if ownClass then
+        list = db.classPerks or {}
+    else
+        list = {}
+        for _, info in ipairs(CLASS_PERKS[browse] or {}) do
+            table.insert(list, info.id)
+        end
+    end
+
     if #list == 0 then
         ui.classEmpty:Show()
-        ui.classHint:SetText("No class perk for your class yet.")
+        ui.classEmpty:SetText("No class perk data yet for " .. (CLASS_LABEL[browse] or browse) .. ".")
         for i = 1, #ui.classBtns do
             ui.classBtns[i]:Hide()
         end
         return
     end
     ui.classEmpty:Hide()
+
+    -- "Sentence one. Sentence two." -> {"Sentence one", "Sentence two"},
+    -- shown as the card's bulleted list. Every how= string in CLASS_PERKS
+    -- is authored as clean "X. Y." sentences, so splitting on ". " is
+    -- reliable here without needing a separate structured bullets field.
+    local function SplitHow(text)
+        local parts = {}
+        if not text or text == "" then
+            return parts
+        end
+        local norm = string.gsub(text, "%.%s+", ".\n")
+        for line in string.gmatch(norm, "[^\n]+") do
+            line = string.gsub(line, "%.$", "")
+            line = string.gsub(line, "^%s+", "")
+            if line ~= "" then
+                table.insert(parts, line)
+            end
+        end
+        return parts
+    end
     for i = 1, #ui.classBtns do
         local btn = ui.classBtns[i]
         local id = list[i]
@@ -1387,31 +1548,56 @@ local function LayoutClass()
         if id then
             btn:Show()
             btn.id = id
+            btn.ownClass = ownClass
             btn.how = info and info.how or "Class perk."
             local name = info and info.name
-            if not name and GetSpellInfo then
-                name = GetSpellInfo(id)
+            local icon
+            -- GetSpellTexture doesn't exist in this client (3.3.5 -- it's a
+            -- later-expansion API); GetSpellInfo's 3rd return value is the
+            -- correct way to get a spell's icon here. Was silently falling
+            -- back to a question-mark icon for every card until this was
+            -- fixed (2026-08-20, caught from a screenshot).
+            if GetSpellInfo then
+                local specName, _, specIcon = GetSpellInfo(id)
+                icon = specIcon
+                if not name then
+                    name = specName
+                end
             end
             btn.label:SetText(name or ("Perk " .. tostring(id)))
-            if db.classPerk == id then
+            btn.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+            local picked = ownClass and db.classPerk == id
+            if picked then
                 btn._ir, btn._ig, btn._ib = 0.12, 0.32, 0.14
-            else
+            elseif ownClass then
                 btn._ir, btn._ig, btn._ib = 0.14, 0.14, 0.14
+            else
+                btn._ir, btn._ig, btn._ib = 0.11, 0.11, 0.11
             end
             Solid(btn.bg, btn._ir, btn._ig, btn._ib, 1)
+
+            -- Bulleted list: the perk's own "how" sentences first, then
+            -- (Rogue Subtlety only, right now) its subPerks as extra lines
+            -- -- everything about this card lives in the card, nothing
+            -- needs a hover anymore. "*" as the bullet marker, not "-" --
+            -- client strings are ASCII-only in this repo (no real bullet
+            -- glyph), and a hyphen next to a "+300%"-style line read as a
+            -- minus sign at a glance.
+            local bullets = SplitHow(info and info.how)
+            if info and info.subPerks then
+                for _, sub in ipairs(info.subPerks) do
+                    local mark = (ownClass and PerkKnown(sub.id)) and "|cff4fd14f*|r " or "|cff666666*|r "
+                    table.insert(bullets, mark .. sub.name)
+                end
+            end
+            local lines = {}
+            for _, b in ipairs(bullets) do
+                table.insert(lines, "* " .. b)
+            end
+            btn.body:SetText(table.concat(lines, "\n"))
         else
             btn:Hide()
             btn.id = nil
-        end
-    end
-    if db.classPerk == 0 then
-        ui.classHint:SetText("Pick one. Each talent spec can have its own pick.")
-    else
-        local picked = CLASS_PERK_BY_ID[db.classPerk]
-        if picked then
-            ui.classHint:SetText(picked.how)
-        else
-            ui.classHint:SetText("Pick one. Each talent spec can have its own pick.")
         end
     end
 end
@@ -1473,7 +1659,7 @@ local function WorldToggleOn(info)
     return (tonumber(db[info.toggleKey]) or 0) == 1
 end
 
-local function SendWorldToggle(info)
+function LG2.SendWorldToggle(info)
     if info.id == 910092 then
         SendLine("SOLOSET|" .. (WorldToggleOn(info) and "0" or "1"))
     elseif info.id == 910105 then
@@ -1514,7 +1700,7 @@ local function LayoutWorld()
     for t = 1, #WORLD_TRACKS do
         local track = WORLD_TRACKS[t]
         local row = ui.worldTracks[t]
-        local bonus = TrackBonus(track.ticks)
+        local bonus = LG2.TrackBonus(track.ticks)
         if bonus > 0 then
             row.head:SetText(string.format("%s (|cff4fd14f%s%%|r)", track.name, bonus))
         else
@@ -1599,7 +1785,7 @@ local function HasBit(mask, q)
     return math.floor((tonumber(mask) or 0) / (2 ^ q)) % 2 == 1
 end
 
-local function LayoutAttune()
+function LG2.LayoutAttune()
     if not ui.attune then
         return
     end
@@ -1620,9 +1806,9 @@ local function LayoutAttune()
         ui.aaToggle:Show()
         ui.aaToggle.label:SetText(masterOn and "Auto-Attune: ON" or "Auto-Attune: OFF")
         if masterOn then
-            StyleBtn(ui.aaToggle, 0.12, 0.32, 0.14)
+            StyleBtn(ui.aaToggle, COLOR_ON[1], COLOR_ON[2], COLOR_ON[3])
         else
-            StyleBtn(ui.aaToggle, 0.32, 0.12, 0.12)
+            StyleBtn(ui.aaToggle, COLOR_OFF[1], COLOR_OFF[2], COLOR_OFF[3])
         end
         ui.aaToggle:ClearAllPoints()
         ui.aaToggle:SetPoint("TOP", ui.attune, "TOP", -(btnW + gap), -2)
@@ -1657,9 +1843,9 @@ local function LayoutAttune()
             row.toggle:Show()
             row.toggle.label:SetText(enabled and "ON" or "OFF")
             if enabled then
-                StyleBtn(row.toggle, 0.12, 0.32, 0.14)
+                StyleBtn(row.toggle, COLOR_ON[1], COLOR_ON[2], COLOR_ON[3])
             else
-                StyleBtn(row.toggle, 0.32, 0.12, 0.12)
+                StyleBtn(row.toggle, COLOR_OFF[1], COLOR_OFF[2], COLOR_OFF[3])
             end
             row.prog:SetText("Unlocked")
             row.prog:SetTextColor(0.55, 0.75, 0.55, 1)
@@ -1677,7 +1863,7 @@ local function LayoutAttune()
     end
 end
 
-local function ItemLinkText(entry, fallback)
+function LG2.ItemLinkText(entry, fallback)
     if not entry or entry == 0 then
         return fallback or "Item"
     end
@@ -1691,7 +1877,7 @@ local function ItemLinkText(entry, fallback)
     return fallback or ("Item " .. tostring(entry))
 end
 
-local function ArmoryEquipType(slot)
+function LG2.ArmoryEquipType(slot)
     slot = tonumber(slot) or -1
     if slot == 15 or slot == 16 or slot == 17 then
         return "Weapon"
@@ -1705,7 +1891,7 @@ local function ArmoryEquipType(slot)
     return "Other"
 end
 
-local function ArmoryItemMatches(it)
+function LG2.ArmoryItemMatches(it)
     if not it then
         return false
     end
@@ -1714,7 +1900,7 @@ local function ArmoryItemMatches(it)
         return false
     end
     local typ = db.armoryType or "All"
-    if typ ~= "All" and ArmoryEquipType(it.slot) ~= typ then
+    if typ ~= "All" and LG2.ArmoryEquipType(it.slot) ~= typ then
         return false
     end
     local attr = db.armoryAttr or "All"
@@ -1736,7 +1922,7 @@ local function LayoutArmory()
     local filtered = {}
     for i = 1, #list do
         local it = list[i]
-        if ArmoryItemMatches(it) then
+        if LG2.ArmoryItemMatches(it) then
             table.insert(filtered, it)
         end
     end
@@ -1804,7 +1990,7 @@ local function LayoutArmory()
             row:Show()
             row.entry = it.entry
             row.slot = tonumber(it.slot) or slot
-            row.link = ItemLinkText(it.entry, it.name)
+            row.link = LG2.ItemLinkText(it.entry, it.name)
             row.text:SetText(row.link)
         else
             row:Hide()
@@ -1815,9 +2001,9 @@ local function LayoutArmory()
 end
 
 local function LayoutAll()
-    LayoutGear()
+    LG2.LayoutGear()
     LayoutLoot()
-    LayoutAttune()
+    LG2.LayoutAttune()
     LayoutClass()
     LayoutWorld()
     LayoutArmory()
@@ -1853,7 +2039,7 @@ local function MakePanel(parent)
     return p
 end
 
-local function MakeVaultPanel(parent, kind, withCats)
+function LG2.MakeVaultPanel(parent, kind, withCats)
     local p = MakePanel(parent)
     local listX = withCats and 96 or 10
     local rowW = withCats and 424 or 520
@@ -1864,7 +2050,7 @@ local function MakeVaultPanel(parent, kind, withCats)
         dep:SetSize(100, 18)
         dep:SetPoint("TOPRIGHT", -10, -2)
         dep:SetFrameLevel((p:GetFrameLevel() or 0) + 6)
-        StyleBtn(dep, 0.14, 0.22, 0.14)
+        StyleBtn(dep, COLOR_ADD[1], COLOR_ADD[2], COLOR_ADD[3])
         dep.label = Font(dep, 10, 0.85, 0.95, 0.85)
         dep.label:SetPoint("CENTER", 0, 0)
         dep.label:SetJustifyH("CENTER")
@@ -1916,7 +2102,7 @@ local function MakeVaultPanel(parent, kind, withCats)
             local name = REAGENT_CATS[i]
             local btn = CreateFrame("Button", nil, p)
             btn:SetSize(84, 18)
-            StyleBtn(btn, 0.10, 0.10, 0.10)
+            StyleBtn(btn, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
             btn.label = Font(btn, 10, 0.9, 0.9, 0.9)
             btn.label:SetPoint("CENTER", 0, 0)
             btn.label:SetJustifyH("CENTER")
@@ -1972,131 +2158,430 @@ local function MakeVaultPanel(parent, kind, withCats)
     return p, rows, empty, hint
 end
 
-local function BuildUI()
-    if ui.frame then
-        return
+-- Split out of BuildUI() (2026-08-20): BuildUI is a single ~1100-line
+-- function that already sat right at Lua 5.1's hard 60-upvalue-per-function
+-- ceiling. Adding the class-browse tab row's two extra outer-scope
+-- references (CLASS_TAB_LIST, CLASS_LABEL) tipped it over --
+-- "Interface\FrameXML\LivingGear.lua:<n>: function at line <n> has more
+-- than 60 upvalues" -- which is a load-time compile error, so the ENTIRE
+-- addon file failed to execute at all (no event registration, no slash
+-- command, nothing) rather than just this one tab row breaking. Any future
+-- work that adds a new file-level local referenced from inside BuildUI
+-- risks the same failure -- prefer extracting a helper function (its own
+-- fresh 60-upvalue budget) over adding another reference directly inside
+-- BuildUI itself.
+-- Fixed 5-per-row / 2-row grid (2026-08-20) -- now that all 10 classes have
+-- perk data, CLASS_TAB_LIST always has exactly 10 entries in CLASS_ORDER's
+-- (alphabetical) order, so a fixed grid reads better than the old
+-- width-driven wrap, which left 9 tabs on one row and 1 lonely tab on the
+-- next. If CLASS_TAB_LIST is ever shorter than 10 (a class's perk data
+-- pulled), the grid just leaves the trailing slots empty rather than
+-- reflowing -- acceptable since class perk data isn't expected to shrink.
+-- Returns the Y offset (a negative number) that the rest of the Class
+-- panel should start below.
+local CLASS_TAB_COLS = 5
+local CLASS_TAB_W = 116
+local CLASS_TAB_H = 18
+local CLASS_TAB_GAP = 4
+local CLASS_TAB_ROW_H = 20
+
+function LG2.BuildClassTabs(class)
+    ui.classTabs = {}
+    local myClass = LG2.PlayerClassToken()
+    local rows = math.ceil(#CLASS_TAB_LIST / CLASS_TAB_COLS)
+    for i, token in ipairs(CLASS_TAB_LIST) do
+        local col = (i - 1) % CLASS_TAB_COLS
+        local row = math.floor((i - 1) / CLASS_TAB_COLS)
+        local label = CLASS_LABEL[token] or token
+        local tabBtn = CreateFrame("Button", nil, class)
+        tabBtn:SetSize(CLASS_TAB_W, CLASS_TAB_H)
+        tabBtn:SetPoint("TOPLEFT", 10 + col * (CLASS_TAB_W + CLASS_TAB_GAP), -6 - row * CLASS_TAB_ROW_H)
+        -- Background stays the normal dark button color (consistent with
+        -- the rest of the UI, and sidesteps contrast problems -- Priest's
+        -- class color is pure white, which a white background would make
+        -- unreadable against light text). The class color lives in the
+        -- LABEL TEXT instead, same convention WoW's own UI uses for
+        -- class-colored names -- see LayoutClass for the dim/bright toggle.
+        StyleBtnColor(tabBtn, COLOR_BTN)
+        tabBtn.token = token
+        tabBtn.classColor = CLASS_COLOR[token] or COLOR_TEXT
+        tabBtn.label = Font(tabBtn, 10, tabBtn.classColor[1], tabBtn.classColor[2], tabBtn.classColor[3])
+        tabBtn.label:SetPoint("CENTER", 0, 0)
+        tabBtn.label:SetJustifyH("CENTER")
+        tabBtn.label:SetText(label)
+        if token == myClass then
+            -- "This is you": a bold light outline around your own class's
+            -- tab, distinct from the selected/browsing highlight (which is
+            -- just brightness -- see LayoutClass). Native SetBackdrop
+            -- works on a plain CreateFrame("Button", ...) in this client
+            -- (3.3.5, no BackdropTemplate requirement).
+            tabBtn:SetBackdrop({
+                edgeFile = WHITE,
+                edgeSize = 2,
+            })
+            tabBtn:SetBackdropBorderColor(1, 0.92, 0.55, 1)
+        end
+        tabBtn:SetScript("OnClick", function(self)
+            db.classBrowse = self.token
+            LayoutClass()
+        end)
+        ui.classTabs[i] = tabBtn
+    end
+    return -6 - rows * CLASS_TAB_ROW_H
+end
+
+-- Split out of BuildUI() for the same reason as BuildClassTabs above --
+-- still over the 60-upvalue ceiling even after that first extraction
+-- (confirmed via a static upvalue-reference count, since Lua 5.1 -- what
+-- the actual WotLK client runs -- isn't available to compile-check against
+-- directly in this environment). The Autoloot/Rules tab was the next
+-- largest self-contained block, pulling out 7 outer-scope references at
+-- once (RULE_ROWS, RULE_FIELDS, RULE_TYPES, RULE_QUALS, RULE_TYPE_MATCH,
+-- ACTION_NAMES, DEFAULT_RULES).
+function LG2.BuildLootPanel(f)
+    local loot = MakePanel(f)
+    ui.loot = loot
+
+    ui.alToggle = CreateFrame("Button", nil, loot)
+    ui.alToggle:SetSize(120, 18)
+    ui.alToggle:SetPoint("TOPLEFT", 10, -2)
+    StyleBtn(ui.alToggle, COLOR_ON[1], COLOR_ON[2], COLOR_ON[3])
+    ui.alToggle.label = Font(ui.alToggle, 10, 0.9, 0.95, 0.9)
+    ui.alToggle.label:SetPoint("CENTER", 0, 0)
+    ui.alToggle.label:SetJustifyH("CENTER")
+    ui.alToggle.label:SetText("Autoloot: ON")
+    ui.alToggle:SetScript("OnClick", function()
+        if tonumber(db.autoloot.on) == 1 then
+            SendLine("ALSET|0")
+        else
+            SendLine("ALSET|1")
+        end
+    end)
+
+    ui.alAttuned = CreateFrame("Button", nil, loot)
+    ui.alAttuned:SetSize(148, 18)
+    ui.alAttuned:SetPoint("TOPLEFT", 138, -2)
+    StyleBtn(ui.alAttuned, 0.28, 0.20, 0.10)
+    ui.alAttuned.label = Font(ui.alAttuned, 10, 0.95, 0.9, 0.8)
+    ui.alAttuned.label:SetPoint("CENTER", 0, 0)
+    ui.alAttuned.label:SetJustifyH("CENTER")
+    ui.alAttuned.label:SetText("Attuned: Vendor")
+    ui.alAttuned:SetScript("OnClick", function()
+        if tonumber(db.autoloot.de) == 1 then
+            SendLine("ALDE|0")
+        else
+            SendLine("ALDE|1")
+        end
+    end)
+
+    ui.alProg = Font(loot, 10, 0.7, 0.7, 0.7)
+    ui.alProg:SetPoint("TOPLEFT", 294, -4)
+    ui.alProg:SetPoint("RIGHT", -10, 0)
+
+    ui.ruleHint = Font(loot, 10, 0.55, 0.55, 0.55)
+    ui.ruleHint:SetPoint("TOPLEFT", 10, -24)
+    ui.ruleHint:SetText("Default rules. Edit to customize. Reset restores these.")
+
+    -- listPane/editPane used to be 268/244 wide with only an 8px gap
+    -- between them and just 10px of margin against the (old, narrower)
+    -- frame edge -- any label overrun bled straight past the frame.
+    -- Widened and given real margins now that the frame itself is bigger.
+    local listPane = CreateFrame("Frame", nil, loot)
+    listPane:SetPoint("TOPLEFT", 10, -44)
+    listPane:SetSize(300, 250)
+    listPane:EnableMouse(true)
+    listPane:EnableMouseWheel(true)
+    listPane:SetScript("OnMouseWheel", function(_, delta)
+        db.ruleOff = (db.ruleOff or 0) - delta
+        if db.ruleOff < 0 then
+            db.ruleOff = 0
+        end
+        LayoutLoot()
+    end)
+    ui.ruleRows = {}
+    for i = 1, RULE_ROWS do
+        local row = CreateFrame("Frame", nil, listPane)
+        row:SetSize(300, 18)
+        row:SetPoint("TOPLEFT", 0, -(i - 1) * 20)
+        row.text = Font(row, 10, 0.85, 0.85, 0.85)
+        row.text:SetPoint("LEFT", 0, 0)
+        row.text:SetPoint("RIGHT", -48, 0)
+        row.del = CreateFrame("Button", nil, row)
+        row.del:SetSize(44, 16)
+        row.del:SetPoint("RIGHT", 0, 0)
+        StyleBtn(row.del, COLOR_OFF[1], COLOR_OFF[2], COLOR_OFF[3])
+        row.del.label = Font(row.del, 10, 0.95, 0.8, 0.8)
+        row.del.label:SetPoint("CENTER", 0, 0)
+        row.del.label:SetJustifyH("CENTER")
+        row.del.label:SetText("Del")
+        row.del:SetScript("OnClick", function()
+            if not row.idx then
+                return
+            end
+            if #db.rules == 0 then
+                local rules = CopyRules(DEFAULT_RULES)
+                table.remove(rules, row.idx)
+                ReplaceRules(rules)
+                return
+            end
+            SendLine("RULEDEL|" .. tostring(row.idx - 1))
+        end)
+        row:Hide()
+        ui.ruleRows[i] = row
     end
 
-    local f = CreateFrame("Frame", "LivingGearFrame", UIParent)
-    f:SetSize(FRAME_W, FRAME_H)
-    f:SetPoint("CENTER", UIParent, "CENTER", 200, 60)
-    f:SetFrameStrata("HIGH")
-    f:SetMovable(true)
-    f:EnableMouse(true)
-    f:RegisterForDrag("LeftButton")
-    f:SetScript("OnDragStart", f.StartMoving)
-    f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    f:SetBackdrop({
+    local editPane = CreateFrame("Frame", nil, loot)
+    editPane:SetPoint("TOPLEFT", 330, -44)
+    editPane:SetSize(290, 250)
+    local editHead = Font(editPane, 10, 0.4, 0.8, 1)
+    editHead:SetPoint("TOPLEFT", 0, 0)
+    editHead:SetText("New rule")
+    local ifLbl = Font(editPane, 10, 0.55, 0.55, 0.55)
+    ifLbl:SetPoint("TOPLEFT", 0, -22)
+    ifLbl:SetText("If")
+
+    local function Cycle(btn, maxv, key)
+        db[key] = db[key] + 1
+        if db[key] > maxv then
+            db[key] = 1
+        end
+        LayoutLoot()
+    end
+
+    ui.ruleField = CreateFrame("Button", nil, editPane)
+    ui.ruleField:SetSize(72, 18)
+    ui.ruleField:SetPoint("TOPLEFT", 18, -20)
+    StyleBtn(ui.ruleField, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    ui.ruleField.label = Font(ui.ruleField, 10, 0.9, 0.9, 0.9)
+    ui.ruleField.label:SetPoint("CENTER", 0, 0)
+    ui.ruleField.label:SetJustifyH("CENTER")
+    ui.ruleField.label:SetText("Type")
+    ui.ruleField:SetScript("OnClick", function()
+        Cycle(ui.ruleField, #RULE_FIELDS, "ruleField")
+    end)
+
+    ui.ruleOp = CreateFrame("Button", nil, editPane)
+    ui.ruleOp:SetSize(100, 18)
+    ui.ruleOp:SetPoint("LEFT", ui.ruleField, "RIGHT", 6, 0)
+    StyleBtn(ui.ruleOp, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    ui.ruleOp.label = Font(ui.ruleOp, 10, 0.9, 0.9, 0.9)
+    ui.ruleOp.label:SetPoint("CENTER", 0, 0)
+    ui.ruleOp.label:SetJustifyH("CENTER")
+    ui.ruleOp.label:SetText("==")
+    ui.ruleOp:SetScript("OnClick", function()
+        Cycle(ui.ruleOp, 2, "ruleOp")
+    end)
+
+    ui.ruleType = CreateFrame("Button", nil, editPane)
+    ui.ruleType:SetSize(220, 18)
+    ui.ruleType:SetPoint("TOPLEFT", 0, -42)
+    StyleBtn(ui.ruleType, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    ui.ruleType.label = Font(ui.ruleType, 10, 0.9, 0.9, 0.9)
+    ui.ruleType.label:SetPoint("CENTER", 0, 0)
+    ui.ruleType.label:SetJustifyH("CENTER")
+    ui.ruleType.label:SetText("Quest")
+    ui.ruleType:SetScript("OnClick", function()
+        Cycle(ui.ruleType, #RULE_TYPES, "ruleType")
+    end)
+
+    ui.ruleQual = CreateFrame("Button", nil, editPane)
+    ui.ruleQual:SetSize(220, 18)
+    ui.ruleQual:SetPoint("TOPLEFT", 0, -42)
+    StyleBtn(ui.ruleQual, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    ui.ruleQual.label = Font(ui.ruleQual, 10, 0.9, 0.9, 0.9)
+    ui.ruleQual.label:SetPoint("CENTER", 0, 0)
+    ui.ruleQual.label:SetJustifyH("CENTER")
+    ui.ruleQual.label:SetText("Grey")
+    ui.ruleQual:SetScript("OnClick", function()
+        Cycle(ui.ruleQual, #RULE_QUALS, "ruleQual")
+    end)
+    ui.ruleQual:Hide()
+
+    ui.ruleNameWrap = CreateFrame("Frame", nil, editPane)
+    ui.ruleNameWrap:SetSize(220, 20)
+    ui.ruleNameWrap:SetPoint("TOPLEFT", 0, -42)
+    ui.ruleNameWrap:SetBackdrop({
         bgFile = WHITE,
         edgeFile = WHITE,
         edgeSize = 1,
         insets = { left = 1, right = 1, top = 1, bottom = 1 },
     })
-    f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
-    f:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
-    f:Hide()
-    ui.frame = f
-    tinsert(UISpecialFrames, "LivingGearFrame")
-    f:SetScript("OnHide", function()
-        if ui.scaleMenu then
-            ui.scaleMenu:Hide()
+    ui.ruleNameWrap:SetBackdropColor(0.08, 0.08, 0.08, 1)
+    ui.ruleNameWrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
+    ui.ruleName = CreateFrame("EditBox", nil, ui.ruleNameWrap)
+    ui.ruleName:SetPoint("TOPLEFT", 4, -2)
+    ui.ruleName:SetPoint("BOTTOMRIGHT", -4, 2)
+    ui.ruleName:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
+    ui.ruleName:SetTextColor(0.9, 0.9, 0.9, 1)
+    ui.ruleName:SetAutoFocus(false)
+    ui.ruleName:SetMaxLetters(36)
+    ui.ruleName:SetText("Book of Glyph Mastery")
+    ui.ruleName:SetScript("OnTextChanged", function()
+        LayoutLoot()
+    end)
+    ui.ruleNameWrap:Hide()
+
+    local thenLbl = Font(editPane, 10, 0.55, 0.55, 0.55)
+    thenLbl:SetPoint("TOPLEFT", 0, -68)
+    thenLbl:SetText("Then")
+
+    ui.ruleThen = CreateFrame("Button", nil, editPane)
+    ui.ruleThen:SetSize(120, 18)
+    ui.ruleThen:SetPoint("TOPLEFT", 36, -66)
+    StyleBtn(ui.ruleThen, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    ui.ruleThen.label = Font(ui.ruleThen, 10, 0.9, 0.9, 0.9)
+    ui.ruleThen.label:SetPoint("CENTER", 0, 0)
+    ui.ruleThen.label:SetJustifyH("CENTER")
+    ui.ruleThen.label:SetText("Bags")
+    ui.ruleThen:SetScript("OnClick", function()
+        Cycle(ui.ruleThen, #ACTION_NAMES, "ruleAction")
+    end)
+
+    local addBtn = CreateFrame("Button", nil, editPane)
+    addBtn:SetSize(80, 18)
+    addBtn:SetPoint("TOPLEFT", 0, -92)
+    StyleBtn(addBtn, COLOR_ADD[1], COLOR_ADD[2], COLOR_ADD[3])
+    addBtn.label = Font(addBtn, 10, 0.85, 0.95, 0.85)
+    addBtn.label:SetPoint("CENTER", 0, 0)
+    addBtn.label:SetJustifyH("CENTER")
+    addBtn.label:SetText("Add rule")
+    addBtn:SetScript("OnClick", function()
+        local field = db.ruleField
+        local op = db.ruleOp
+        local action = db.ruleAction - 1
+        local rule = { match = 0, action = action, negate = op == 2 and 1 or 0, quality = 0, text = "" }
+        if field == 1 then
+            rule.match = RULE_TYPE_MATCH[db.ruleType]
+        elseif field == 2 then
+            rule.match = 6
+            rule.quality = db.ruleQual - 1
+        else
+            rule.match = 5
+            rule.text = string.gsub(ui.ruleName:GetText() or "", "|", "")
+            if rule.text == "" then
+                return
+            end
+        end
+        LG2.InsertRule(rule)
+    end)
+
+    ui.rulePreview = Font(editPane, 10, 0.7, 0.7, 0.7)
+    ui.rulePreview:SetPoint("TOPLEFT", 0, -116)
+    ui.rulePreview:SetWidth(240)
+    ui.rulePreview:SetText("Type == Quest -> Bags")
+
+    local expBtn = CreateFrame("Button", nil, loot)
+    expBtn:SetSize(64, 18)
+    expBtn:SetPoint("BOTTOMRIGHT", -148, 10)
+    StyleBtn(expBtn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    expBtn.label = Font(expBtn, 10, 0.9, 0.9, 0.9)
+    expBtn.label:SetPoint("CENTER", 0, 0)
+    expBtn.label:SetJustifyH("CENTER")
+    expBtn.label:SetText("Export")
+    expBtn:SetScript("OnClick", function()
+        if ui.shareBox then
+            ui.shareBox:SetText(LG2.ExportRules())
+            ui.shareBox:HighlightText()
+            ui.shareBox:SetFocus()
+            ui.shareWrap:Show()
+            ui.shareHint:SetText("Copy this list. Close when done.")
         end
     end)
 
-    local title = Font(f, 13, 0.4, 0.8, 1)
-    title:SetPoint("TOPLEFT", 10, -8)
-    title:SetText("Account Perks")
-
-    local close = CreateFrame("Button", nil, f)
-    close:SetSize(22, 18)
-    close:SetPoint("TOPRIGHT", -8, -8)
-    StyleBtn(close, 0.14, 0.14, 0.14)
-    close.label = Font(close, 12, 0.9, 0.9, 0.9)
-    close.label:SetPoint("CENTER", 0, 0)
-    close.label:SetJustifyH("CENTER")
-    close.label:SetText("X")
-    close:SetScript("OnClick", function()
-        if ui.scaleMenu then
-            ui.scaleMenu:Hide()
+    local impBtn = CreateFrame("Button", nil, loot)
+    impBtn:SetSize(64, 18)
+    impBtn:SetPoint("BOTTOMRIGHT", -80, 10)
+    StyleBtn(impBtn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    impBtn.label = Font(impBtn, 10, 0.9, 0.9, 0.9)
+    impBtn.label:SetPoint("CENTER", 0, 0)
+    impBtn.label:SetJustifyH("CENTER")
+    impBtn.label:SetText("Import")
+    impBtn:SetScript("OnClick", function()
+        if ui.shareBox then
+            ui.shareBox:SetText("")
+            ui.shareBox:SetFocus()
+            ui.shareWrap:Show()
+            ui.shareHint:SetText("Paste rules, then click Apply.")
         end
-        f:Hide()
     end)
 
-    local scaleBtn = CreateFrame("Button", nil, f)
-    scaleBtn:SetSize(22, 18)
-    scaleBtn:SetPoint("TOPRIGHT", -34, -8)
-    StyleBtn(scaleBtn, 0.14, 0.14, 0.14)
-    scaleBtn.icon = scaleBtn:CreateTexture(nil, "ARTWORK")
-    scaleBtn.icon:SetTexture("Interface\\Icons\\INV_Misc_Spyglass_02")
-    scaleBtn.icon:SetPoint("CENTER", 0, 0)
-    scaleBtn.icon:SetSize(14, 14)
-    scaleBtn:SetScript("OnClick", function()
-        ToggleScaleMenu()
+    local resetBtn = CreateFrame("Button", nil, loot)
+    resetBtn:SetSize(64, 18)
+    resetBtn:SetPoint("BOTTOMRIGHT", -12, 10)
+    StyleBtn(resetBtn, COLOR_DANGER[1], COLOR_DANGER[2], COLOR_DANGER[3])
+    resetBtn.label = Font(resetBtn, 10, 0.95, 0.8, 0.8)
+    resetBtn.label:SetPoint("CENTER", 0, 0)
+    resetBtn.label:SetJustifyH("CENTER")
+    resetBtn.label:SetText("Reset")
+    resetBtn:SetScript("OnClick", function()
+        SendLine("RULERESET")
     end)
-    ui.scaleBtn = scaleBtn
 
-    local scaleMenu = CreateFrame("Frame", nil, f)
-    scaleMenu:SetSize(56, 6 + #SCALES * 18)
-    scaleMenu:SetPoint("TOPRIGHT", scaleBtn, "BOTTOMRIGHT", 0, -2)
-    scaleMenu:SetFrameStrata("DIALOG")
-    scaleMenu:SetBackdrop({
+    ui.shareWrap = CreateFrame("Frame", nil, loot)
+    ui.shareWrap:SetPoint("BOTTOMLEFT", 10, 34)
+    ui.shareWrap:SetPoint("BOTTOMRIGHT", -10, 34)
+    ui.shareWrap:SetHeight(72)
+    ui.shareWrap:SetBackdrop({
         bgFile = WHITE,
         edgeFile = WHITE,
         edgeSize = 1,
         insets = { left = 1, right = 1, top = 1, bottom = 1 },
     })
-    scaleMenu:SetBackdropColor(0.08, 0.08, 0.08, 0.98)
-    scaleMenu:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
-    scaleMenu:Hide()
-    scaleMenu:EnableMouse(true)
-    ui.scaleMenu = scaleMenu
-    for i = 1, #SCALES do
-        local opt = CreateFrame("Button", nil, scaleMenu)
-        opt:SetSize(52, 16)
-        opt:SetPoint("TOPLEFT", 2, -3 - (i - 1) * 18)
-        StyleBtn(opt, 0.14, 0.14, 0.14)
-        opt.label = Font(opt, 10, 0.9, 0.9, 0.9)
-        opt.label:SetPoint("CENTER", 0, 0)
-        opt.label:SetJustifyH("CENTER")
-        opt.label:SetText(SCALE_LABELS[i])
-        opt:SetScript("OnClick", function()
-            SaveScale(SCALES[i])
-            SendLine("SCALESET|" .. tostring(math.floor(SCALES[i] * 100 + 0.5)))
-            scaleMenu:Hide()
-        end)
-    end
-
-    ui.tabs = {}
-    local tabX = 10
-    for i = 1, #TABS do
-        local info = TABS[i]
-        local w = 10 + string.len(info.label) * 7
-        if w < 48 then
-            w = 48
+    ui.shareWrap:SetBackdropColor(0.08, 0.08, 0.08, 1)
+    ui.shareWrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
+    ui.shareWrap:Hide()
+    ui.shareHint = Font(ui.shareWrap, 10, 0.55, 0.55, 0.55)
+    ui.shareHint:SetPoint("TOPLEFT", 6, -4)
+    ui.shareHint:SetText("Copy this list. Close when done.")
+    ui.shareBox = CreateFrame("EditBox", nil, ui.shareWrap)
+    ui.shareBox:SetPoint("TOPLEFT", 6, -18)
+    ui.shareBox:SetPoint("BOTTOMRIGHT", -52, 6)
+    ui.shareBox:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
+    ui.shareBox:SetTextColor(0.9, 0.9, 0.9, 1)
+    ui.shareBox:SetAutoFocus(false)
+    ui.shareBox:SetMultiLine(true)
+    ui.shareBox:SetMaxLetters(800)
+    local shareClose = CreateFrame("Button", nil, ui.shareWrap)
+    shareClose:SetSize(40, 16)
+    shareClose:SetPoint("TOPRIGHT", -6, -4)
+    StyleBtn(shareClose, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    shareClose.label = Font(shareClose, 10, 0.9, 0.9, 0.9)
+    shareClose.label:SetPoint("CENTER", 0, 0)
+    shareClose.label:SetJustifyH("CENTER")
+    shareClose.label:SetText("Close")
+    shareClose:SetScript("OnClick", function()
+        ui.shareWrap:Hide()
+    end)
+    local shareApply = CreateFrame("Button", nil, ui.shareWrap)
+    shareApply:SetSize(44, 16)
+    shareApply:SetPoint("TOPRIGHT", -50, -4)
+    StyleBtn(shareApply, COLOR_ADD[1], COLOR_ADD[2], COLOR_ADD[3])
+    shareApply.label = Font(shareApply, 10, 0.85, 0.95, 0.85)
+    shareApply.label:SetPoint("CENTER", 0, 0)
+    shareApply.label:SetJustifyH("CENTER")
+    shareApply.label:SetText("Apply")
+    shareApply:SetScript("OnClick", function()
+        local text = ui.shareBox:GetText() or ""
+        local parsed = {}
+        for line in string.gmatch(text .. "\n", "(.-)\n") do
+            local rule = LG2.ParseImportLine(line)
+            if rule then
+                table.insert(parsed, rule)
+            end
         end
-        local btn = CreateFrame("Button", nil, f)
-        btn:SetSize(w, 18)
-        btn:SetPoint("TOPLEFT", tabX, -28)
-        StyleBtn(btn, 0.10, 0.10, 0.10)
-        btn.label = Font(btn, 10, 0.9, 0.9, 0.9)
-        btn.label:SetPoint("CENTER", 0, 0)
-        btn.label:SetJustifyH("CENTER")
-        btn.label:SetText(info.label)
-        btn.tab = info.id
-        btn:SetScript("OnClick", function()
-            if ui.scaleMenu then
-                ui.scaleMenu:Hide()
-            end
-            ShowTab(info.id)
-            if info.id == "reagents" and #VaultOf(VAULT_REAGENT) == 0 then
-                RequestSync()
-            end
-            LayoutAll()
-        end)
-        ui.tabs[i] = btn
-        tabX = tabX + w + 4
-    end
+        if #parsed == 0 then
+            return
+        end
+        ReplaceRules(parsed)
+        ui.shareWrap:Hide()
+    end)
+end
 
+-- Same split-out-of-BuildUI treatment as BuildClassTabs/BuildLootPanel
+-- above -- done preemptively this time (2026-08-20) while there was
+-- headroom to spare, since more class-perk UI work is coming and BuildUI
+-- was still only a few tabs away from the 60-upvalue ceiling again.
+function LG2.BuildGearPanel(f)
     local gear = CreateFrame("Frame", nil, f)
     gear:SetPoint("TOPLEFT", 0, -50)
     gear:SetPoint("BOTTOMRIGHT", 0, 0)
@@ -2106,20 +2591,39 @@ local function BuildUI()
     ui.absorb:SetPoint("TOPLEFT", 10, -2)
     ui.absorb:SetPoint("RIGHT", -10, 0)
 
-    ui.gearTip = Font(gear, 10, 0.7, 0.7, 0.7)
-    ui.gearTip:SetPoint("BOTTOMLEFT", 10, 8)
-    ui.gearTip:SetPoint("BOTTOMRIGHT", -10, 8)
-    ui.gearTip:SetText("Hover a bar for XP.")
-
     ui.empty = Font(gear, 11, 0.6, 0.6, 0.6)
     ui.empty:SetPoint("TOPLEFT", 10, -24)
     ui.empty:Hide()
 
     ui.rows = {}
     for i = 1, #GEAR_SLOTS do
-        local row = CreateFrame("Frame", nil, gear)
+        -- "Button" (not "Frame") so the row can act as a real item link
+        -- (2026-08-20): hover shows the actual item tooltip, shift-click
+        -- inserts a real chat link -- same as the paper doll/bags. Only
+        -- active when row.invSlot is set (an item actually occupies the
+        -- slot -- see LayoutGear).
+        local row = CreateFrame("Button", nil, gear)
         row:SetSize(520, 18)
         row:SetPoint("TOPLEFT", 10, -20 - (i - 1) * 19)
+        row:EnableMouse(true)
+        row:SetScript("OnEnter", function(self)
+            if self.invSlot then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetInventoryItem("player", self.invSlot)
+                GameTooltip:Show()
+            end
+        end)
+        row:SetScript("OnLeave", function()
+            GameTooltip:Hide()
+        end)
+        row:SetScript("OnClick", function(self)
+            if self.invSlot and IsModifiedClick("CHATLINK") then
+                local link = GetInventoryItemLink("player", self.invSlot)
+                if link then
+                    HandleModifiedItemClick(link)
+                end
+            end
+        end)
         row.icon = row:CreateTexture(nil, "ARTWORK")
         row.icon:SetSize(16, 16)
         row.icon:SetPoint("LEFT", 0, 0)
@@ -2129,61 +2633,44 @@ local function BuildUI()
         row.stats = Font(row, 10, 0.7, 0.7, 0.7)
         row.stats:SetPoint("LEFT", 190, 0)
         row.stats:SetWidth(150)
-        row.attune = CreateFrame("Button", nil, row)
-        row.attune:SetSize(48, 16)
-        row.attune:SetPoint("RIGHT", 0, 0)
-        StyleBtn(row.attune, 0.28, 0.10, 0.10)
-        row.attune.label = Font(row.attune, 10, 0.95, 0.8, 0.8)
-        row.attune.label:SetPoint("CENTER", 0, 0)
-        row.attune.label:SetJustifyH("CENTER")
-        row.attune.label:SetText("Attune")
-        row.attune:SetScript("OnClick", function()
-            if not row.slot then
-                return
-            end
-            if not row.armed then
-                row.armed = true
-                row.attune.label:SetText("Sure?")
-                StyleBtn(row.attune, 0.42, 0.12, 0.12)
-                return
-            end
-            row.armed = false
-            row.attune.label:SetText("Attune")
-            StyleBtn(row.attune, 0.28, 0.10, 0.10)
-            SendAttune(row.slot)
-        end)
-        row.bar = CreateFrame("StatusBar", nil, row)
-        row.bar:SetSize(72, 12)
-        row.bar:SetPoint("RIGHT", row.attune, "LEFT", -6, 0)
-        row.bar:SetStatusBarTexture(WHITE)
-        row.bar:SetMinMaxValues(0, 1)
-        row.bar:SetValue(0)
-        row.bar.bg = row.bar:CreateTexture(nil, "BACKGROUND")
-        row.bar.bg:SetAllPoints(row.bar)
-        row.bar.bg:SetTexture(WHITE)
-        row.bar.bg:SetVertexColor(0.08, 0.08, 0.08, 0.9)
-        row.bar.label = Font(row.bar, 10, 0.95, 0.95, 0.95)
-        row.bar.label:SetPoint("CENTER", 0, 0)
-        row.bar.label:SetJustifyH("CENTER")
-        row.bar:EnableMouse(true)
-        row.bar:SetScript("OnEnter", function(self)
-            if self.tip then
-                SetGearTip(self.tip)
+        -- Plain level number, not a filled bar (2026-08-20) -- XP now
+        -- shows as a real mouseover tooltip (self.tip, a 2-line table) via
+        -- GameTooltip instead of a permanent bottom-of-panel text row.
+        -- No more per-row "Attune" button either (2026-08-20 attunement
+        -- redesign) -- gear now attunes automatically as it levels while
+        -- equipped, nothing to click here anymore. See Bonesaw.md.
+        row.level = CreateFrame("Frame", nil, row)
+        row.level:SetSize(28, 16)
+        row.level:SetPoint("RIGHT", 0, 0)
+        row.level.label = Font(row.level, 10, 0.95, 0.95, 0.95)
+        row.level.label:SetPoint("CENTER", 0, 0)
+        row.level.label:SetJustifyH("CENTER")
+        row.level:EnableMouse(true)
+        row.level:SetScript("OnEnter", function(self)
+            if self.tip and GameTooltip then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:AddLine(self.tip[1], 1, 1, 1)
+                GameTooltip:AddLine(self.tip[2], 0.8, 0.8, 0.8)
+                GameTooltip:Show()
             end
         end)
-        row.bar:SetScript("OnLeave", function()
-            SetGearTip()
+        row.level:SetScript("OnLeave", function()
+            if GameTooltip then
+                GameTooltip:Hide()
+            end
         end)
         ui.rows[i] = row
     end
+end
 
+function LG2.BuildAttunePanel(f)
     local attune = MakePanel(f)
     ui.attune = attune
 
     ui.aaToggle = CreateFrame("Button", nil, attune)
     ui.aaToggle:SetSize(124, 18)
     ui.aaToggle:SetPoint("TOP", attune, "TOP", -132, -2)
-    StyleBtn(ui.aaToggle, 0.12, 0.32, 0.14)
+    StyleBtn(ui.aaToggle, COLOR_ON[1], COLOR_ON[2], COLOR_ON[3])
     ui.aaToggle.label = Font(ui.aaToggle, 10, 0.9, 0.95, 0.9)
     ui.aaToggle.label:SetPoint("CENTER", 0, 0)
     ui.aaToggle.label:SetJustifyH("CENTER")
@@ -2247,7 +2734,7 @@ local function BuildUI()
         row.toggle = CreateFrame("Button", nil, row)
         row.toggle:SetSize(48, 18)
         row.toggle:SetPoint("RIGHT", 0, 0)
-        StyleBtn(row.toggle, 0.12, 0.32, 0.14)
+        StyleBtn(row.toggle, COLOR_ON[1], COLOR_ON[2], COLOR_ON[3])
         row.toggle.label = Font(row.toggle, 10, 0.9, 0.95, 0.9)
         row.toggle.label:SetPoint("CENTER", 0, 0)
         row.toggle.label:SetJustifyH("CENTER")
@@ -2261,7 +2748,9 @@ local function BuildUI()
         end)
         ui.aaRows[i] = row
     end
+end
 
+function LG2.BuildArmoryPanel(f)
     local ARM_ROWS = 10
     local arm = CreateFrame("Frame", nil, f)
     arm:SetFrameStrata("DIALOG")
@@ -2304,7 +2793,7 @@ local function BuildUI()
         btn:SetSize(w, 18)
         btn:SetPoint("TOPLEFT", typeX, ARM_FILTER_Y)
         btn.typ = name
-        StyleBtn(btn, 0.10, 0.10, 0.10)
+        StyleBtn(btn, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
         btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
         btn.label:SetPoint("CENTER", 0, 0)
         btn.label:SetJustifyH("CENTER")
@@ -2329,7 +2818,7 @@ local function BuildUI()
         btn:SetSize(w, 18)
         btn:SetPoint("TOPLEFT", attrX, ARM_FILTER_Y)
         btn.attr = name
-        StyleBtn(btn, 0.10, 0.10, 0.10)
+        StyleBtn(btn, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
         btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
         btn.label:SetPoint("CENTER", 0, 0)
         btn.label:SetJustifyH("CENTER")
@@ -2345,7 +2834,7 @@ local function BuildUI()
     local armAllSlot = CreateFrame("Button", nil, arm)
     armAllSlot:SetSize(246, 18)
     armAllSlot:SetPoint("TOPLEFT", 10, ARM_SLOT_Y)
-    StyleBtn(armAllSlot, 0.10, 0.10, 0.10)
+    StyleBtn(armAllSlot, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
     armAllSlot.label = Font(armAllSlot, 10, 0.85, 0.85, 0.85)
     armAllSlot.label:SetPoint("CENTER", 0, 0)
     armAllSlot.label:SetJustifyH("CENTER")
@@ -2365,7 +2854,7 @@ local function BuildUI()
         local col = (i - 1) % 2
         local row = math.floor((i - 1) / 2)
         btn:SetPoint("TOPLEFT", 10 + col * 124, ARM_SLOT_Y - 20 - row * 20)
-        StyleBtn(btn, 0.10, 0.10, 0.10)
+        StyleBtn(btn, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
         btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
         btn.label:SetPoint("CENTER", 0, 0)
         btn.label:SetJustifyH("CENTER")
@@ -2424,379 +2913,9 @@ local function BuildUI()
         db.armoryOff = off
         LayoutArmory()
     end)
+end
 
-    local loot = MakePanel(f)
-    ui.loot = loot
-
-    ui.alToggle = CreateFrame("Button", nil, loot)
-    ui.alToggle:SetSize(120, 18)
-    ui.alToggle:SetPoint("TOPLEFT", 10, -2)
-    StyleBtn(ui.alToggle, 0.12, 0.32, 0.14)
-    ui.alToggle.label = Font(ui.alToggle, 10, 0.9, 0.95, 0.9)
-    ui.alToggle.label:SetPoint("CENTER", 0, 0)
-    ui.alToggle.label:SetJustifyH("CENTER")
-    ui.alToggle.label:SetText("Autoloot: ON")
-    ui.alToggle:SetScript("OnClick", function()
-        if tonumber(db.autoloot.on) == 1 then
-            SendLine("ALSET|0")
-        else
-            SendLine("ALSET|1")
-        end
-    end)
-
-    ui.alAttuned = CreateFrame("Button", nil, loot)
-    ui.alAttuned:SetSize(148, 18)
-    ui.alAttuned:SetPoint("TOPLEFT", 138, -2)
-    StyleBtn(ui.alAttuned, 0.28, 0.20, 0.10)
-    ui.alAttuned.label = Font(ui.alAttuned, 10, 0.95, 0.9, 0.8)
-    ui.alAttuned.label:SetPoint("CENTER", 0, 0)
-    ui.alAttuned.label:SetJustifyH("CENTER")
-    ui.alAttuned.label:SetText("Attuned: Vendor")
-    ui.alAttuned:SetScript("OnClick", function()
-        if tonumber(db.autoloot.de) == 1 then
-            SendLine("ALDE|0")
-        else
-            SendLine("ALDE|1")
-        end
-    end)
-
-    ui.alProg = Font(loot, 10, 0.7, 0.7, 0.7)
-    ui.alProg:SetPoint("TOPLEFT", 294, -4)
-    ui.alProg:SetPoint("RIGHT", -10, 0)
-
-    ui.ruleHint = Font(loot, 10, 0.55, 0.55, 0.55)
-    ui.ruleHint:SetPoint("TOPLEFT", 10, -24)
-    ui.ruleHint:SetText("Default rules. Edit to customize. Reset restores these.")
-
-    local listPane = CreateFrame("Frame", nil, loot)
-    listPane:SetPoint("TOPLEFT", 10, -44)
-    listPane:SetSize(268, 250)
-    listPane:EnableMouse(true)
-    listPane:EnableMouseWheel(true)
-    listPane:SetScript("OnMouseWheel", function(_, delta)
-        db.ruleOff = (db.ruleOff or 0) - delta
-        if db.ruleOff < 0 then
-            db.ruleOff = 0
-        end
-        LayoutLoot()
-    end)
-    ui.ruleRows = {}
-    for i = 1, RULE_ROWS do
-        local row = CreateFrame("Frame", nil, listPane)
-        row:SetSize(268, 18)
-        row:SetPoint("TOPLEFT", 0, -(i - 1) * 20)
-        row.text = Font(row, 10, 0.85, 0.85, 0.85)
-        row.text:SetPoint("LEFT", 0, 0)
-        row.text:SetPoint("RIGHT", -48, 0)
-        row.del = CreateFrame("Button", nil, row)
-        row.del:SetSize(44, 16)
-        row.del:SetPoint("RIGHT", 0, 0)
-        StyleBtn(row.del, 0.28, 0.10, 0.10)
-        row.del.label = Font(row.del, 10, 0.95, 0.8, 0.8)
-        row.del.label:SetPoint("CENTER", 0, 0)
-        row.del.label:SetJustifyH("CENTER")
-        row.del.label:SetText("Del")
-        row.del:SetScript("OnClick", function()
-            if not row.idx then
-                return
-            end
-            if #db.rules == 0 then
-                local rules = CopyRules(DEFAULT_RULES)
-                table.remove(rules, row.idx)
-                ReplaceRules(rules)
-                return
-            end
-            SendLine("RULEDEL|" .. tostring(row.idx - 1))
-        end)
-        row:Hide()
-        ui.ruleRows[i] = row
-    end
-
-    local editPane = CreateFrame("Frame", nil, loot)
-    editPane:SetPoint("TOPLEFT", 286, -44)
-    editPane:SetSize(244, 250)
-    local editHead = Font(editPane, 10, 0.4, 0.8, 1)
-    editHead:SetPoint("TOPLEFT", 0, 0)
-    editHead:SetText("New rule")
-    local ifLbl = Font(editPane, 10, 0.55, 0.55, 0.55)
-    ifLbl:SetPoint("TOPLEFT", 0, -22)
-    ifLbl:SetText("If")
-
-    local function Cycle(btn, maxv, key)
-        db[key] = db[key] + 1
-        if db[key] > maxv then
-            db[key] = 1
-        end
-        LayoutLoot()
-    end
-
-    ui.ruleField = CreateFrame("Button", nil, editPane)
-    ui.ruleField:SetSize(72, 18)
-    ui.ruleField:SetPoint("TOPLEFT", 18, -20)
-    StyleBtn(ui.ruleField, 0.14, 0.14, 0.14)
-    ui.ruleField.label = Font(ui.ruleField, 10, 0.9, 0.9, 0.9)
-    ui.ruleField.label:SetPoint("CENTER", 0, 0)
-    ui.ruleField.label:SetJustifyH("CENTER")
-    ui.ruleField.label:SetText("Type")
-    ui.ruleField:SetScript("OnClick", function()
-        Cycle(ui.ruleField, #RULE_FIELDS, "ruleField")
-    end)
-
-    ui.ruleOp = CreateFrame("Button", nil, editPane)
-    ui.ruleOp:SetSize(100, 18)
-    ui.ruleOp:SetPoint("LEFT", ui.ruleField, "RIGHT", 6, 0)
-    StyleBtn(ui.ruleOp, 0.14, 0.14, 0.14)
-    ui.ruleOp.label = Font(ui.ruleOp, 10, 0.9, 0.9, 0.9)
-    ui.ruleOp.label:SetPoint("CENTER", 0, 0)
-    ui.ruleOp.label:SetJustifyH("CENTER")
-    ui.ruleOp.label:SetText("==")
-    ui.ruleOp:SetScript("OnClick", function()
-        Cycle(ui.ruleOp, 2, "ruleOp")
-    end)
-
-    ui.ruleType = CreateFrame("Button", nil, editPane)
-    ui.ruleType:SetSize(220, 18)
-    ui.ruleType:SetPoint("TOPLEFT", 0, -42)
-    StyleBtn(ui.ruleType, 0.14, 0.14, 0.14)
-    ui.ruleType.label = Font(ui.ruleType, 10, 0.9, 0.9, 0.9)
-    ui.ruleType.label:SetPoint("CENTER", 0, 0)
-    ui.ruleType.label:SetJustifyH("CENTER")
-    ui.ruleType.label:SetText("Quest")
-    ui.ruleType:SetScript("OnClick", function()
-        Cycle(ui.ruleType, #RULE_TYPES, "ruleType")
-    end)
-
-    ui.ruleQual = CreateFrame("Button", nil, editPane)
-    ui.ruleQual:SetSize(220, 18)
-    ui.ruleQual:SetPoint("TOPLEFT", 0, -42)
-    StyleBtn(ui.ruleQual, 0.14, 0.14, 0.14)
-    ui.ruleQual.label = Font(ui.ruleQual, 10, 0.9, 0.9, 0.9)
-    ui.ruleQual.label:SetPoint("CENTER", 0, 0)
-    ui.ruleQual.label:SetJustifyH("CENTER")
-    ui.ruleQual.label:SetText("Grey")
-    ui.ruleQual:SetScript("OnClick", function()
-        Cycle(ui.ruleQual, #RULE_QUALS, "ruleQual")
-    end)
-    ui.ruleQual:Hide()
-
-    ui.ruleNameWrap = CreateFrame("Frame", nil, editPane)
-    ui.ruleNameWrap:SetSize(220, 20)
-    ui.ruleNameWrap:SetPoint("TOPLEFT", 0, -42)
-    ui.ruleNameWrap:SetBackdrop({
-        bgFile = WHITE,
-        edgeFile = WHITE,
-        edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-    })
-    ui.ruleNameWrap:SetBackdropColor(0.08, 0.08, 0.08, 1)
-    ui.ruleNameWrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
-    ui.ruleName = CreateFrame("EditBox", nil, ui.ruleNameWrap)
-    ui.ruleName:SetPoint("TOPLEFT", 4, -2)
-    ui.ruleName:SetPoint("BOTTOMRIGHT", -4, 2)
-    ui.ruleName:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
-    ui.ruleName:SetTextColor(0.9, 0.9, 0.9, 1)
-    ui.ruleName:SetAutoFocus(false)
-    ui.ruleName:SetMaxLetters(36)
-    ui.ruleName:SetText("Book of Glyph Mastery")
-    ui.ruleName:SetScript("OnTextChanged", function()
-        LayoutLoot()
-    end)
-    ui.ruleNameWrap:Hide()
-
-    local thenLbl = Font(editPane, 10, 0.55, 0.55, 0.55)
-    thenLbl:SetPoint("TOPLEFT", 0, -68)
-    thenLbl:SetText("Then")
-
-    ui.ruleThen = CreateFrame("Button", nil, editPane)
-    ui.ruleThen:SetSize(120, 18)
-    ui.ruleThen:SetPoint("TOPLEFT", 36, -66)
-    StyleBtn(ui.ruleThen, 0.14, 0.14, 0.14)
-    ui.ruleThen.label = Font(ui.ruleThen, 10, 0.9, 0.9, 0.9)
-    ui.ruleThen.label:SetPoint("CENTER", 0, 0)
-    ui.ruleThen.label:SetJustifyH("CENTER")
-    ui.ruleThen.label:SetText("Bags")
-    ui.ruleThen:SetScript("OnClick", function()
-        Cycle(ui.ruleThen, #ACTION_NAMES, "ruleAction")
-    end)
-
-    local addBtn = CreateFrame("Button", nil, editPane)
-    addBtn:SetSize(80, 18)
-    addBtn:SetPoint("TOPLEFT", 0, -92)
-    StyleBtn(addBtn, 0.14, 0.22, 0.14)
-    addBtn.label = Font(addBtn, 10, 0.85, 0.95, 0.85)
-    addBtn.label:SetPoint("CENTER", 0, 0)
-    addBtn.label:SetJustifyH("CENTER")
-    addBtn.label:SetText("Add rule")
-    addBtn:SetScript("OnClick", function()
-        local field = db.ruleField
-        local op = db.ruleOp
-        local action = db.ruleAction - 1
-        local rule = { match = 0, action = action, negate = op == 2 and 1 or 0, quality = 0, text = "" }
-        if field == 1 then
-            rule.match = RULE_TYPE_MATCH[db.ruleType]
-        elseif field == 2 then
-            rule.match = 6
-            rule.quality = db.ruleQual - 1
-        else
-            rule.match = 5
-            rule.text = string.gsub(ui.ruleName:GetText() or "", "|", "")
-            if rule.text == "" then
-                return
-            end
-        end
-        InsertRule(rule)
-    end)
-
-    ui.rulePreview = Font(editPane, 10, 0.7, 0.7, 0.7)
-    ui.rulePreview:SetPoint("TOPLEFT", 0, -116)
-    ui.rulePreview:SetWidth(240)
-    ui.rulePreview:SetText("Type == Quest -> Bags")
-
-    local expBtn = CreateFrame("Button", nil, loot)
-    expBtn:SetSize(64, 18)
-    expBtn:SetPoint("BOTTOMRIGHT", -148, 10)
-    StyleBtn(expBtn, 0.14, 0.14, 0.14)
-    expBtn.label = Font(expBtn, 10, 0.9, 0.9, 0.9)
-    expBtn.label:SetPoint("CENTER", 0, 0)
-    expBtn.label:SetJustifyH("CENTER")
-    expBtn.label:SetText("Export")
-    expBtn:SetScript("OnClick", function()
-        if ui.shareBox then
-            ui.shareBox:SetText(ExportRules())
-            ui.shareBox:HighlightText()
-            ui.shareBox:SetFocus()
-            ui.shareWrap:Show()
-            ui.shareHint:SetText("Copy this list. Close when done.")
-        end
-    end)
-
-    local impBtn = CreateFrame("Button", nil, loot)
-    impBtn:SetSize(64, 18)
-    impBtn:SetPoint("BOTTOMRIGHT", -80, 10)
-    StyleBtn(impBtn, 0.14, 0.14, 0.14)
-    impBtn.label = Font(impBtn, 10, 0.9, 0.9, 0.9)
-    impBtn.label:SetPoint("CENTER", 0, 0)
-    impBtn.label:SetJustifyH("CENTER")
-    impBtn.label:SetText("Import")
-    impBtn:SetScript("OnClick", function()
-        if ui.shareBox then
-            ui.shareBox:SetText("")
-            ui.shareBox:SetFocus()
-            ui.shareWrap:Show()
-            ui.shareHint:SetText("Paste rules, then click Apply.")
-        end
-    end)
-
-    local resetBtn = CreateFrame("Button", nil, loot)
-    resetBtn:SetSize(64, 18)
-    resetBtn:SetPoint("BOTTOMRIGHT", -12, 10)
-    StyleBtn(resetBtn, 0.42, 0.12, 0.12)
-    resetBtn.label = Font(resetBtn, 10, 0.95, 0.8, 0.8)
-    resetBtn.label:SetPoint("CENTER", 0, 0)
-    resetBtn.label:SetJustifyH("CENTER")
-    resetBtn.label:SetText("Reset")
-    resetBtn:SetScript("OnClick", function()
-        SendLine("RULERESET")
-    end)
-
-    ui.shareWrap = CreateFrame("Frame", nil, loot)
-    ui.shareWrap:SetPoint("BOTTOMLEFT", 10, 34)
-    ui.shareWrap:SetPoint("BOTTOMRIGHT", -10, 34)
-    ui.shareWrap:SetHeight(72)
-    ui.shareWrap:SetBackdrop({
-        bgFile = WHITE,
-        edgeFile = WHITE,
-        edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-    })
-    ui.shareWrap:SetBackdropColor(0.08, 0.08, 0.08, 1)
-    ui.shareWrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
-    ui.shareWrap:Hide()
-    ui.shareHint = Font(ui.shareWrap, 10, 0.55, 0.55, 0.55)
-    ui.shareHint:SetPoint("TOPLEFT", 6, -4)
-    ui.shareHint:SetText("Copy this list. Close when done.")
-    ui.shareBox = CreateFrame("EditBox", nil, ui.shareWrap)
-    ui.shareBox:SetPoint("TOPLEFT", 6, -18)
-    ui.shareBox:SetPoint("BOTTOMRIGHT", -52, 6)
-    ui.shareBox:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
-    ui.shareBox:SetTextColor(0.9, 0.9, 0.9, 1)
-    ui.shareBox:SetAutoFocus(false)
-    ui.shareBox:SetMultiLine(true)
-    ui.shareBox:SetMaxLetters(800)
-    local shareClose = CreateFrame("Button", nil, ui.shareWrap)
-    shareClose:SetSize(40, 16)
-    shareClose:SetPoint("TOPRIGHT", -6, -4)
-    StyleBtn(shareClose, 0.14, 0.14, 0.14)
-    shareClose.label = Font(shareClose, 10, 0.9, 0.9, 0.9)
-    shareClose.label:SetPoint("CENTER", 0, 0)
-    shareClose.label:SetJustifyH("CENTER")
-    shareClose.label:SetText("Close")
-    shareClose:SetScript("OnClick", function()
-        ui.shareWrap:Hide()
-    end)
-    local shareApply = CreateFrame("Button", nil, ui.shareWrap)
-    shareApply:SetSize(44, 16)
-    shareApply:SetPoint("TOPRIGHT", -50, -4)
-    StyleBtn(shareApply, 0.14, 0.22, 0.14)
-    shareApply.label = Font(shareApply, 10, 0.85, 0.95, 0.85)
-    shareApply.label:SetPoint("CENTER", 0, 0)
-    shareApply.label:SetJustifyH("CENTER")
-    shareApply.label:SetText("Apply")
-    shareApply:SetScript("OnClick", function()
-        local text = ui.shareBox:GetText() or ""
-        local parsed = {}
-        for line in string.gmatch(text .. "\n", "(.-)\n") do
-            local rule = ParseImportLine(line)
-            if rule then
-                table.insert(parsed, rule)
-            end
-        end
-        if #parsed == 0 then
-            return
-        end
-        ReplaceRules(parsed)
-        ui.shareWrap:Hide()
-    end)
-
-    ui.reagents, ui.reagentRows, ui.reagentEmpty, ui.reagentHint = MakeVaultPanel(f, VAULT_REAGENT, true)
-
-    local class = MakePanel(f)
-    ui.class = class
-    ui.classHint = Font(class, 11, 0.7, 0.7, 0.7)
-    ui.classHint:SetPoint("TOPLEFT", 10, -6)
-    ui.classHint:SetWidth(520)
-    ui.classHint:SetText("Pick one. Each talent spec can have its own pick.")
-    ui.classEmpty = Font(class, 11, 0.6, 0.6, 0.6)
-    ui.classEmpty:SetPoint("TOPLEFT", 10, -48)
-    ui.classEmpty:SetText("No class perk for your class yet.")
-    ui.classEmpty:Hide()
-    ui.classBtns = {}
-    for i = 1, 3 do
-        local btn = CreateFrame("Button", nil, class)
-        btn:SetSize(164, 28)
-        btn:SetPoint("TOPLEFT", 10 + (i - 1) * 172, -40)
-        StyleBtn(btn, 0.14, 0.14, 0.14)
-        btn.label = Font(btn, 12, 0.9, 0.9, 0.9)
-        btn.label:SetPoint("CENTER", 0, 0)
-        btn.label:SetJustifyH("CENTER")
-        btn:SetScript("OnClick", function()
-            if btn.id then
-                SendLine("CLASS|" .. tostring(btn.id))
-            end
-        end)
-        btn:SetScript("OnEnter", function(self)
-            Solid(self.bg, math.min(1, self._ir + 0.08), math.min(1, self._ig + 0.08), math.min(1, self._ib + 0.08), 1)
-            if self.how then
-                ui.classHint:SetText(self.how)
-            end
-        end)
-        btn:SetScript("OnLeave", function(self)
-            Solid(self.bg, self._ir, self._ig, self._ib, 1)
-            LayoutClass()
-        end)
-        ui.classBtns[i] = btn
-    end
-
+function LG2.BuildWorldPanel(f)
     local world = MakePanel(f)
     ui.world = world
     ui.worldTip = Font(world, 10, 0.7, 0.7, 0.7)
@@ -2874,7 +2993,7 @@ local function BuildUI()
                 if not PerkKnown(info.id) then
                     return
                 end
-                SendWorldToggle(info)
+                LG2.SendWorldToggle(info)
             end)
         else
             btn:SetScript("OnClick", function()
@@ -2951,7 +3070,7 @@ local function BuildUI()
         local btn = CreateFrame("Button", nil, content)
         btn:SetSize(72, 18)
         btn:SetPoint("TOPLEFT", 46 + (i - 1) * 80, trackY - 6)
-        StyleBtn(btn, 0.14, 0.14, 0.14)
+        StyleBtn(btn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
         btn.mode = info.mode
         btn.how = info.how
         btn.label = Font(btn, 10, 0.9, 0.9, 0.9)
@@ -2982,14 +3101,14 @@ local function BuildUI()
     ui.chatToggle = CreateFrame("Button", nil, content)
     ui.chatToggle:SetSize(220, 18)
     ui.chatToggle:SetPoint("TOPLEFT", 46, trackY - 32)
-    StyleBtn(ui.chatToggle, 0.32, 0.12, 0.12)
+    StyleBtn(ui.chatToggle, COLOR_OFF[1], COLOR_OFF[2], COLOR_OFF[3])
     ui.chatToggle.label = Font(ui.chatToggle, 10, 0.9, 0.95, 0.9)
     ui.chatToggle.label:SetPoint("CENTER", 0, 0)
     ui.chatToggle.label:SetJustifyH("CENTER")
     ui.chatToggle.label:SetText("Show Living Gear chat: OFF")
     ui.chatToggle.tip = "Show Living Gear progress and unlock messages in chat. Errors always show."
     ui.chatToggle:SetScript("OnClick", function()
-        SetShowChat(not LivingGearDB.showChat)
+        LG2.SetShowChat(not LivingGearDB.showChat)
     end)
     ui.chatToggle:SetScript("OnEnter", function(self)
         Solid(self.bg, math.min(1, self._ir + 0.08), math.min(1, self._ig + 0.08), math.min(1, self._ib + 0.08), 1)
@@ -3033,13 +3152,227 @@ local function BuildUI()
 
     content._h = math.abs(trackY) + 100
     content:SetHeight(content._h)
+end
 
-    SaveScale(LoadScale())
+local function BuildUI()
+    if ui.frame then
+        return
+    end
+
+    local f = CreateFrame("Frame", "LivingGearFrame", UIParent)
+    f:SetSize(FRAME_W, FRAME_H)
+    f:SetPoint("CENTER", UIParent, "CENTER", 200, 60)
+    f:SetFrameStrata("HIGH")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetBackdrop({
+        bgFile = WHITE,
+        edgeFile = WHITE,
+        edgeSize = 1,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
+    f:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
+    f:Hide()
+    ui.frame = f
+    tinsert(UISpecialFrames, "LivingGearFrame")
+    f:SetScript("OnHide", function()
+        if ui.scaleMenu then
+            ui.scaleMenu:Hide()
+        end
+    end)
+
+    local title = Font(f, 13, 0.4, 0.8, 1)
+    title:SetPoint("TOPLEFT", 10, -8)
+    title:SetText("Account Perks")
+
+    local close = CreateFrame("Button", nil, f)
+    close:SetSize(22, 18)
+    close:SetPoint("TOPRIGHT", -8, -8)
+    StyleBtn(close, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    close.label = Font(close, 12, 0.9, 0.9, 0.9)
+    close.label:SetPoint("CENTER", 0, 0)
+    close.label:SetJustifyH("CENTER")
+    close.label:SetText("X")
+    close:SetScript("OnClick", function()
+        if ui.scaleMenu then
+            ui.scaleMenu:Hide()
+        end
+        f:Hide()
+    end)
+
+    local scaleBtn = CreateFrame("Button", nil, f)
+    scaleBtn:SetSize(22, 18)
+    scaleBtn:SetPoint("TOPRIGHT", -34, -8)
+    StyleBtn(scaleBtn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    scaleBtn.icon = scaleBtn:CreateTexture(nil, "ARTWORK")
+    scaleBtn.icon:SetTexture("Interface\\Icons\\INV_Misc_Spyglass_02")
+    scaleBtn.icon:SetPoint("CENTER", 0, 0)
+    scaleBtn.icon:SetSize(14, 14)
+    scaleBtn:SetScript("OnClick", function()
+        LG2.ToggleScaleMenu()
+    end)
+    ui.scaleBtn = scaleBtn
+
+    local scaleMenu = CreateFrame("Frame", nil, f)
+    scaleMenu:SetSize(56, 6 + #SCALES * 18)
+    scaleMenu:SetPoint("TOPRIGHT", scaleBtn, "BOTTOMRIGHT", 0, -2)
+    scaleMenu:SetFrameStrata("DIALOG")
+    scaleMenu:SetBackdrop({
+        bgFile = WHITE,
+        edgeFile = WHITE,
+        edgeSize = 1,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    scaleMenu:SetBackdropColor(0.08, 0.08, 0.08, 0.98)
+    scaleMenu:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
+    scaleMenu:Hide()
+    scaleMenu:EnableMouse(true)
+    ui.scaleMenu = scaleMenu
+    for i = 1, #SCALES do
+        local opt = CreateFrame("Button", nil, scaleMenu)
+        opt:SetSize(52, 16)
+        opt:SetPoint("TOPLEFT", 2, -3 - (i - 1) * 18)
+        StyleBtn(opt, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+        opt.label = Font(opt, 10, 0.9, 0.9, 0.9)
+        opt.label:SetPoint("CENTER", 0, 0)
+        opt.label:SetJustifyH("CENTER")
+        opt.label:SetText(SCALE_LABELS[i])
+        opt:SetScript("OnClick", function()
+            SaveScale(SCALES[i])
+            SendLine("SCALESET|" .. tostring(math.floor(SCALES[i] * 100 + 0.5)))
+            scaleMenu:Hide()
+        end)
+    end
+
+    ui.tabs = {}
+    local tabX = 10
+    for i = 1, #TABS do
+        local info = TABS[i]
+        local w = 10 + string.len(info.label) * 7
+        if w < 48 then
+            w = 48
+        end
+        local btn = CreateFrame("Button", nil, f)
+        btn:SetSize(w, 18)
+        btn:SetPoint("TOPLEFT", tabX, -28)
+        StyleBtn(btn, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
+        btn.label = Font(btn, 10, 0.9, 0.9, 0.9)
+        btn.label:SetPoint("CENTER", 0, 0)
+        btn.label:SetJustifyH("CENTER")
+        btn.label:SetText(info.label)
+        btn.tab = info.id
+        btn:SetScript("OnClick", function()
+            if ui.scaleMenu then
+                ui.scaleMenu:Hide()
+            end
+            ShowTab(info.id)
+            if info.id == "reagents" and #VaultOf(VAULT_REAGENT) == 0 then
+                RequestSync()
+            end
+            LayoutAll()
+        end)
+        ui.tabs[i] = btn
+        tabX = tabX + w + 4
+    end
+
+    LG2.BuildGearPanel(f)
+
+    LG2.BuildAttunePanel(f)
+
+    LG2.BuildArmoryPanel(f)
+
+    LG2.BuildLootPanel(f)
+
+    ui.reagents, ui.reagentRows, ui.reagentEmpty, ui.reagentHint = LG2.MakeVaultPanel(f, VAULT_REAGENT, true)
+
+    local class = MakePanel(f)
+    ui.class = class
+    -- Class-browse tabs: one pill per class that has perk data, in fixed
+    -- CLASS_ORDER. Defaults to the player's own class (LG2.ClassBrowseToken());
+    -- clicking another class previews its perks read-only. Built by a
+    -- separate function -- see BuildClassTabs's comment for why.
+    local classBelowTabsY = LG2.BuildClassTabs(class)
+    -- No standalone instruction line (2026-08-20) -- the cards are
+    -- self-explanatory (icon, title, and the actual changes right there),
+    -- so "Pick one..."/"Preview only..." was redundant with what's already
+    -- on screen. ui.classEmpty still covers the (currently never hit,
+    -- since every class has data) case where a class has no perks at all.
+    ui.classEmpty = Font(class, 11, 0.6, 0.6, 0.6)
+    ui.classEmpty:SetPoint("TOPLEFT", 10, classBelowTabsY - 24)
+    ui.classEmpty:SetText("No class perk for your class yet.")
+    ui.classEmpty:Hide()
+    -- Cards (2026-08-20): icon + title header, then the perk's changes as
+    -- a small-font bulleted list below, all inside the card, so the 3
+    -- specs can be scanned/compared side by side without hovering each one
+    -- in turn. Fixed height fits the common case (2-3 short bullets); a
+    -- card with an unusually long/full bullet list just overflows past the
+    -- card's background rather than clipping -- see the body FontString's
+    -- own comment below.
+    local CLASS_CARD_W = 196
+    local CLASS_CARD_H = 128
+    local CLASS_CARD_GAP = 10
+    ui.classBtns = {}
+    for i = 1, 3 do
+        local btn = CreateFrame("Button", nil, class)
+        btn:SetSize(CLASS_CARD_W, CLASS_CARD_H)
+        btn:SetPoint("TOPLEFT", 10 + (i - 1) * (CLASS_CARD_W + CLASS_CARD_GAP), classBelowTabsY - 24)
+        StyleBtn(btn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+        btn.icon = btn:CreateTexture(nil, "ARTWORK")
+        btn.icon:SetSize(22, 22)
+        btn.icon:SetPoint("TOPLEFT", 6, -6)
+        btn.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+        btn.label = Font(btn, 12, 0.9, 0.9, 0.9)
+        btn.label:SetPoint("LEFT", btn.icon, "RIGHT", 6, 0)
+        btn.label:SetPoint("RIGHT", -6, 0)
+        btn.label:SetJustifyH("LEFT")
+        -- One wrapping text block instead of fixed-height single-line rows
+        -- (2026-08-20) -- fixed rows clipped/ellipsized any sentence too
+        -- long for one line rather than wrapping it. A single FontString
+        -- word-wraps naturally and just grows downward; if a card's total
+        -- text is unusually long it can extend past the card's background,
+        -- which reads fine (text still fully visible, just not boxed) --
+        -- better than losing words to an ellipsis.
+        btn.body = Font(btn, 9, 0.65, 0.65, 0.65)
+        btn.body:SetPoint("TOPLEFT", 8, -34)
+        btn.body:SetPoint("RIGHT", -6, 0)
+        btn.body:SetJustifyH("LEFT")
+        btn.body:SetJustifyV("TOP")
+        btn.body:SetSpacing(3)
+        btn.body:SetWordWrap(true)
+        -- A FontString with word wrap on but no explicit height still
+        -- truncates with "..." past a few lines in this client instead of
+        -- auto-growing -- explicit generous height is what actually fixes
+        -- it (confirmed from a screenshot: bullets 4-5 were missing
+        -- entirely and bullet 3 cut off mid-word). Deliberately taller
+        -- than the card itself; a long card overflowing its background is
+        -- fine, losing the text isn't.
+        btn.body:SetHeight(300)
+        btn:SetScript("OnClick", function()
+            if btn.id and btn.ownClass then
+                SendLine("CLASS|" .. tostring(btn.id))
+            end
+        end)
+        btn:SetScript("OnEnter", function(self)
+            Solid(self.bg, math.min(1, self._ir + 0.08), math.min(1, self._ig + 0.08), math.min(1, self._ib + 0.08), 1)
+        end)
+        btn:SetScript("OnLeave", function(self)
+            Solid(self.bg, self._ir, self._ig, self._ib, 1)
+        end)
+        ui.classBtns[i] = btn
+    end
+
+    LG2.BuildWorldPanel(f)
+
+    SaveScale(LG2.LoadScale())
     ShowTab("world")
     LayoutAll()
 end
 
-local function OpenWindow()
+function LG2.OpenWindow()
     BuildUI()
     ui.frame:Show()
     RequestSync()
@@ -3050,11 +3383,11 @@ local function Toggle()
     if ui.frame:IsShown() then
         ui.frame:Hide()
     else
-        OpenWindow()
+        LG2.OpenWindow()
     end
 end
 
-local function IsAccountPerksName(name)
+function LG2.IsAccountPerksName(name)
     if not name or name == "" then
         return false
     end
@@ -3152,7 +3485,7 @@ local function VaultCountForName(name)
     return n
 end
 
-local function ParseLeaderBoard(text)
+function LG2.ParseLeaderBoard(text)
     text = StripColors(text)
     local name, cur, need = string.match(text, "^(.-):%s*(%d+)%s*/%s*(%d+)%s*$")
     if name then
@@ -3168,15 +3501,15 @@ end
 local origGetItemCount
 local questTrackerHooked = false
 
-local function BagCountForName(name)
+function LG2.BagCountForName(name)
     if type(origGetItemCount) ~= "function" or not name or name == "" then
         return 0
     end
     return tonumber(origGetItemCount(name)) or 0
 end
 
-local function DesiredHave(name, need)
-    local total = BagCountForName(name) + VaultCountForName(name)
+function LG2.DesiredHave(name, need)
+    local total = LG2.BagCountForName(name) + VaultCountForName(name)
     if need and need > 0 and total > need then
         total = need
     end
@@ -3184,13 +3517,13 @@ local function DesiredHave(name, need)
 end
 
 local function ApplyVaultCountToText(text)
-    local name, cur, need = ParseLeaderBoard(text)
+    local name, cur, need = LG2.ParseLeaderBoard(text)
     if not name then
         return text
     end
     cur = cur or 0
     need = need or 0
-    local total = DesiredHave(name, need)
+    local total = LG2.DesiredHave(name, need)
     if total == cur then
         return text
     end
@@ -3200,7 +3533,7 @@ local function ApplyVaultCountToText(text)
     return name .. ": " .. tostring(total) .. "/" .. tostring(need)
 end
 
-local function PatchWatchFrameLines()
+function LG2.PatchWatchFrameLines()
     if type(WATCHFRAME_QUESTLINES) ~= "table" then
         return
     end
@@ -3217,7 +3550,7 @@ local function PatchWatchFrameLines()
     end
 end
 
-local function UpsertVault(kind, entry, count, name)
+function LG2.UpsertVault(kind, entry, count, name)
     kind = tonumber(kind) or 0
     entry = tonumber(entry) or 0
     count = tonumber(count) or 0
@@ -3243,7 +3576,7 @@ local function UpsertVault(kind, entry, count, name)
     end
 end
 
-local function HookQuestTracker()
+function LG2.HookQuestTracker()
     if questTrackerHooked then
         return
     end
@@ -3306,11 +3639,11 @@ local function HookQuestTracker()
         end
     end
     if type(hooksecurefunc) == "function" and type(WatchFrame_Update) == "function" then
-        hooksecurefunc("WatchFrame_Update", PatchWatchFrameLines)
+        hooksecurefunc("WatchFrame_Update", LG2.PatchWatchFrameLines)
     end
 end
 
-HookQuestTracker()
+LG2.HookQuestTracker()
 
 local jumpHooked = false
 local jumpResumeUntil = 0
@@ -3338,7 +3671,7 @@ local function KeyHeld(key)
     return tail and IsKeyDown(tail)
 end
 
-local function BindingHeld(cmd)
+function LG2.BindingHeld(cmd)
     if not GetBindingKey then
         return false
     end
@@ -3347,7 +3680,7 @@ local function BindingHeld(cmd)
 end
 
 local function DirHeld(cmd, keys)
-    if BindingHeld(cmd) then
+    if LG2.BindingHeld(cmd) then
         return true
     end
     if not IsKeyDown or not keys then
@@ -3373,7 +3706,7 @@ local function PulseDir(held, startFn, stopFn, reset)
     startFn()
 end
 
-local function SnapshotMoveKeys()
+function LG2.SnapshotMoveKeys()
     jumpHeld.fwd = DirHeld("MOVEFORWARD", { "W", "UP" })
     jumpHeld.back = DirHeld("MOVEBACKWARD", { "S", "DOWN" })
     jumpHeld.sleft = DirHeld("STRAFELEFT", { "Q" })
@@ -3398,7 +3731,7 @@ local function BeginJumpResume()
     ResumeMoveKeys(true)
 end
 
-local function HookJump()
+function LG2.HookJump()
     if jumpHooked or not JumpOrAscendStart then
         return
     end
@@ -3409,7 +3742,7 @@ local function HookJump()
         if IsFlying() or UnitOnTaxi("player") or IsSwimming() then
             return
         end
-        SnapshotMoveKeys()
+        LG2.SnapshotMoveKeys()
         jumpResumeUntil = GetTime() + 8
         jumpSawFalling = IsFalling() and true or false
     end)
@@ -3432,10 +3765,10 @@ local function HookJump()
         jumpWasFalling = falling
     end)
 end
-HookJump()
+LG2.HookJump()
 
 local comboHud
-local function ShowCombo(stacks, seconds)
+function LG2.ShowCombo(stacks, seconds)
     stacks = tonumber(stacks) or 0
     seconds = tonumber(seconds) or 180
     if not comboHud then
@@ -3530,7 +3863,7 @@ local function ShowDungeonTimer(mode, parSec, clearSec, tier, speedPct, pacePct)
 end
 
 local zoneScaleHud
-local function ShowZoneScale(eff, real, zone)
+function LG2.ShowZoneScale(eff, real, zone)
     eff = tonumber(eff) or 0
     real = tonumber(real) or 0
     zone = tonumber(zone) or 0
@@ -3556,7 +3889,7 @@ local function ShowZoneScale(eff, real, zone)
     zoneScaleHud:Show()
 end
 
-local function HandleAddon(prefix, message)
+function LG2.HandleAddon(prefix, message)
     if prefix ~= PREFIX or not message then
         return
     end
@@ -3579,16 +3912,22 @@ local function HandleAddon(prefix, message)
         db.items = {}
         db.byKey = {}
         db.asked = {}
-        db.perks = {}
-        db.classPerks = {}
-        db.classPerk = 0
+        -- db.perks/db.classPerks/db.classPerk are NOT cleared here: they're
+        -- owned entirely by the independent PK/PKALL/CPK/CPKALL messages
+        -- (sent from OnPlayerLogin, not from the REQ this CLR answers), so
+        -- whichever channel happens to land second would otherwise silently
+        -- wipe out data the other channel already delivered -- a race, not
+        -- a redraw-ordering issue. See Bonesaw.md if this needs revisiting.
         db.rules = {}
         db.vault = {}
         db.armory = {}
         db.attune = { on = 1, count = 0, off = 0 }
         db.jump = { mode = 2, max = 0 }
-        db.solo = 0
-        db.autoMount = 0
+        -- db.solo/db.autoMount are NOT reset here, same reasoning as
+        -- db.perks above: they're owned by the independent SQ|/AM|
+        -- messages sent from OnPlayerLogin, and whichever channel landed
+        -- second used to silently win, leaving the World Perks toggle
+        -- showing "off" even when the server had it on.
         db.speedCap = db.speedCap or 500
         if ui.reagents and ui.reagents:IsShown() then
             RefreshVaultPanel()
@@ -3604,9 +3943,24 @@ local function HandleAddon(prefix, message)
         RefreshQuestWatch()
         return
     end
-    local p = SplitPipe(message)
+    local p = LG2.SplitPipe(message)
     if p[1] == "PK" then
         db.perks[tonumber(p[2]) or 0] = tonumber(p[3]) or 0
+        return
+    end
+    if p[1] == "PKALL" then
+        for id in string.gmatch(p[2] or "", "[^,]+") do
+            local n = tonumber(id)
+            if n then
+                db.perks[n] = 1
+            end
+        end
+        -- PKALL is sent independently of the CLR/END sync cycle (from
+        -- OnPlayerLogin, not RequestSync), so it must trigger its own
+        -- redraw instead of relying on END, which may have already run.
+        BuildUI()
+        LayoutRows()
+        RefreshOverlays()
         return
     end
     if p[1] == "CPK" then
@@ -3617,6 +3971,26 @@ local function HandleAddon(prefix, message)
                 db.classPerk = id
             end
         end
+        BuildUI()
+        LayoutRows()
+        RefreshOverlays()
+        return
+    end
+    if p[1] == "CPKALL" then
+        db.classPerks = {}
+        for pair in string.gmatch(p[2] or "", "[^,]+") do
+            local id, sel = pair:match("^(%d+):(%d+)$")
+            id = tonumber(id)
+            if id then
+                table.insert(db.classPerks, id)
+                if tonumber(sel) == 1 then
+                    db.classPerk = id
+                end
+            end
+        end
+        BuildUI()
+        LayoutRows()
+        RefreshOverlays()
         return
     end
     if p[1] == "AL" then
@@ -3642,10 +4016,12 @@ local function HandleAddon(prefix, message)
     end
     if p[1] == "SQ" then
         db.solo = tonumber(p[2]) or 0
+        LayoutWorld()
         return
     end
     if p[1] == "AM" then
         db.autoMount = tonumber(p[2]) or 0
+        LayoutWorld()
         return
     end
     if p[1] == "SCAP" then
@@ -3656,7 +4032,7 @@ local function HandleAddon(prefix, message)
         return
     end
     if p[1] == "COMBO" then
-        ShowCombo(tonumber(p[2]) or 0, tonumber(p[4]) or 180)
+        LG2.ShowCombo(tonumber(p[2]) or 0, tonumber(p[4]) or 180)
         return
     end
     if p[1] == "DTIMER" then
@@ -3670,7 +4046,7 @@ local function HandleAddon(prefix, message)
         return
     end
     if p[1] == "ZSCALE" then
-        ShowZoneScale(p[2], p[3], p[4])
+        LG2.ShowZoneScale(p[2], p[3], p[4])
         return
     end
     if p[1] == "SCALE" then
@@ -3708,7 +4084,7 @@ local function HandleAddon(prefix, message)
             end
             return
         end
-        UpsertVault(kind, entry, count, name)
+        LG2.UpsertVault(kind, entry, count, name)
         if ui.frame and ui.frame:IsShown() then
             LayoutRows()
         end
@@ -3837,7 +4213,7 @@ local function ExtraOf(it, field)
     return math.floor(tonumber(it and it[field]) or 0)
 end
 
-local function LevelProgress(it)
+function LG2.LevelProgress(it)
     local lv = tonumber(it.lv) or 1
     if lv >= LG_MAX_LEVEL then
         return 1
@@ -3892,7 +4268,7 @@ local function OverlayFor(btn, it)
     local lv = tonumber(it.lv) or 1
     local r, g, b = GetItemQualityColor(LevelQuality(lv))
     bar:SetMinMaxValues(0, 1)
-    bar:SetValue(LevelProgress(it))
+    bar:SetValue(LG2.LevelProgress(it))
     bar:SetStatusBarColor(r, g, b, 0.95)
     bar:Show()
 end
@@ -3924,11 +4300,12 @@ RefreshOverlays = function()
     end
 end
 
-local function HookIconOverlays()
-    if HookIconOverlays._done then
+local hookIconOverlaysDone = false
+function LG2.HookIconOverlays()
+    if hookIconOverlaysDone then
         return
     end
-    HookIconOverlays._done = true
+    hookIconOverlaysDone = true
     if PaperDollItemSlotButton_Update then
         hooksecurefunc("PaperDollItemSlotButton_Update", function(btn)
             if not btn then
@@ -3958,7 +4335,7 @@ local function HookIconOverlays()
     end
 end
 
-local function RequestTip(key)
+function LG2.RequestTip(key)
     local now = GetTime()
     local last = db.asked[key]
     if last and (now - last) < 30 then
@@ -3993,7 +4370,7 @@ local function StripTipText(text)
     return text
 end
 
-local function IsFlavorLine(text)
+function LG2.IsFlavorLine(text)
     return string.find(text, "Set:", 1, true)
         or string.find(text, "Equip:", 1, true)
         or string.find(text, "Use:", 1, true)
@@ -4004,7 +4381,7 @@ end
 local STAT_NAMES = { "Strength", "Agility", "Stamina", "Intellect", "Spirit", "Armor" }
 
 local function ParseStatLine(text)
-    if text == "" or IsFlavorLine(text) or string.find(text, "%(%d+/%d+%)") then
+    if text == "" or LG2.IsFlavorLine(text) or string.find(text, "%(%d+/%d+%)") then
         return nil
     end
     for i = 1, #STAT_NAMES do
@@ -4020,7 +4397,7 @@ local function ParseStatLine(text)
     return nil
 end
 
-local function ApplyStatText(left, right, it, prefix, num, name)
+function LG2.ApplyStatText(left, right, it, prefix, num, name)
     local field = STAT_FIELD[name]
     local extra = ExtraOf(it, field)
     local base = tonumber(num)
@@ -4068,7 +4445,7 @@ local function HideDurability(tip)
     end)
 end
 
-local function RewriteStatLines(tip, it)
+function LG2.RewriteStatLines(tip, it)
     local used = {}
     EachTipLine(tip, function(left, right)
         local raw = left:GetText()
@@ -4090,7 +4467,7 @@ local function RewriteStatLines(tip, it)
             return
         end
         if name then
-            local field = ApplyStatText(left, right, it, prefix or "", num, name)
+            local field = LG2.ApplyStatText(left, right, it, prefix or "", num, name)
             if field then
                 used[field] = true
             end
@@ -4099,7 +4476,7 @@ local function RewriteStatLines(tip, it)
     return used
 end
 
-local function AddLivingFooter(tip, it)
+function LG2.AddLivingFooter(tip, it)
     if tip._lgFooter then
         return
     end
@@ -4131,7 +4508,7 @@ local function LivingForTip(tip)
     end
     local it = db.byKey[key]
     if not it then
-        RequestTip(key)
+        LG2.RequestTip(key)
         return nil
     end
     return it
@@ -4149,7 +4526,7 @@ local function HookTooltip(tip)
         if not it then
             return
         end
-        self._lgUsed = RewriteStatLines(self, it)
+        self._lgUsed = LG2.RewriteStatLines(self, it)
     end
 
     local origInv = tip.SetInventoryItem
@@ -4188,7 +4565,7 @@ local function HookTooltip(tip)
         if not it then
             return
         end
-        AddLivingFooter(self, it)
+        LG2.AddLivingFooter(self, it)
     end)
 
     tip:HookScript("OnUpdate", function(self)
@@ -4209,7 +4586,7 @@ local origGetItemCount = GetItemCount
 if origGetItemCount then
     GetItemCount = function(item, includeBank, includeCharges)
         local n = origGetItemCount(item, includeBank, includeCharges) or 0
-        local id = ItemIdFromArg(item)
+        local id = LG2.ItemIdFromArg(item)
         if id then
             n = n + VaultCountOf(id)
         end
@@ -4263,7 +4640,7 @@ AutoAcceptBindPopup("EQUIP_BIND")
 AutoAcceptBindPopup("EQUIP_BIND_TRADEABLE")
 AutoAcceptBindPopup("AUTOEQUIP_BIND")
 
-local function TryAutoAccept()
+function LG2.TryAutoAccept()
     if IsShiftKeyDown and IsShiftKeyDown() then
         return
     end
@@ -4307,13 +4684,13 @@ ev:RegisterEvent("QUEST_GREETING")
 ev:RegisterEvent("QUEST_DETAIL")
 ev:SetScript("OnEvent", function(_, event, a1, a2)
     if event == "PLAYER_LOGIN" then
-        InstallChatFilter()
+        LG2.InstallChatFilter()
         BuildUI()
         HookTooltip(GameTooltip)
         HookTooltip(ItemRefTooltip)
         HookTooltip(ShoppingTooltip1)
         HookTooltip(ShoppingTooltip2)
-        HookIconOverlays()
+        LG2.HookIconOverlays()
         pcall(HookQuestTracker)
         pcall(HookJump)
         AutoAcceptBindPopup("EQUIP_BIND")
@@ -4324,14 +4701,14 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
         ev._reqRetry = GetTime() + 2
         HideBankDeposit()
     elseif event == "CHAT_MSG_ADDON" then
-        HandleAddon(a1, a2)
+        LG2.HandleAddon(a1, a2)
     elseif event == "BANKFRAME_OPENED" then
         ShowBankDeposit()
         RequestSync()
     elseif event == "BANKFRAME_CLOSED" then
         HideBankDeposit()
     elseif event == "QUEST_DETAIL" then
-        TryAutoAccept()
+        LG2.TryAutoAccept()
     elseif event == "QUEST_GREETING" then
         if PerkKnown(910108) and not (IsShiftKeyDown and IsShiftKeyDown()) then
             if GetNumAvailableQuests and SelectAvailableQuest and GetNumAvailableQuests() == 1 then
@@ -4345,7 +4722,7 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
             end
         end
     elseif event == "UNIT_SPELLCAST_SENT" or event == "UNIT_SPELLCAST_SUCCEEDED" then
-        if a1 == "player" and IsAccountPerksName(a2) then
+        if a1 == "player" and LG2.IsAccountPerksName(a2) then
             OpenFromCast()
         end
     end
@@ -4371,7 +4748,7 @@ ev:SetScript("OnUpdate", function(self, elapsed)
     RequestSync()
 end)
 
-local function DumpTip(tip)
+function LG2.DumpTip(tip)
     if not tip then
         return
     end
@@ -4396,7 +4773,7 @@ SLASH_LIVINGGEAR2 = "/livinggear"
 SlashCmdList["LIVINGGEAR"] = function(msg)
     msg = string.lower(string.gsub(msg or "", "^%s+", ""))
     if msg == "tip" then
-        DumpTip(GameTooltip)
+        LG2.DumpTip(GameTooltip)
         return
     end
     Toggle()

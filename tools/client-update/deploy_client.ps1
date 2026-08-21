@@ -44,13 +44,16 @@ Copy-Item -Force (Join-Path $PSScriptRoot "BonesawLauncher.ps1") $Client
 Copy-Item -Force (Join-Path $PSScriptRoot "Bonesaw.version") $Client
 Copy-Item -Force (Join-Path $PSScriptRoot "Bonesaw.update.json") $Client
 
-$addonSrc = Join-Path $Repo "modules\mod-living-gear\client_addon\LivingGear"
+# LivingGear.lua ships baked into Interface\FrameXML via patch-enUS-4.MPQ
+# (see build_patch.py) and auto-loads with the client -- no addon to enable,
+# no separate update step. Do NOT also drop a copy in Interface\AddOns\:
+# WoW would load both, double-registering every event/click handler and
+# doubling every outgoing addon message (e.g. a toggle click would fire
+# twice and snap right back to its old state).
 $addonDst = Join-Path $Client "Interface\AddOns\LivingGear"
-if (Test-Path $addonSrc) {
-    New-Item -ItemType Directory -Force -Path $addonDst | Out-Null
-    Copy-Item -Force (Join-Path $addonSrc "LivingGear.lua") $addonDst
-    Copy-Item -Force (Join-Path $addonSrc "LivingGear.toc") $addonDst
-    Write-Host "Deployed Interface\AddOns\LivingGear"
+if (Test-Path $addonDst) {
+    Remove-Item -Recurse -Force $addonDst
+    Write-Host "Removed stale Interface\AddOns\LivingGear (superseded by the FrameXML-baked copy in patch-enUS-4.MPQ)"
 }
 
 Write-Host "Done. Launch with Bonesaw.bat (update check) or Wow.exe."

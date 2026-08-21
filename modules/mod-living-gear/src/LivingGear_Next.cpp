@@ -739,7 +739,7 @@ public:
     {
         if (language != LANG_ADDON || type != CHAT_MSG_WHISPER)
             return true;
-        if (msg.rfind("SCAP|", 0) == 0 || msg.rfind("LG\tSCAP|", 0) == 0)
+        if (msg.rfind("SCAP|", 0) == 0)
         {
             HandleNextMessage(player, msg);
             return false;

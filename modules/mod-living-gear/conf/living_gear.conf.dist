@@ -17,11 +17,36 @@ LivingGear.MaxLevel = 50
 # 0.10 = +100% every 10 levels. Level 10 ~2x, 30 ~4x, 50 ~6x (+500% over base).
 LivingGear.GrowthPerLevel = 0.10
 
-# Fraction of grown stats granted to the account when the item is sacrificed
+# Legacy: fraction of grown stats banked by the old one-time "Attune"
+# sacrifice. Unused by the 2026-08-20 continuous-attunement redesign (see
+# LivingGear.Attune.* below) -- kept only because the underlying
+# sacrifice code path still technically exists, even though nothing in the
+# client sends it anymore.
 LivingGear.AbsorbPct = 0.10
 
 # Chance (0-100) that a new eligible item rolls bonus random stats
 LivingGear.RollChance = 25
+
+# Continuous attunement (2026-08-20): equipped (and Curator-tracked) gear
+# banks a live slice of its own current stats into the account on every
+# level-up, instead of being destroyed via a manual "Attune" button. The
+# banked slice ramps from 1% of the item's current stats at level 1 to
+# 100% at CapLevel -- past CapLevel the item keeps growing its own worn
+# stats (up to LivingGear.MaxLevel) but stops adding anything further to
+# the account.
+LivingGear.Attune.CapLevel = 25
+
+# The real WoW item level at which the level-1..CapLevel XP curve hits its
+# "designed" pace -- an item at this ilvl should reach CapLevel in roughly
+# 15-30 min of casual kill-grinding. Lower-ilvl items cost proportionally
+# less XP per level (faster to max), higher-ilvl items cost more
+# (slower) -- see LivingGear.Attune.IlvlFloorScale for the floor.
+LivingGear.Attune.IlvlBaseline = 70.0
+
+# Floor on the ilvl scaling factor above (as a fraction of the baseline
+# item's per-level cost) -- keeps very low ilvl items from costing an
+# unrealistic near-zero XP to max out.
+LivingGear.Attune.IlvlFloorScale = 0.15
 
 # How many primary stats a successful roll adds (1-5)
 LivingGear.RollStatCount = 1

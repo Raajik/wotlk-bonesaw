@@ -82,7 +82,16 @@ CUSTOM_SPELLS = {
     910035: ("*Rogue: Assassination", "Poisons deal 300% increased damage. DoT poisons spread to enemies within 10 yards.", 500),
     910036: ("*Rogue: Combat", "Blade Flurry is always active. Energy regeneration increased by 50%. Combo builders have a 30% chance to cast free Killing Spree.", 514),
     910037: ("*Rogue: Subtlety", "Gain Shadowstep with no cooldown. Shadowstep grants Stealth and chains up to 5 Ambushes (+500% damage). Learn Jack in the Box and Shadow Clone.", 250),
-    910102: ("Jack in the Box", "Place a stealthed trap. Triggers Howl of Terror, then Deadly Throws with random poisons.", 1330),
+    # icon 1330 rendered blank in-game (2026-08-20). Swapped for 95 (Kill
+    # Combo's icon, confirmed rendering fine in this same build) as a safe
+    # placeholder -- not a real totem icon, just guaranteed not blank.
+    # MPQ extraction tooling to properly look up a totem SpellIconID was
+    # broken when this was attempted (StormLib opens the archives fine,
+    # but SFileOpenFileEx returns ERROR_FILE_NOT_FOUND for paths that
+    # should exist -- not investigated further, out of scope for a cosmetic
+    # icon swap). Revisit with a real totem icon once that's fixed or
+    # verified another way.
+    910102: ("Jack in the Box", "Place a stealthed trap. Triggers Howl of Terror, then Deadly Throws with random poisons.", 95),
     910103: ("Shadow Clone", "Summon a permanent shadow clone that mirrors your rogue abilities. One clone at a time.", 250),
     910104: ("*Movement: Mounted Opener", "While mounted: jump forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap. Unlocked at level 40.", 1299),
     910105: ("*Auto-Mount", "Automatically mount when you leave combat. Toggle on the World tab or by casting this perk. Unlocked by learning a mount.", 132),
@@ -170,6 +179,29 @@ CUSTOM_SPELLS = {
     910097: ("*Craft: 5", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 375 in a crafting profession.", 326),
     910098: ("*Travel: Swim", "Swim speed +500%. Unlocked at level 10.", 348),
     910101: ("*Gear: Curator", "Passively levels your 5 lowest collection pieces. Unlocked at 1000 attuned items.", 249),
+    # Icon 95 (Kill Combo's icon, confirmed rendering) reused as a safe
+    # placeholder for all three -- same reasoning as Jack in the Box's icon
+    # swap above: MPQ extraction tooling to look up real class-ability
+    # icons is broken (see Bonesaw.md), so this avoids guessing a
+    # SpellIconID blind. Revisit once that tooling works.
+    910150: ("*Hunter: Marksmanship", "Chimera Shot has no cooldown and refreshes Serpent Sting to full duration. Ranged shots have a chance to grant a free, instant Aimed Shot.", 95),
+    910151: ("*Shaman: Elemental", "Thunderstorm has no cooldown. Lava Burst deals double damage. Chain Lightning has no target cap.", 95),
+    910152: ("*Death Knight: Unholy", "Summon Gargoyle has no cooldown. Army of the Dead has no cooldown and also summons a 5-ghoul group: 1 tank, 1 healer, 3 dps.", 95),
+    910153: ("*Hunter: Beast Mastery", "Bestial Wrath has no cooldown/focus cost. Call up to 4 more beasts from your stable to fight alongside your pet, each at 50% stats.", 95),
+    910154: ("*Hunter: Survival", "Explosive Shot deals double damage. Traps lose their cooldown and get a bigger blast radius. You are immune to your own trap damage.", 95),
+    910155: ("*Shaman: Enhancement", "Feral Spirit is a free toggle: your 2 spirit wolves never expire while it's active and deal double damage. Stormstrike has no cooldown.", 95),
+    910156: ("*Shaman: Restoration", "Riptide has no cooldown and also jumps to 2 more injured allies within 15 yards. Chain Heal has no bounce cap.", 95),
+    910157: ("*Warlock: Affliction", "Your DoTs spread to enemies within 15 yards every 1 sec. DoT tick damage is increased by your haste.", 95),
+    910158: ("*Warlock: Demonology", "Metamorphosis has no cooldown or shard cost. Your demon pet's damage is doubled.", 95),
+    910159: ("*Warlock: Destruction", "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt.", 95),
+    910160: ("*Druid: Balance", "Starfall has no cooldown/mana cost. You are permanently in both Solar and Lunar Eclipse at once.", 95),
+    910161: ("*Druid: Feral", "Berserk is a free toggle. While active, Cat/Bear abilities cost no energy/rage and lose their cooldowns.", 95),
+    910162: ("*Druid: Restoration", "Wild Growth has no cooldown and heals up to 10 allies within 30 yards. Rejuvenation spreads to injured allies within 15 yards every 3 sec.", 95),
+    910163: ("*Priest: Discipline", "Penance has no cooldown and also applies Power Word: Shield to the target.", 95),
+    910164: ("*Priest: Holy", "Guardian Spirit has no cooldown and also applies to 2 more injured allies within 20 yards.", 95),
+    910165: ("*Priest: Shadow", "Shadowfiend has no cooldown. Mind Flay deals quadruple damage.", 95),
+    910166: ("*Death Knight: Blood", "Dancing Rune Weapon has no cooldown/runic cost. While active, melee hits heal you for 5% of the damage dealt.", 95),
+    910167: ("*Death Knight: Frost", "Hungering Cold has no cooldown/runic cost. Frost Strike and Obliterate deal double damage.", 95),
 }
 
 # Copy SpellVisualID[2] from vanilla spells onto hidden sparkle/pulse dummies.
@@ -222,6 +254,27 @@ SLA_TEMPLATE_SPELL = 2656
 ATTR_ABILITY_MOUNTED = 0x01000010
 ATTR_NOT_IN_COMBAT = 0x10000000
 INTERRUPT_ON_HIT = 0x08 | 0x10
+
+# make_custom() forces every custom spell's *effect* target to self
+# (ImplicitTargetA_1 = 1), but never touches field 16 (Targets, the spell's
+# own cast-time targeting *requirement*) -- that's inherited as-is from
+# TEMPLATE_SPELL_ID, whatever it happens to require. If the template
+# requires an enemy/unit target, every custom spell that isn't a toggle
+# cast via a UI click (which never needs to pass a real target) inherits
+# that requirement too, and casting from the action bar with nothing
+# selected fails client-side with "Invalid target" -- hit for real with
+# Jack in the Box (910102), which is meant to drop in place like a totem,
+# no target needed. 0 = no target flags required at all.
+TARGETS_OVERRIDE = {
+    910102: 0,  # Jack in the Box: drop in place, no target needed
+}
+# All custom spells currently get RecoveryTime/CategoryRecoveryTime forced
+# to 0 (see make_custom), i.e. no real cooldown beyond the client's default
+# GCD. Per-spell overrides (milliseconds) for anything that actually needs
+# a real recast timer.
+RECOVERY_OVERRIDE_MS = {
+    910102: 4000,  # Jack in the Box: 4s, requested explicitly
+}
 # Pick Lock + Opening / Treasure / kneeling / tinkering / vehicle.
 CHEST_OPEN_LOCKTYPES = {1, 5, 6, 10, 12, 13, 14, 17, 21}
 # SPELL_AURA_MOUNTED = 78. Instant cast and usable while moving.
@@ -439,6 +492,10 @@ def patch_spell_dbc():
         for loc in range(187, 203):
             rec[loc] = 0
         rec[203] = 0
+        if spell_id in TARGETS_OVERRIDE:
+            rec[16] = TARGETS_OVERRIDE[spell_id]
+        if spell_id in RECOVERY_OVERRIDE_MS:
+            rec[29] = RECOVERY_OVERRIDE_MS[spell_id]
         return struct.pack("<" + "I" * fields, *rec)
 
     for spell_id, (name, desc, icon) in CUSTOM_SPELLS.items():
@@ -511,7 +568,8 @@ def verify_dbc():
             raise SystemExit(f"Spell {spell_id} aura duration/stacks mismatch")
         if rec[4] & 0x40:
             raise SystemExit(f"Spell {spell_id} still marked PASSIVE")
-        if rec[1] or rec[29] or rec[30]:
+        want_recovery = RECOVERY_OVERRIDE_MS.get(spell_id, 0)
+        if rec[1] or rec[29] != want_recovery or rec[30]:
             raise SystemExit(f"Spell {spell_id} still has a cooldown/category")
 
 
@@ -563,6 +621,181 @@ def patch_skill_line_ability():
     DBC_DIR.mkdir(parents=True, exist_ok=True)
     SLA_DBC.write_bytes(header + bytes(new_blob) + bytes(string_block))
     print(f"Wrote {SLA_DBC} ({new_count} records)")
+
+
+LUA_UPVALUE_WARN_LIMIT = 55  # Lua 5.1's real hard ceiling is 60; warn with margin to spare.
+LUA_LOCAL_WARN_LIMIT = 180  # Lua 5.1's real hard ceiling is 200 *main-chunk* locals; same margin idea.
+
+
+def check_lua_limits():
+    """
+    Lua 5.1 (what the WotLK 3.3.5 client actually runs) hard-caps any single
+    function at 60 upvalues (outer-scope variables it references, including
+    ones only used inside its own nested closures), AND separately caps the
+    main chunk -- the whole file, treated as one implicit function -- at 200
+    local variables, where every top-level `local`/`local function` costs
+    one slot for the rest of the file. Both are *compile-time* failures --
+    the whole file fails to load, silently, with no in-game symptom beyond
+    "nothing in the addon works" (see Bonesaw.md, "Lua 5.1's 60-upvalue-
+    per-function limit killed the entire addon silently" and "Lua 5.1's
+    200-local main-chunk limit", both 2026-08-20 -- the second one was hit
+    *by the fix for the first one*: extracting more top-level functions to
+    fix the upvalue ceiling pushed the main-chunk local count over its own,
+    separate ceiling the same night).
+
+    Static analysis, not a real Lua 5.1 compile (none was available in this
+    environment -- `lupa` wraps a later Lua version with a higher ceiling,
+    so it can't be used to validate this specific limit). Walks every
+    function in the file (top-level and nested), tracking which names are
+    local to it or an enclosing function vs. which resolve to a file-level
+    `local` declared before it -- the latter are upvalues. Requires the
+    `luaparser` PyPI package; skips with a warning (does not fail the
+    build) if it isn't installed, since it's a dev-time safety net, not a
+    hard runtime dependency of this pipeline.
+    """
+    try:
+        from luaparser import ast as lua_ast
+        from luaparser import astnodes as A
+    except ImportError:
+        print("WARNING: luaparser not installed (pip install luaparser) -- "
+              "skipped the Lua 5.1 upvalue and main-chunk-local checks. This "
+              "is how the addon silently failed to load for an entire "
+              "session on 2026-08-20 (twice) -- install it so this build "
+              "actually catches that class of bug instead of shipping it.",
+              file=sys.stderr)
+        return
+
+    src = UI_LUA_SRC.read_text(encoding="utf-8")
+    tree = lua_ast.parse(src)
+    body = tree.body.body if hasattr(tree.body, "body") else tree.body
+
+    def stmt_local_names(stmt):
+        names = []
+        if isinstance(stmt, A.LocalAssign):
+            names.extend(t.id for t in stmt.targets if isinstance(t, A.Name))
+        elif isinstance(stmt, A.LocalFunction) and isinstance(stmt.name, A.Name):
+            names.append(stmt.name.id)
+        return names
+
+    def upvalue_count(func_node, outer_locals):
+        used = set()
+
+        def walk(node, local_stack):
+            if node is None:
+                return
+            if isinstance(node, list):
+                for n in node:
+                    walk(n, local_stack)
+                return
+            if isinstance(node, (A.Function, A.AnonymousFunction, A.LocalFunction)):
+                new_stack = local_stack + [set()]
+                for a in getattr(node, "args", None) or []:
+                    if isinstance(a, A.Name):
+                        new_stack[-1].add(a.id)
+                walk(getattr(node, "body", None), new_stack)
+                return
+            if isinstance(node, A.LocalAssign):
+                for e in node.values or []:
+                    walk(e, local_stack)
+                for t in node.targets:
+                    if isinstance(t, A.Name):
+                        local_stack[-1].add(t.id)
+                return
+            if isinstance(node, A.Fornum):
+                new_stack = local_stack + [set()]
+                if isinstance(node.target, A.Name):
+                    new_stack[-1].add(node.target.id)
+                for e in (node.start, node.stop, node.step):
+                    if e is not None:
+                        walk(e, local_stack)
+                walk(node.body, new_stack)
+                return
+            if isinstance(node, A.Forin):
+                new_stack = local_stack + [set()]
+                for t in node.targets:
+                    if isinstance(t, A.Name):
+                        new_stack[-1].add(t.id)
+                for e in node.iter:
+                    walk(e, local_stack)
+                walk(node.body, new_stack)
+                return
+            if isinstance(node, A.Name):
+                name = node.id
+                if any(name in scope for scope in local_stack):
+                    return
+                if name in outer_locals:
+                    used.add(name)
+                return
+            if not hasattr(node, "__dict__"):
+                return
+            for field in vars(node):
+                if field.startswith("_"):
+                    continue
+                val = getattr(node, field)
+                if isinstance(val, A.Node):
+                    walk(val, local_stack)
+                elif isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, A.Node):
+                            walk(item, local_stack)
+
+        params = set()
+        for a in getattr(func_node, "args", None) or []:
+            if isinstance(a, A.Name):
+                params.add(a.id)
+        walk(getattr(func_node, "body", None), [params])
+        return used
+
+    # Walk the whole file collecting (name, line, upvalue_count) for every
+    # function -- top-level LocalFunction/Function statements, and anything
+    # nested inside them -- checked against the set of file-level locals
+    # declared before that function's own definition point.
+    toplevel_locals = set()
+    problems = []
+
+    def check_named(stmt, name):
+        count = upvalue_count(stmt, toplevel_locals)
+        if len(count) > LUA_UPVALUE_WARN_LIMIT:
+            line = getattr(stmt, "line", "?")
+            problems.append((name, line, len(count), sorted(count)))
+
+    for stmt in body:
+        if isinstance(stmt, A.LocalFunction) and isinstance(stmt.name, A.Name):
+            check_named(stmt, stmt.name.id)
+        toplevel_locals.update(stmt_local_names(stmt))
+
+    if problems:
+        lines = [
+            f"Lua 5.1 upvalue check failed -- {len(problems)} function(s) at or near "
+            f"the real 60 ceiling (warn threshold {LUA_UPVALUE_WARN_LIMIT}):"
+        ]
+        for name, line, count, names in problems:
+            lines.append(f"  {name} (line {line}): {count} upvalues")
+            lines.append(f"    {', '.join(names)}")
+        lines.append(
+            "Extract part of the function's body into its own local function "
+            "(gets a fresh 60-upvalue budget) rather than adding more outer-"
+            "scope references directly -- see BuildClassTabs/BuildLootPanel "
+            "in LivingGear.lua for the pattern, and the matching Bonesaw.md "
+            "entry for why this matters."
+        )
+        raise SystemExit("\n".join(lines))
+    print("Lua upvalue check: OK")
+
+    local_count = len(toplevel_locals)
+    if local_count > LUA_LOCAL_WARN_LIMIT:
+        raise SystemExit(
+            f"Lua 5.1 main-chunk local check failed -- {local_count} top-level "
+            f"local declarations (warn threshold {LUA_LOCAL_WARN_LIMIT}, real "
+            f"ceiling 200). Don't add another top-level `local function Foo()` "
+            f"-- attach it as `function LG2.Foo()` instead (see LG2 at the top "
+            f"of LivingGear.lua and the matching Bonesaw.md entry). That keeps "
+            f"its own independent 60-upvalue budget without costing a main-"
+            f"chunk local slot. Reserve top-level `local function` for things "
+            f"actually called from many places, where a name is clearer than "
+            f"a table lookup."
+        )
+    print(f"Lua main-chunk local check: OK ({local_count}/200)")
 
 
 def patch_framexml():
@@ -643,6 +876,7 @@ def build_mpq():
 
 
 def main():
+    check_lua_limits()
     patch_spell_dbc()
     verify_dbc()
     patch_skill_line_ability()

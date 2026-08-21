@@ -1,8 +1,18 @@
 /*
  * Living Gear
  * Equipped items gain XP and levels. Grown stats apply only while worn.
- * Sacrificing an item destroys it and stores 10% of its grown stats on the
- * account (best copy per item entry). Random bonus stats may roll on loot.
+ *
+ * Attunement (2026-08-20 redesign, see Bonesaw.md): no longer a one-time
+ * sacrifice. Every level-up of an eligible equipped item (or a Curator-
+ * tracked bag/bank/armory item, LivingGear_Perks.cpp TickCurator) banks a
+ * live slice of that item's *current* grown stats into the account's
+ * lg_absorb record for its item entry -- see BankAttunement/AddItemXpAndBank.
+ * The slice starts at 1% at level 1 and ramps to 100% at attuneCapLevel
+ * (default 25); items keep growing their own worn stats past that point (up
+ * to maxLevel/50) but stop adding anything further to the account. The item
+ * is never destroyed. The old destructive SacrificeItem/HandleAttuneMessage
+ * path below is kept but effectively dead now that the addon no longer
+ * sends ATTUNE| -- not deleted outright since it's inert, not broken.
  */
 
 #include "Bag.h"
@@ -14,6 +24,7 @@
 #include "Item.h"
 #include "ItemTemplate.h"
 #include "Log.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "Random.h"
@@ -24,11 +35,17 @@
 #include "SpellInfo.h"
 #include "WorldSession.h"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+class Player;
+void SendVaultAndRuleSync(Player* player); // LivingGear_Vault.cpp
 
 namespace LivingGear
 {
@@ -40,9 +57,23 @@ struct LgConfig
     uint32 xpBossKill = 10;
     uint16 maxLevel = 50;
     float growthPerLevel = 0.10f;
-    float absorbPct = 0.10f;
+    float absorbPct = 0.10f; // legacy one-time-sacrifice pct; unused by the new continuous-attunement path, kept for the (now-unreachable) SacrificeItem code path
     float rollChance = 25.0f;
     uint8 rollStatCount = 1;
+
+    // Continuous-attunement redesign (2026-08-20, see Bonesaw.md): equipped
+    // (and Curator-tracked) gear now banks a live, ever-updating slice of
+    // its own current stats into the account's lg_absorb record on every
+    // level-up, instead of being destroyed via a one-time "Attune" button.
+    // AttuneCapLevel is the living-gear level at which an item's account
+    // contribution reaches 100% of its current stats; AttuneIlvlBaseline is
+    // the real WoW item level at which the fast 1-AttuneCapLevel XP curve
+    // hits its "designed" pace (default: maxes out in ~15-30 min of casual
+    // grinding); AttuneIlvlFloorScale keeps very-low-ilvl gear from costing
+    // an unrealistic near-zero XP.
+    uint16 attuneCapLevel = 25;
+    float attuneIlvlBaseline = 70.0f;
+    float attuneIlvlFloorScale = 0.15f;
 
     void Load()
     {
@@ -59,6 +90,9 @@ struct LgConfig
             rollStatCount = 1;
         if (rollStatCount > 5)
             rollStatCount = 5;
+        attuneCapLevel = static_cast<uint16>(sConfigMgr->GetOption<uint32>("LivingGear.Attune.CapLevel", 25));
+        attuneIlvlBaseline = sConfigMgr->GetOption<float>("LivingGear.Attune.IlvlBaseline", 70.0f);
+        attuneIlvlFloorScale = sConfigMgr->GetOption<float>("LivingGear.Attune.IlvlFloorScale", 0.15f);
     }
 };
 
@@ -249,12 +283,109 @@ static LgStats WornDelta(ItemTemplate const* proto, LgItemState const& st)
     return d;
 }
 
-// Fast to 10 (45 white kills), then quadratic so later levels take real work.
-static uint32 XpForNextLevel(uint16 level)
+// Levels 1..attuneCapLevel-1 (default 1-24): fast, item-level-scaled curve
+// so attunement (see BankAttunement) reaches its 100% cap quickly -- a
+// baseline (itemLevel == attuneIlvlBaseline, default 70) item should hit the
+// cap in roughly 15-30 min of casual kill-grinding; lower-ilvl items scale
+// down (floor at attuneIlvlFloorScale, default 15% of baseline cost) and
+// higher-ilvl items scale up proportionally, so "max out attunement" stays
+// a fast target for everyday leveling-through-content gear but a real
+// investment for high-ilvl endgame pieces.
+// Levels attuneCapLevel..maxLevel-1 (default 25-49): attunement is already
+// at 100%, this only governs the item's own continued worn-stat growth, so
+// it reverts to the original slower quadratic curve as a long-term chase.
+static uint32 XpForNextLevel(uint16 level, uint32 itemLevel)
 {
+    if (level < g_cfg.attuneCapLevel)
+    {
+        float const scale = std::max(g_cfg.attuneIlvlFloorScale,
+            static_cast<float>(itemLevel) / std::max(1.0f, g_cfg.attuneIlvlBaseline));
+        float const base = std::ceil(static_cast<float>(level) / 2.0f);
+        uint32 const cost = static_cast<uint32>(std::ceil(base * scale));
+        return cost < 1 ? 1 : cost;
+    }
     if (level < 10)
         return level;
     return (static_cast<uint32>(level) * static_cast<uint32>(level)) / 2;
+}
+
+// 1% at level 1, linear up to 100% at attuneCapLevel (default 25), then
+// capped at 100% for any level beyond that.
+static float AbsorbPctForLevel(uint16 level)
+{
+    if (level >= g_cfg.attuneCapLevel)
+        return 1.0f;
+    if (level < 1)
+        level = 1;
+    float const span = static_cast<float>(g_cfg.attuneCapLevel - 1);
+    float const t = span > 0.0f ? static_cast<float>(level - 1) / span : 1.0f;
+    return 0.01f + t * 0.99f;
+}
+
+// Non-destructive: mirrors `itemEntry`'s current grown stats (scaled by
+// AbsorbPctForLevel) into the account's lg_absorb ratchet for that entry.
+// Never destroys anything -- called automatically on every level-up (see
+// AddItemXpAndBank) rather than as a manual one-time sacrifice.
+static void BankAttunement(Player* player, uint32 itemEntry, LgItemState const& st)
+{
+    if (!player || !player->GetSession())
+        return;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
+    if (!proto)
+        return;
+
+    LgStats grown = GrownStats(proto, st);
+    float const pct = AbsorbPctForLevel(st.level);
+    LgStats absorb;
+    absorb.str = grown.str * pct;
+    absorb.agi = grown.agi * pct;
+    absorb.sta = grown.sta * pct;
+    absorb.intel = grown.intel * pct;
+    absorb.spi = grown.spi * pct;
+    absorb.armor = grown.armor * pct;
+
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    float existingTotal = 0.0f;
+    if (QueryResult prev = CharacterDatabase.Query(
+        "SELECT `str`, `agi`, `sta`, `intel`, `spi`, `armor` FROM `lg_absorb` "
+        "WHERE `account_id` = {} AND `item_entry` = {}", accountId, itemEntry))
+    {
+        Field* f = prev->Fetch();
+        existingTotal = f[0].Get<float>() + f[1].Get<float>() + f[2].Get<float>()
+            + f[3].Get<float>() + f[4].Get<float>() + f[5].Get<float>();
+    }
+    // Same ratchet as the old sacrifice path: never regress the account's
+    // banked record for this item entry (a lower-level alt copy shouldn't
+    // undo a better one already banked).
+    if (absorb.Total() <= existingTotal + 0.01f)
+        return;
+
+    CharacterDatabase.DirectExecute(
+        "REPLACE INTO `lg_absorb` (`account_id`, `item_entry`, `str`, `agi`, `sta`, "
+        "`intel`, `spi`, `armor`, `item_level`) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
+        accountId, itemEntry, absorb.str, absorb.agi, absorb.sta,
+        absorb.intel, absorb.spi, absorb.armor, st.level);
+}
+
+// Shared level-up path for both equipped gear (GrantKillXp) and
+// Curator-tracked bag/bank/armory pieces (LivingGear_Perks.cpp TickCurator,
+// via LivingGear_GrantItemXp below) -- one place that adds XP, rolls over
+// levels against XpForNextLevel, and banks attunement on every level
+// gained, so both paths behave identically. Returns true if it leveled up
+// at least once. Does not save; caller saves after (GrantKillXp saves once
+// per equipped slot per kill either way).
+static bool AddItemXpAndBank(Player* player, uint32 itemLevel, uint32 xp, LgItemState& st)
+{
+    st.xp += xp;
+    bool leveled = false;
+    while (st.level < g_cfg.maxLevel && st.xp >= XpForNextLevel(st.level, itemLevel))
+    {
+        st.xp -= XpForNextLevel(st.level, itemLevel);
+        ++st.level;
+        leveled = true;
+        BankAttunement(player, st.itemEntry, st);
+    }
+    return leveled;
 }
 
 static bool LoadItemState(uint32 itemGuid, LgItemState& out)
@@ -447,6 +578,60 @@ static void SendAddonLine(Player* player, std::string const& line)
     player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
 }
 
+// Account-wide UI scale (85-175%). Client sends SCALESET|<pct> when the
+// player picks a size from the addon window's scale menu; this persists it
+// so it's the same across every character on the account, matching the
+// account-wide speed_cap/riding_skill pattern in LivingGear_Next.cpp.
+uint32 const UI_SCALE_MIN = 85;
+uint32 const UI_SCALE_MAX = 175;
+uint32 const UI_SCALE_DEFAULT = 100;
+
+bool g_scaleSchemaReady = false;
+bool g_hasUiScaleCol = false;
+
+void DetectScaleSchema()
+{
+    if (g_scaleSchemaReady)
+        return;
+    g_scaleSchemaReady = true;
+    if (QueryResult cols = CharacterDatabase.Query(
+        "SELECT `COLUMN_NAME` FROM `information_schema`.`COLUMNS` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_meta' AND `COLUMN_NAME` = 'ui_scale'"))
+        g_hasUiScaleCol = cols->GetRowCount() > 0;
+}
+
+uint32 ClampUiScale(uint32 pct)
+{
+    if (pct < UI_SCALE_MIN)
+        return UI_SCALE_MIN;
+    if (pct > UI_SCALE_MAX)
+        return UI_SCALE_MAX;
+    return pct;
+}
+
+uint32 LoadUiScale(uint32 accountId)
+{
+    DetectScaleSchema();
+    if (!g_hasUiScaleCol)
+        return UI_SCALE_DEFAULT;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `ui_scale` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+        return ClampUiScale((*result)[0].Get<uint32>());
+    return UI_SCALE_DEFAULT;
+}
+
+void SaveUiScale(uint32 accountId, uint32 pct)
+{
+    DetectScaleSchema();
+    if (!g_hasUiScaleCol)
+        return;
+    pct = ClampUiScale(pct);
+    CharacterDatabase.DirectExecute(
+        "INSERT INTO `lg_account_meta` (`account_id`, `ui_scale`) VALUES ({}, {}) "
+        "ON DUPLICATE KEY UPDATE `ui_scale` = {}",
+        accountId, pct, pct);
+}
+
 static void SendLivingItem(Player* player, Item* item, std::string const& loc)
 {
     if (!player || !item)
@@ -458,7 +643,7 @@ static void SendLivingItem(Player* player, Item* item, std::string const& loc)
     LgItemState st;
     EnsureItemState(item, player, st);
     LgStats delta = WornDelta(proto, st);
-    uint32 need = st.level >= g_cfg.maxLevel ? 0 : XpForNextLevel(st.level);
+    uint32 need = st.level >= g_cfg.maxLevel ? 0 : XpForNextLevel(st.level, proto->ItemLevel);
     SendAddonLine(player, Acore::StringFormat(
         "ITM|{}|{}|{}|{}|{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{}|{}|{}|{}|{}",
         loc, SanitizeAddonName(proto->Name1), st.level, st.xp, need,
@@ -499,6 +684,7 @@ static void SendAddonSync(Player* player, bool includeBags = true)
         return;
 
     SendAddonLine(player, "CLR");
+    ::SendVaultAndRuleSync(player);
 
     LgStats absorb = LoadAbsorbForPlayer(player);
     uint32 count = 0;
@@ -511,6 +697,19 @@ static void SendAddonSync(Player* player, bool includeBags = true)
     SendAddonLine(player, Acore::StringFormat("ABS|{:.1f}|{:.1f}|{:.1f}|{:.1f}|{:.1f}|{:.1f}|{}",
         absorb.str, absorb.agi, absorb.sta, absorb.intel, absorb.spi, absorb.armor, count));
 
+    {
+        uint32 autoOn = 1;
+        uint32 autoOff = 0;
+        if (QueryResult q = CharacterDatabase.Query(
+            "SELECT `auto_attune_on`, `auto_attune_off` FROM `lg_account_meta` WHERE `account_id` = {}",
+            player->GetSession()->GetAccountId()))
+        {
+            autoOn = (*q)[0].Get<uint8>();
+            autoOff = (*q)[1].Get<uint32>();
+        }
+        SendAddonLine(player, Acore::StringFormat("AA|{}|{}|{}", autoOn, count, autoOff));
+    }
+
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
         Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
@@ -521,6 +720,10 @@ static void SendAddonSync(Player* player, bool includeBags = true)
 
     if (includeBags)
         SendBagLivingItems(player);
+
+    if (player->GetSession())
+        SendAddonLine(player, Acore::StringFormat("SCALE|{}",
+            LoadUiScale(player->GetSession()->GetAccountId())));
 
     SendAddonLine(player, "END");
 }
@@ -661,11 +864,8 @@ static void GrantKillXp(Player* player, Creature* killed)
         if (st.level >= g_cfg.maxLevel)
             continue;
 
-        st.xp += xp;
-        while (st.level < g_cfg.maxLevel && st.xp >= XpForNextLevel(st.level))
+        if (AddItemXpAndBank(player, item->GetTemplate()->ItemLevel, xp, st))
         {
-            st.xp -= XpForNextLevel(st.level);
-            ++st.level;
             anyLevel = true;
             ChatHandler(player->GetSession()).PSendSysMessage(
                 "|cff66ccff[Living Gear]|r {} reached level {}.",
@@ -737,11 +937,16 @@ static bool SacrificeItem(Player* player, Item* item, ChatHandler* handler)
             + f[3].Get<float>() + f[4].Get<float>() + f[5].Get<float>();
     }
 
-    if (absorb.Total() + 0.01f < existingTotal)
+    // Bail on equal-or-weaker, not just strictly weaker: an Armory-recreated
+    // item is by definition the exact same entry the account already has
+    // attuned, so without this an item pulled out of the Armory to wear
+    // would immediately get auto-attuned (and destroyed) right back if
+    // auto-attune is on -- a recreate-then-instantly-lose loop.
+    if (absorb.Total() <= existingTotal + 0.01f)
     {
         handler->PSendSysMessage(
-            "|cffffcc00[Living Gear]|r A stronger copy of this item is already attuned. "
-            "Sacrificing this one would do nothing. Item kept.");
+            "|cffffcc00[Living Gear]|r A copy of this item at least as strong is already "
+            "attuned. Sacrificing this one would do nothing. Item kept.");
         return false;
     }
 
@@ -806,6 +1011,104 @@ static bool HandleAttuneMessage(Player* player, std::string const& raw)
     return true;
 }
 
+// Automatically attunes a newly-acquired item if the account has auto-attune
+// on and this item's quality isn't excluded. Safe to be this aggressive
+// because attuning isn't a true loss: the Attuned Armory (SPELL_ARMORY,
+// 910091) lets the player pull an equippable copy of anything they've
+// attuned back out whenever they actually want to wear it -- attuning just
+// converts the physical item into permanent account stats up front instead
+// of it sitting in a bag. SacrificeItem() itself already declines (with a
+// chat message, no destruction) when a stronger copy of the same item is
+// already attuned, so this can't make things worse by re-triggering on
+// duplicate lower-value drops.
+// Deferred the same way as LivingGear_Vault.cpp's autoloot-rule redirect:
+// SacrificeItem() destroys the item via Player::DestroyItem(), and calling
+// that from inside OnPlayerStoreNewItem is a use-after-free -- the item is
+// still ITEM_NEW at that point (never saved), so Item::SetState(ITEM_REMOVED)
+// takes its "pretend it never existed" branch and does `delete this`
+// immediately, while StoreLootItem (the caller of StoreNewItem, which is
+// what fires this hook) still holds that pointer and uses it right after
+// to send the loot notification. Crashed the server (SIGSEGV in
+// Player::SendNewItem -> Item::GetCount, 2026-08-20). Only the read-only
+// eligibility/toggle checks run synchronously here.
+static void TryAutoAttune(Player* player, Item* item)
+{
+    if (!g_cfg.enabled || !player || !item || !player->GetSession())
+        return;
+    ItemTemplate const* proto = item->GetTemplate();
+    if (!IsEligible(proto))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    uint32 autoOn = 1;
+    uint32 autoOff = 0;
+    if (QueryResult q = CharacterDatabase.Query(
+        "SELECT `auto_attune_on`, `auto_attune_off` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+    {
+        autoOn = (*q)[0].Get<uint8>();
+        autoOff = (*q)[1].Get<uint32>();
+    }
+    if (!autoOn)
+        return;
+    if (proto->Quality < 32 && (autoOff & (1u << proto->Quality)))
+        return;
+
+    ObjectGuid playerGuid = player->GetGUID();
+    ObjectGuid itemGuid = item->GetGUID();
+    uint32 const entry = proto->ItemId;
+    player->m_Events.AddEventAtOffset([playerGuid, itemGuid, entry]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !p->IsInWorld() || !p->GetSession())
+            return;
+        Item* i = p->GetItemByGuid(itemGuid);
+        if (!i || i->GetEntry() != entry)
+            return;
+        ChatHandler handler(p->GetSession());
+        SacrificeItem(p, i, &handler);
+    }, std::chrono::milliseconds(1));
+}
+
+static bool HandleAutoAttuneSet(Player* player, std::string const& raw)
+{
+    std::string msg = raw;
+    if (msg.rfind("LG\t", 0) == 0)
+        msg = msg.substr(3);
+    if (msg.rfind("AASET|", 0) != 0 || !player || !player->GetSession())
+        return false;
+
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    std::string const rest = msg.substr(6);
+    uint32 v = 0;
+    if (sscanf(rest.c_str(), "on|%u", &v) == 1)
+    {
+        CharacterDatabase.DirectExecute(
+            "INSERT INTO `lg_account_meta` (`account_id`, `auto_attune_on`) VALUES ({}, {}) "
+            "ON DUPLICATE KEY UPDATE `auto_attune_on` = {}",
+            accountId, v ? 1 : 0, v ? 1 : 0);
+        SendAddonSync(player, false);
+        return true;
+    }
+    uint32 quality = 0;
+    if (sscanf(rest.c_str(), "q|%u|%u", &quality, &v) == 2 && quality < 32)
+    {
+        uint32 mask = 0;
+        if (QueryResult q = CharacterDatabase.Query(
+            "SELECT `auto_attune_off` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+            mask = (*q)[0].Get<uint32>();
+        if (v)
+            mask |= (1u << quality);
+        else
+            mask &= ~(1u << quality);
+        CharacterDatabase.DirectExecute(
+            "INSERT INTO `lg_account_meta` (`account_id`, `auto_attune_off`) VALUES ({}, {}) "
+            "ON DUPLICATE KEY UPDATE `auto_attune_off` = {}",
+            accountId, mask, mask);
+        SendAddonSync(player, false);
+        return true;
+    }
+    return false;
+}
+
 class LivingGearPlayer : public PlayerScript
 {
 public:
@@ -851,6 +1154,7 @@ public:
     void OnPlayerStoreNewItem(Player* player, Item* item, uint32 /*count*/) override
     {
         TryRandomRoll(item, player);
+        TryAutoAttune(player, item);
     }
 
     void OnPlayerCreateItem(Player* player, Item* item, uint32 /*count*/) override
@@ -900,9 +1204,23 @@ public:
             SendAddonSync(player, true);
             return false;
         }
+        {
+            std::string body = msg;
+            if (body.rfind("LG\t", 0) == 0)
+                body = body.substr(3);
+            uint32 pct = 0;
+            if (sscanf(body.c_str(), "SCALESET|%u", &pct) == 1 && player->GetSession())
+            {
+                SaveUiScale(player->GetSession()->GetAccountId(), pct);
+                SendAddonSync(player, true);
+                return false;
+            }
+        }
         if (HandleTipRequest(player, msg))
             return false;
         if (HandleAttuneMessage(player, msg))
+            return false;
+        if (HandleAutoAttuneSet(player, msg))
             return false;
         return true;
     }
@@ -967,7 +1285,7 @@ public:
 
             LgItemState st;
             EnsureItemState(item, player, st);
-            uint32 need = st.level >= g_cfg.maxLevel ? 0 : XpForNextLevel(st.level);
+            uint32 need = st.level >= g_cfg.maxLevel ? 0 : XpForNextLevel(st.level, item->GetTemplate()->ItemLevel);
             handler->PSendSysMessage("  {}  lv {}  xp {}/{}  roll +{}/{}/{}/{}/{}",
                 item->GetTemplate()->Name1, st.level, st.xp, need,
                 st.rollStr, st.rollAgi, st.rollSta, st.rollInt, st.rollSpi);
@@ -1004,12 +1322,7 @@ public:
 
             LgItemState st;
             EnsureItemState(item, player, st);
-            st.xp += xp;
-            while (st.level < g_cfg.maxLevel && st.xp >= XpForNextLevel(st.level))
-            {
-                st.xp -= XpForNextLevel(st.level);
-                ++st.level;
-            }
+            AddItemXpAndBank(player, item->GetTemplate()->ItemLevel, xp, st);
             SaveItemState(st);
         }
         RefreshStats(player);
@@ -1068,6 +1381,37 @@ public:
     }
 };
 } // namespace LivingGear
+
+// Cross-file wrapper so LivingGear_Vault.cpp's loot-rule "Living gear"
+// match type can reuse the same equippable-gear eligibility check the
+// attune system uses, without exposing IsEligible's static/file-local
+// definition directly.
+bool IsLivingGearEligibleItem(ItemTemplate const* proto)
+{
+    return LivingGear::IsEligible(proto);
+}
+
+// Cross-file wrapper: grants XP to a tracked living-gear item by GUID,
+// rolling over levels and banking attunement exactly like GrantKillXp does
+// for equipped gear. Not tied to an equipped/loaded Item* -- looks the item
+// entry's template up directly, so it works for Curator-tracked bag/bank/
+// armory pieces too (LivingGear_Perks.cpp TickCurator, "attune 1000 items"
+// perk -- see Bonesaw.md, 2026-08-20 attunement redesign).
+void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp)
+{
+    if (!player)
+        return;
+    LivingGear::LgItemState st;
+    if (!LivingGear::LoadItemState(itemGuid, st))
+        return;
+    if (st.level >= LivingGear::g_cfg.maxLevel)
+        return;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(st.itemEntry);
+    if (!proto)
+        return;
+    LivingGear::AddItemXpAndBank(player, proto->ItemLevel, xp, st);
+    LivingGear::SaveItemState(st);
+}
 
 void AddSC_LivingGear()
 {
