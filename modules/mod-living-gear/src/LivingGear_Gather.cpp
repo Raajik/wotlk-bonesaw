@@ -545,6 +545,36 @@ void TrySkin(Player* player, Creature* creature)
     AutoStoreLoot(player, &creature->loot);
 }
 
+// A normal rod-cast catch was never implemented at all (found in the
+// 2026-08-21 perk audit) -- only the FISHINGHOLE pool-node case above
+// worked. The bobber is the player's own channel object, not something
+// found by a nearby-object scan, so this reads UNIT_FIELD_CHANNEL_OBJECT
+// directly rather than going through the range-scan loop in ScanGather.
+GameObject* FindFishingBobber(Player* player)
+{
+    if (!player || !player->GetMap())
+        return nullptr;
+    ObjectGuid const guid = player->GetGuidValue(UNIT_FIELD_CHANNEL_OBJECT);
+    if (!guid)
+        return nullptr;
+    GameObject* go = player->GetMap()->GetGameObject(guid);
+    if (!go || go->GetGoType() != GAMEOBJECT_TYPE_FISHINGNODE)
+        return nullptr;
+    if (go->GetOwnerGUID() != player->GetGUID())
+        return nullptr;
+    return go;
+}
+
+void TryAutoCatchFish(Player* player)
+{
+    if (!player || ExtraReach(player, SPELL_FISH_REACH) <= 0.0f)
+        return;
+    GameObject* bobber = FindFishingBobber(player);
+    if (!bobber || bobber->getLootState() != GO_READY)
+        return;
+    bobber->Use(player); // same as a manual right-click on a biting bobber
+}
+
 void ScanGather(Player* player)
 {
     if (!player || !player->IsAlive() || !player->IsInWorld() || player->IsInFlight())
@@ -555,6 +585,8 @@ void ScanGather(Player* player)
     if (last && getMSTimeDiff(last, now) < 400)
         return;
     last = now;
+
+    TryAutoCatchFish(player);
 
     float range = GATHER_BASE_RANGE;
     range = std::max(range, GATHER_BASE_RANGE + ExtraReach(player, SPELL_MINE_REACH));

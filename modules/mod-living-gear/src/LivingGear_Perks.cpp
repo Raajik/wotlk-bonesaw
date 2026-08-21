@@ -90,8 +90,15 @@ uint32 const SPELL_THUNDER_CLAP = 6343;
 uint32 const SPELL_CRIPPLING = 3408;
 uint32 const SPELL_WOUND = 13218;
 uint32 const SPELL_DEADLY_POISON = 2818;
-uint32 const COMBO_MAX = 100;
-uint32 const COMBO_MS = 180000;
+// Redesigned 2026-08-21: was 100 stacks/3% xp/3min independent-per-stack
+// decay, never actually unlocked so nobody ever saw it. New spec: 10 stacks
+// cap, 20% xp/stack, 5% move speed/stack (native MOD_INCREASE_SPEED aura,
+// stacks with everything else normally), single 10-min timer that refreshes
+// in full on every kill rather than each stack decaying independently.
+uint32 const COMBO_MAX = 10;
+uint32 const COMBO_MS = 600000;
+float const COMBO_XP_PCT_PER_STACK = 0.20f;
+int32 const COMBO_SPEED_PCT_PER_STACK = 5;
 uint32 const COOK_MS = 1000;
 float const AMBUSH_MULT = 6.0f;
 
@@ -114,7 +121,8 @@ PerkCfg g_cfg;
 
 struct ComboState
 {
-    std::vector<uint32> expires;
+    uint32 stacks = 0;
+    uint32 expiresAt = 0; // whole buff expires together; a new kill refreshes this to now + COMBO_MS
 };
 
 std::unordered_map<uint32, ComboState> g_combo;
@@ -356,10 +364,9 @@ uint32 ComboCount(Player* player)
         st = &g_groupCombo[player->GetGroup()->GetGUID().GetCounter()];
     else
         st = &g_combo[player->GetGUID().GetCounter()];
-    st->expires.erase(std::remove_if(st->expires.begin(), st->expires.end(),
-        [now](uint32 t) { return t <= now; }),
-        st->expires.end());
-    return uint32(st->expires.size());
+    if (st->stacks && now >= st->expiresAt)
+        st->stacks = 0;
+    return st->stacks;
 }
 
 void RecastCombo(Player* player)
@@ -373,8 +380,13 @@ void RecastCombo(Player* player)
         SendLine(player, "COMBO|0|0|0");
         return;
     }
-    int32 bp = int32(stacks) - 1;
-    player->CastCustomSpell(player, SPELL_COMBO, &bp, &bp, nullptr, true);
+    // bp0 is just a display/marker value (effect 1, dummy) -- the real xp
+    // bonus is read from ComboCount() directly in OnPlayerGiveXP, not from
+    // the aura. bp1 (effect 2, native MOD_INCREASE_SPEED) is what actually
+    // grants the move-speed bonus, via the engine's normal aura handling.
+    int32 xpMarker = int32(stacks);
+    int32 speedPct = int32(stacks) * COMBO_SPEED_PCT_PER_STACK;
+    player->CastCustomSpell(player, SPELL_COMBO, &xpMarker, &speedPct, nullptr, true);
     SendLine(player, Acore::StringFormat("COMBO|{}|{}|{}", stacks, COMBO_MAX, COMBO_MS / 1000));
 }
 
@@ -388,9 +400,11 @@ void AddCombo(Player* player)
         st = &g_groupCombo[group->GetGUID().GetCounter()];
     else
         st = &g_combo[player->GetGUID().GetCounter()];
-    if (st->expires.size() >= COMBO_MAX)
-        st->expires.erase(st->expires.begin());
-    st->expires.push_back(now + COMBO_MS);
+    if (now >= st->expiresAt)
+        st->stacks = 0; // previous buff had already fully expired -- start fresh
+    if (st->stacks < COMBO_MAX)
+        ++st->stacks;
+    st->expiresAt = now + COMBO_MS; // every kill refreshes the whole timer, not just adds a new independently-decaying stack
     if (Group* group = player->GetGroup())
     {
         for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
@@ -802,6 +816,15 @@ void CatchUpProfession(Player* player)
 {
     if (!player || !player->GetSession())
         return;
+    // These three were fully implemented and mechanically sound but never
+    // actually granted to anyone (found in a 2026-08-21 audit after the
+    // Autoloot/Quests-Finish 910008/910090 instances of this same bug) --
+    // no documented unlock condition for any of them, so grant unconditionally.
+    UnlockPerk(player, SPELL_COMBO, nullptr);
+    UnlockPerk(player, SPELL_ARMORY, nullptr);
+    UnlockPerk(player, SPELL_SOLO_QUEUE, nullptr);
+    if (player->GetRewardedQuestCount() >= 50)
+        UnlockPerk(player, SPELL_FIND_QUESTS, "|cff66ccff[Account Perks]|r *Quests - Find unlocked!");
     uint32 craft = 0;
     uint32 const skills[] = {
         SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_LEATHERWORKING, SKILL_TAILORING,
@@ -1232,7 +1255,7 @@ public:
         float mult = ZoneRewardMult(player);
         uint32 stacks = ComboCount(player);
         if (HasPerk(player, SPELL_COMBO) && stacks)
-            mult *= 1.0f + 0.03f * float(stacks);
+            mult *= 1.0f + COMBO_XP_PCT_PER_STACK * float(stacks);
         if (Aura* pace = player->GetAura(SPELL_DUNGEON_PACE))
             if (AuraEffect* e = pace->GetEffect(EFFECT_0))
                 mult *= 1.0f + float(e->GetAmount() + 1) / 100.0f;
@@ -1260,6 +1283,24 @@ public:
             SummonJackBox(player, player);
         if (info->Id == SPELL_SHADOW_CLONE)
             SummonClone(player);
+        if (info->Id == 8690 || info->Id == 556) // Hearthstone / Astral Recall
+        {
+            // Cast-time reduction (OnSpellPrepare, above) always worked --
+            // the cooldown half of Travel was never implemented at all
+            // (found in the 2026-08-21 audit). Same 20%-per-rank curve as
+            // cast time, applied as a shorter cooldown right after the cast
+            // actually lands, overriding whatever the engine just set.
+            uint32 travelRanks = 0;
+            for (uint32 id : SPELL_TRAVEL)
+                if (HasPerk(player, id))
+                    ++travelRanks;
+            if (travelRanks)
+            {
+                uint32 const baseRecovery = info->RecoveryTime ? info->RecoveryTime : 3600000;
+                uint32 const reduced = uint32(float(baseRecovery) * std::pow(0.80f, float(travelRanks)));
+                player->ModifySpellCooldown(info->Id, -int32(baseRecovery - reduced));
+            }
+        }
         if (info->Id == SPELL_FIND_QUESTS)
             FindQuests(player);
         if (info->Id == SPELL_AUTO_QUEST)

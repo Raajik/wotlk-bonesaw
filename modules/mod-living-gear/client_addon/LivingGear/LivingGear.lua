@@ -135,13 +135,14 @@ local WORLD_TRACKS = {
     },
     {
         name = "Fishing",
+        unit = "gather",
         ticks = {
             { id = 910043, name = "Cast", how = "Train Fishing. After you cast Fishing, it recasts and catches for you.", bonus = 0 },
             { id = 910044, name = "Pools", how = "Catch 250 fish. While autofishing, loot pools within 25 yards.", bonus = 0 },
             { id = 910045, name = "Speed", how = "Earn the 500 Fish achievement. Bites come twice as fast.", bonus = 0 },
-            { id = 910127, name = "150", how = "Reach Fishing 150. Fish yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
-            { id = 910128, name = "300", how = "Reach Fishing 300. Fish yield 4x.", bonus = 0 },
-            { id = 910129, name = "450", how = "Reach Fishing 450. Fish yield 8x.", bonus = 0 },
+            { id = 910127, name = "150", how = "Reach Fishing 150. Fish yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
+            { id = 910128, name = "300", how = "Reach Fishing 300. Fish yield 4x.", bonus = 0, yield = 4 },
+            { id = 910129, name = "450", how = "Reach Fishing 450. Fish yield 8x.", bonus = 0, yield = 8 },
             { id = 910130, name = "Reach 75", how = "Reach Fishing 75. Auto-loot pools from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910131, name = "Reach 225", how = "Reach Fishing 225. Auto-loot pools from +6 yards.", bonus = 6 },
             { id = 910132, name = "Reach 375", how = "Reach Fishing 375. Auto-loot pools from +9 yards.", bonus = 9 },
@@ -149,10 +150,11 @@ local WORLD_TRACKS = {
     },
     {
         name = "Engineering",
+        unit = "gather",
         ticks = {
-            { id = 910133, name = "150", how = "Reach Engineering 150. Crafts and blasting/salvage yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
-            { id = 910134, name = "300", how = "Reach Engineering 300. Crafts and blasting/salvage yield 4x.", bonus = 0 },
-            { id = 910135, name = "450", how = "Reach Engineering 450. Crafts and blasting/salvage yield 8x.", bonus = 0 },
+            { id = 910133, name = "150", how = "Reach Engineering 150. Crafts and blasting/salvage yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
+            { id = 910134, name = "300", how = "Reach Engineering 300. Crafts and blasting/salvage yield 4x.", bonus = 0, yield = 4 },
+            { id = 910135, name = "450", how = "Reach Engineering 450. Crafts and blasting/salvage yield 8x.", bonus = 0, yield = 8 },
             { id = 910136, name = "Reach 75", how = "Reach Engineering 75. Auto-gather blasting nodes and salvage from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910137, name = "Reach 225", how = "Reach Engineering 225. Auto-gather blasting nodes and salvage from +6 yards.", bonus = 6 },
             { id = 910138, name = "Reach 375", how = "Reach Engineering 375. Auto-gather blasting nodes and salvage from +9 yards.", bonus = 9 },
@@ -160,10 +162,11 @@ local WORLD_TRACKS = {
     },
     {
         name = "Herbalism",
+        unit = "gather",
         ticks = {
-            { id = 910115, name = "150", how = "Reach Herbalism 150. Herbs yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
-            { id = 910116, name = "300", how = "Reach Herbalism 300. Herbs yield 4x.", bonus = 0 },
-            { id = 910117, name = "450", how = "Reach Herbalism 450. Herbs yield 8x.", bonus = 0 },
+            { id = 910115, name = "150", how = "Reach Herbalism 150. Herbs yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
+            { id = 910116, name = "300", how = "Reach Herbalism 300. Herbs yield 4x.", bonus = 0, yield = 4 },
+            { id = 910117, name = "450", how = "Reach Herbalism 450. Herbs yield 8x.", bonus = 0, yield = 8 },
             { id = 910118, name = "Reach 75", how = "Reach Herbalism 75. Auto-gather herbs from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910119, name = "Reach 225", how = "Reach Herbalism 225. Auto-gather herbs from +6 yards.", bonus = 6 },
             { id = 910120, name = "Reach 375", how = "Reach Herbalism 375. Auto-gather herbs from +9 yards.", bonus = 9 },
@@ -203,10 +206,11 @@ local WORLD_TRACKS = {
     },
     {
         name = "Mining",
+        unit = "gather",
         ticks = {
-            { id = 910109, name = "150", how = "Reach Mining 150. Ore yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
-            { id = 910110, name = "300", how = "Reach Mining 300. Ore yield 4x.", bonus = 0 },
-            { id = 910111, name = "450", how = "Reach Mining 450. Ore yield 8x.", bonus = 0 },
+            { id = 910109, name = "150", how = "Reach Mining 150. Ore yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
+            { id = 910110, name = "300", how = "Reach Mining 300. Ore yield 4x.", bonus = 0, yield = 4 },
+            { id = 910111, name = "450", how = "Reach Mining 450. Ore yield 8x.", bonus = 0, yield = 8 },
             { id = 910112, name = "Reach 75", how = "Reach Mining 75. Auto-gather ore from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910113, name = "Reach 225", how = "Reach Mining 225. Auto-gather ore from +6 yards.", bonus = 6 },
             { id = 910114, name = "Reach 375", how = "Reach Mining 375. Auto-gather ore from +9 yards.", bonus = 9 },
@@ -233,10 +237,11 @@ local WORLD_TRACKS = {
     },
     {
         name = "Skinning",
+        unit = "gather",
         ticks = {
-            { id = 910121, name = "150", how = "Reach Skinning 150. Skins yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0 },
-            { id = 910122, name = "300", how = "Reach Skinning 300. Skins yield 4x.", bonus = 0 },
-            { id = 910123, name = "450", how = "Reach Skinning 450. Skins yield 8x.", bonus = 0 },
+            { id = 910121, name = "150", how = "Reach Skinning 150. Skins yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
+            { id = 910122, name = "300", how = "Reach Skinning 300. Skins yield 4x.", bonus = 0, yield = 4 },
+            { id = 910123, name = "450", how = "Reach Skinning 450. Skins yield 8x.", bonus = 0, yield = 8 },
             { id = 910124, name = "Reach 75", how = "Reach Skinning 75. Auto-skin from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910125, name = "Reach 225", how = "Reach Skinning 225. Auto-skin from +6 yards.", bonus = 6 },
             { id = 910126, name = "Reach 375", how = "Reach Skinning 375. Auto-skin from +9 yards.", bonus = 9 },
@@ -919,6 +924,32 @@ function LG2.TrackBonus(ticks)
         end
     end
     return bonus
+end
+
+-- Gathering tracks (unit = "gather") mix two different kinds of tick in one
+-- list: reach ticks and yield ticks. Each rank's own text is already the
+-- CUMULATIVE total at that rank ("+9 yards", "8x"), not an increment to add
+-- to the others, so both need max-of-unlocked, not TrackBonus()'s sum --
+-- summing showed nonsense like "(18%)" for +3/+6/+9 yards stacked, and
+-- yield never showed at all since its ticks all had bonus = 0.
+function LG2.TrackReach(ticks)
+    local reach = 0
+    for i = 1, #ticks do
+        if PerkKnown(ticks[i].id) and ticks[i].bonus and ticks[i].bonus > reach then
+            reach = ticks[i].bonus
+        end
+    end
+    return reach
+end
+
+function LG2.TrackYield(ticks)
+    local mult = 0
+    for i = 1, #ticks do
+        if PerkKnown(ticks[i].id) and ticks[i].yield and ticks[i].yield > mult then
+            mult = ticks[i].yield
+        end
+    end
+    return mult
 end
 
 local function ClampScale(s)
@@ -1700,11 +1731,28 @@ local function LayoutWorld()
     for t = 1, #WORLD_TRACKS do
         local track = WORLD_TRACKS[t]
         local row = ui.worldTracks[t]
-        local bonus = LG2.TrackBonus(track.ticks)
-        if bonus > 0 then
-            row.head:SetText(string.format("%s (|cff4fd14f%s%%|r)", track.name, bonus))
+        if track.unit == "gather" then
+            local reach = LG2.TrackReach(track.ticks)
+            local yield = LG2.TrackYield(track.ticks)
+            local parts = {}
+            if reach > 0 then
+                table.insert(parts, "+" .. reach .. " yd")
+            end
+            if yield > 0 then
+                table.insert(parts, yield .. "x yield")
+            end
+            if #parts > 0 then
+                row.head:SetText(string.format("%s (|cff4fd14f%s|r)", track.name, table.concat(parts, ", ")))
+            else
+                row.head:SetText(track.name)
+            end
         else
-            row.head:SetText(track.name)
+            local bonus = LG2.TrackBonus(track.ticks)
+            if bonus > 0 then
+                row.head:SetText(string.format("%s (|cff4fd14f%s%%|r)", track.name, bonus))
+            else
+                row.head:SetText(track.name)
+            end
         end
         for i = 1, #row.ticks do
             local tick = row.ticks[i]
