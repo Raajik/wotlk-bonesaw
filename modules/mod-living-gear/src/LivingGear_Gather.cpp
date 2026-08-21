@@ -667,8 +667,50 @@ public:
         PLAYERHOOK_ON_UPDATE,
         PLAYERHOOK_ON_UPDATE_SKILL,
         PLAYERHOOK_ON_CREATE_ITEM,
-        PLAYERHOOK_ON_USE_GAMEOBJECT
+        PLAYERHOOK_ON_USE_GAMEOBJECT,
+        PLAYERHOOK_ON_UPDATE_GATHERING_SKILL,
+        PLAYERHOOK_ON_UPDATE_FISHING_SKILL
     }) { }
+
+    // The yield perks (Mine/Herb/Skin/Fish/Eng, 2x/4x/8x) only ever
+    // multiplied loot item counts -- Living Gear never hooked the separate
+    // gathering-skill-up event AzerothCore fires (PLAYERHOOK_ON_UPDATE_GATHERING_SKILL
+    // for mining/herbalism/skinning, PLAYERHOOK_ON_UPDATE_FISHING_SKILL for
+    // fishing specifically), so skill-up rate was always just the vanilla
+    // 1-point-per-attempt regardless of unlocked yield rank. Reuses the
+    // same yield multiplier for skill-up count too, so "4x yield" also
+    // means "4x skill-ups" from the same rank.
+    void OnPlayerUpdateGatheringSkill(Player* player, uint32 skillId, uint32 /*currentLevel*/,
+        uint32 /*gray*/, uint32 /*green*/, uint32 /*yellow*/, uint32& gain) override
+    {
+        uint32 const* yieldIds = nullptr;
+        if (skillId == SKILL_MINING)
+            yieldIds = SPELL_MINE_YIELD;
+        else if (skillId == SKILL_HERBALISM)
+            yieldIds = SPELL_HERB_YIELD;
+        else if (skillId == SKILL_SKINNING)
+            yieldIds = SPELL_SKIN_YIELD;
+        else if (skillId == SKILL_ENGINEERING)
+            yieldIds = SPELL_ENG_YIELD;
+        if (yieldIds)
+            gain *= YieldMult(player, yieldIds);
+    }
+
+    bool OnPlayerUpdateFishingSkill(Player* player, int32 /*skill*/, int32 /*zoneSkill*/,
+        int32 /*chance*/, int32 /*roll*/) override
+    {
+        // Unlike the gathering hook above, this one has no gain-amount
+        // parameter to multiply -- it's a plain "does this attempt succeed"
+        // gate, and UpdateFishingSkill() itself always adds exactly 1 point.
+        // Simulate the same yield multiplier by calling it extra times
+        // ourselves, then letting the engine's own call (return true) add
+        // the last one -- e.g. 4x yield = 3 extra calls here + 1 from the
+        // caller = 4 total.
+        uint32 const mult = YieldMult(player, SPELL_FISH_YIELD);
+        for (uint32 i = 1; i < mult; ++i)
+            player->UpdateFishingSkill();
+        return true;
+    }
 
     void OnPlayerUseGameObject(Player* player, GameObject* go, bool& handled) override
     {

@@ -72,6 +72,11 @@ uint32 const SPELL_JACK_BOX = 910102;
 uint32 const SPELL_SHADOW_CLONE = 910103;
 uint32 const SPELL_MOUNTED_OPENER = 910104;
 uint32 const SPELL_AUTO_MOUNT = 910105;
+// Quadruples aggro/detection radius while toggled on -- native
+// SPELL_AURA_MOD_DETECTED_RANGE (152), flat +60 yards, which roughly 4x's
+// the ~20-yard same-level baseline in Creature::GetAttackDistance(). No
+// core changes needed; this is exactly what that aura type is for.
+uint32 const SPELL_PULL_RADIUS = 910168;
 uint32 const SPELL_SUBTLETY = 910037;
 uint32 const SPELL_ASSASSINATION = 910035;
 uint32 const NPC_JACK_BOX = 910200;
@@ -139,12 +144,15 @@ std::unordered_map<uint32, bool> g_dungeonDone;
 std::unordered_map<uint32, uint32> g_cookAcc;
 std::unordered_map<uint32, uint32> g_curatorAcc;
 std::unordered_map<uint32, uint32> g_comboTick;
+std::unordered_map<uint32, uint32> g_pullRadiusTick;
 std::unordered_set<uint32> g_perkLoaded;
 std::unordered_map<uint32, std::unordered_set<uint32>> g_perks;
 bool g_hasAutoMountCol = false;
 bool g_hasSoloCol = false;
+bool g_hasPullRadiusCol = false;
 bool g_schemaReady = false;
 bool g_hasZoneScale = false;
+std::unordered_map<uint32, bool> g_pullRadiusOn;
 
 void DetectSchema()
 {
@@ -162,6 +170,8 @@ void DetectSchema()
                 g_hasAutoMountCol = true;
             else if (name == "solo_queue")
                 g_hasSoloCol = true;
+            else if (name == "pull_radius")
+                g_hasPullRadiusCol = true;
         } while (cols->NextRow());
     }
 }
@@ -824,6 +834,7 @@ void CatchUpProfession(Player* player)
     UnlockPerk(player, SPELL_COMBO, nullptr);
     UnlockPerk(player, SPELL_ARMORY, nullptr);
     UnlockPerk(player, SPELL_SOLO_QUEUE, nullptr);
+    UnlockPerk(player, SPELL_PULL_RADIUS, nullptr);
     if (player->GetRewardedQuestCount() >= 50)
         UnlockPerk(player, SPELL_FIND_QUESTS, "|cff66ccff[Account Perks]|r *Quests - Find unlocked!");
     uint32 craft = 0;
@@ -1057,6 +1068,20 @@ bool HandleLgChat(Player* player, std::string msg)
         SendLine(player, Acore::StringFormat("AM|{}", v ? 1 : 0));
         return true;
     }
+    if (sscanf(msg.c_str(), "PULLSET|%u", &v) == 1)
+    {
+        g_pullRadiusOn[acc] = v != 0;
+        DetectSchema();
+        if (g_hasPullRadiusCol)
+            CharacterDatabase.DirectExecute(
+                "INSERT INTO `lg_account_meta` (`account_id`, `pull_radius`) VALUES ({}, {}) "
+                "ON DUPLICATE KEY UPDATE `pull_radius` = {}",
+                acc, v ? 1 : 0, v ? 1 : 0);
+        if (!v)
+            player->RemoveAurasDueToSpell(SPELL_PULL_RADIUS);
+        SendLine(player, Acore::StringFormat("PULL|{}", v ? 1 : 0));
+        return true;
+    }
     if (sscanf(msg.c_str(), "SOLOSET|%u", &v) == 1)
     {
         g_soloQueue[acc] = v != 0;
@@ -1168,6 +1193,13 @@ public:
         }
         else if (g_autoMountOn.find(acc) == g_autoMountOn.end())
             g_autoMountOn[acc] = true;
+        if (g_hasPullRadiusCol)
+        {
+            g_pullRadiusOn[acc] = false;
+            if (QueryResult q = CharacterDatabase.Query(
+                "SELECT `pull_radius` FROM `lg_account_meta` WHERE `account_id` = {}", acc))
+                g_pullRadiusOn[acc] = (*q)[0].Get<uint32>() != 0;
+        }
         if (HasPerk(player, SPELL_SWIM))
             player->CastSpell(player, SPELL_SWIM, true);
         if (GetClassPerk(player) == SPELL_SUBTLETY)
@@ -1183,6 +1215,7 @@ public:
         RecastCombo(player);
         NotifyZoneScale(player);
         SendLine(player, Acore::StringFormat("AM|{}", g_autoMountOn[acc] ? 1 : 0));
+        SendLine(player, Acore::StringFormat("PULL|{}", g_pullRadiusOn[acc] ? 1 : 0));
     }
 
     void OnPlayerLogout(Player* player) override
@@ -1192,6 +1225,7 @@ public:
         uint32 g = player->GetGUID().GetCounter();
         g_combo.erase(g);
         g_comboTick.erase(g);
+        g_pullRadiusTick.erase(g);
         g_cloneGuid.erase(g);
         g_boxGuid.erase(g);
     }
@@ -1208,6 +1242,20 @@ public:
             {
                 g_comboTick[id] = 0;
                 RecastCombo(player);
+            }
+        }
+        if (player->GetSession() && g_pullRadiusOn[player->GetSession()->GetAccountId()]
+            && HasPerk(player, SPELL_PULL_RADIUS))
+        {
+            uint32 id = player->GetGUID().GetCounter();
+            g_pullRadiusTick[id] += diff;
+            // SPELL_PULL_RADIUS's own duration is short (matches SPELL_COMBO's
+            // DurationIndex) -- refresh well inside that window so the aura
+            // never actually lapses between ticks.
+            if (g_pullRadiusTick[id] >= 10000)
+            {
+                g_pullRadiusTick[id] = 0;
+                player->CastSpell(player, SPELL_PULL_RADIUS, true);
             }
         }
     }

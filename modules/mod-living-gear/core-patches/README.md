@@ -42,3 +42,9 @@ like your tree's exact line numbers.
   `RandomPlayerbotMgr.cpp`. Fixes a client Lua error ("Unknown role:
   UNKNOWN") when accepting a dungeon-finder pop that got filled with
   bots. Only relevant if you also run mod-playerbots.
+
+- **0004-playerbot-queue-fill-timers.core-patch** -- `mod-playerbots`'s
+  `RandomPlayerbotMgr.cpp`. Shortens LFG/BG bot-fill polling intervals
+  (35s/30s/20s -> 10s/10s/8s) so bots react to real-player queue demand
+  faster. Gameplay tuning, not a bug fix -- skip it if you're happy with
+  the slower default cadence.

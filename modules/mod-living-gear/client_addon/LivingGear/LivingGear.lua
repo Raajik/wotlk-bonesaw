@@ -66,6 +66,7 @@ local RULE_ROWS = 10
 local WORLD_UNLOCKS = {
     { id = 910092, name = "Solo Queue", how = "Queue for dungeons and raids by yourself. No group required.", toggle = true, toggleKey = "solo" },
     { id = 910105, name = "Auto-Mount", how = "Automatically mount when you leave combat. Unlocked by learning a mount.", toggle = true, toggleKey = "autoMount" },
+    { id = 910168, name = "Pull Radius", how = "Quadruples how far enemies detect and aggro onto you. For pulling everything in an area on purpose.", toggle = true, toggleKey = "pullRadius" },
     { id = 910106, name = "Class Buffs", how = "Clear Naxxramas 25 on a class. That class then applies 10% primary stats to you and nearby party." },
     { id = 910107, name = "Riding", how = "Train riding on any character. Alts can mount from level 1." },
     { id = 910108, name = "Auto-Accept", how = "Accept a quest. Then auto-accept when you talk to an NPC. Hold Shift to skip." },
@@ -1695,6 +1696,8 @@ function LG2.SendWorldToggle(info)
         SendLine("SOLOSET|" .. (WorldToggleOn(info) and "0" or "1"))
     elseif info.id == 910105 then
         SendLine("AMSET|" .. (WorldToggleOn(info) and "0" or "1"))
+    elseif info.id == 910168 then
+        SendLine("PULLSET|" .. (WorldToggleOn(info) and "0" or "1"))
     end
 end
 
@@ -4073,6 +4076,11 @@ function LG2.HandleAddon(prefix, message)
     end
     if p[1] == "AM" then
         db.autoMount = tonumber(p[2]) or 0
+        LayoutWorld()
+        return
+    end
+    if p[1] == "PULL" then
+        db.pullRadius = tonumber(p[2]) or 0
         LayoutWorld()
         return
     end

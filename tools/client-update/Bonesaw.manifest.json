@@ -1,20 +1,20 @@
 {
-  "version": "0.1.45",
+  "version": "0.1.48",
   "files": [
     {
       "path": "Data/patch-Y.MPQ",
       "asset": "patch-Y.MPQ",
-      "sha256": "3b68e891005306f0b7a68a724a028691520a67845bcd876bf07d262f37c46628"
+      "sha256": "147f5fe88d8920f40c5cfc1a663a3a5b6b6626e6a94d10425663fe0037670cf1"
     },
     {
       "path": "Data/enUS/patch-enUS-4.MPQ",
       "asset": "patch-enUS-4.MPQ",
-      "sha256": "01e7489f1f888e46fb8c0da98704fc1f4f13ec238c00204a8d1c1018554008cb"
+      "sha256": "7883b07c11f1a4dbcddc98a56353fe5ec0a51375a84669c5005037c8a5a6d29c"
     },
     {
       "path": "Data/enGB/patch-enGB-4.MPQ",
       "asset": "patch-enGB-4.MPQ",
-      "sha256": "01e7489f1f888e46fb8c0da98704fc1f4f13ec238c00204a8d1c1018554008cb"
+      "sha256": "7883b07c11f1a4dbcddc98a56353fe5ec0a51375a84669c5005037c8a5a6d29c"
     }
   ]
 }

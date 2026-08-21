@@ -1,0 +1,25 @@
+Tighten mod-playerbots' LFG/BG queue-fill polling from 35s/30s/20s down to
+10s/10s/8s, plus lower AiPlayerbot.LfgDungeonBotFillSec from 15s to 5s
+(config-only, see modules/playerbots.conf).
+Touches: modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+
+Why: 2026-08-21 request to have bots fill LFG/BG queue demand "as fast as
+possible". The detect-and-fill pipeline already existed end to end
+(CheckBgQueue/CheckLfgQueue -> EnsureQueueFillBots -> FillLfgRaidGroup/
+BGJoinAction) but was gated behind polling intervals stacking to nearly a
+minute of worst-case latency before the first bot action. This only
+shortens those intervals; no new logic.
+
+--- a/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
++++ b/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+@@ (bot-fill polling call sites)
+-        if (time(nullptr) > (BgCheckTimer + 35))
++        if (time(nullptr) > (BgCheckTimer + 10))
+             sRandomPlayerbotMgr.CheckBgQueue();
+-        if (time(nullptr) > (LfgCheckTimer + 30))
++        if (time(nullptr) > (LfgCheckTimer + 10))
+             sRandomPlayerbotMgr.CheckLfgQueue();
+@@ RandomPlayerbotMgr::EnsureQueueFillBots()
+-    if (lastFill && now < lastFill + 20)
++    if (lastFill && now < lastFill + 8)
+         return;
