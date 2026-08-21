@@ -33,6 +33,9 @@
 #include <unordered_set>
 #include <vector>
 
+class Player;
+bool IsAutolootEnabled(Player* player); // LivingGear_Vault.cpp
+
 namespace LivingGearGather
 {
 uint32 const SPELL_MINE_YIELD[] = { 910109, 910110, 910111 };
@@ -436,6 +439,50 @@ void TryGatherChest(Player* player, GameObject* go, uint32 skillId, uint32 reqSk
         go->SetLootState(GO_JUST_DEACTIVATED);
 }
 
+// Autoloot never covered chests -- only PLAYERHOOK_ON_CREATURE_KILL
+// (LivingGear_Vault.cpp). Chests are GameObjects, a completely separate
+// loot path. This mirrors GameObject.cpp's own GAMEOBJECT_TYPE_CHEST
+// handling exactly (same lock-type checks) so it only ever fires for the
+// same chests that would otherwise go straight to player->SendLoot() --
+// key- and gathering-skill-gated chests are left alone, same as before.
+void TryAutolootChest(Player* player, GameObject* go, bool& handled)
+{
+    if (!player || !go || go->GetGoType() != GAMEOBJECT_TYPE_CHEST || !IsAutolootEnabled(player))
+        return;
+    uint32 skillId = 0, reqSkill = 0;
+    if (GatherLockType(go->GetGOInfo()->GetLockId(), skillId, reqSkill))
+        return; // gathering-skill chest (herbalism/mining/etc) -- leave to TryGatherChest
+    if (uint32 lockId = go->GetGOInfo()->GetLockId())
+    {
+        if (LockEntry const* lockInfo = sLockStore.LookupEntry(lockId))
+        {
+            for (int i = 0; i < MAX_LOCK_CASE; ++i)
+                if (lockInfo->Type[i] == LOCK_KEY_ITEM)
+                    return; // needs a physical key -- leave alone
+        }
+    }
+    Loot* loot = &go->loot;
+    loot->clear();
+    if (uint32 lootId = go->GetGOInfo()->GetLootId())
+        loot->FillLoot(lootId, LootTemplates_Gameobject, player, true, false, go->GetLootMode(), go);
+    if (GameObjectTemplateAddon const* addon = go->GetTemplateAddon())
+        loot->generateMoneyLoot(addon->mingold, addon->maxgold);
+    go->SetLootGenerationTime();
+    uint32 const maxSlot = loot->GetMaxSlotInLootFor(player);
+    for (uint32 slot = 0; slot < maxSlot; ++slot)
+    {
+        InventoryResult msg = EQUIP_ERR_OK;
+        player->StoreLootItem(uint8(slot), loot, msg);
+    }
+    if (loot->gold)
+    {
+        player->ModifyMoney(int32(loot->gold));
+        loot->gold = 0;
+    }
+    go->SetLootState(GO_JUST_DEACTIVATED);
+    handled = true;
+}
+
 void TryGatherFishHole(Player* player, GameObject* go)
 {
     if (!player || !go || !go->isSpawned() || go->GetGoType() != GAMEOBJECT_TYPE_FISHINGHOLE)
@@ -587,8 +634,14 @@ public:
         PLAYERHOOK_ON_LOGOUT,
         PLAYERHOOK_ON_UPDATE,
         PLAYERHOOK_ON_UPDATE_SKILL,
-        PLAYERHOOK_ON_CREATE_ITEM
+        PLAYERHOOK_ON_CREATE_ITEM,
+        PLAYERHOOK_ON_USE_GAMEOBJECT
     }) { }
+
+    void OnPlayerUseGameObject(Player* player, GameObject* go, bool& handled) override
+    {
+        TryAutolootChest(player, go, handled);
+    }
 
     void OnPlayerLogin(Player* player) override
     {

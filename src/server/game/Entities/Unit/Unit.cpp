@@ -2363,6 +2363,10 @@ void Unit::CalcAbsorbResist(DamageInfo& dmgInfo, bool Splited)
         while (r >= probabilitySum && i < 10)
             probabilitySum += discreteResistProbability[++i];
 
+        // Bonesaw: cap magic resistance at 80% and forbid full (100%) immunity.
+        if (i > 8)
+            i = 8;
+
         float damageResisted = float(damage * i / 10);
 
         if (damageResisted) // if equal to 0, checking these is pointless

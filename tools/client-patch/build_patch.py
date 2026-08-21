@@ -77,7 +77,7 @@ CUSTOM_SPELLS = {
     910030: ("*Trade: 375", "Profession skill-ups +100%. Unlocked by reaching skill 375.", 330),
     910031: ("*Trade: 450", "Profession skill-ups +100%. Unlocked by reaching skill 450.", 331),
     910032: ("*Mage: Arcane", "While in combat, Mirror Images appear and chain-cast. They linger 60 sec after combat.", 225),
-    910033: ("*Mage: Fire", "Fire spells apply Living Bomb. That effect spreads to enemies within 15 yards every 1 sec.", 11),
+    910033: ("*Mage: Fire", "Fire spells apply Living Bomb and grant Combustion. Living Bomb spreads to enemies within 15 yards every 1 sec.", 11),
     910034: ("*Mage: Frost", "Blizzard is instant, no cooldown, and lingers like Death and Decay. In combat, Ice Lance hits enemies within 15 yards every 2 sec.", 188),
     910035: ("*Rogue: Assassination", "Poisons deal 300% increased damage. DoT poisons spread to enemies within 10 yards.", 500),
     910036: ("*Rogue: Combat", "Blade Flurry is always active. Energy regeneration increased by 50%. Combo builders have a 30% chance to cast free Killing Spree.", 514),

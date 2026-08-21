@@ -50,6 +50,7 @@ uint32 const SPELL_STABLE = 910006;
 uint32 const SPELL_BIND = 910007;
 uint32 const SPELL_FLIGHT = 910009;
 uint32 const SPELL_QUEST_SPEED = 910038;
+uint32 const SPELL_AUTO_QUEST = 910090;
 
 uint32 const NPC_AH_ALLIANCE = 8670;
 uint32 const NPC_AH_HORDE = 8673;
@@ -404,6 +405,7 @@ public:
     void OnPlayerCompleteQuest(Player* player, Quest const* /*quest*/) override
     {
         CheckQuestSpeedPerk(player);
+        UnlockPerk(player, SPELL_AUTO_QUEST, "|cff66ccff[Account Perks]|r *Quests - Finish unlocked!");
     }
 };
 } // namespace LivingGearAmenities

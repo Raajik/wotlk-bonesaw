@@ -34,6 +34,7 @@
 #include "CreatureAI.h"
 #include "CreatureScript.h"
 #include "DatabaseEnv.h"
+#include "DBCStores.h"
 #include "DynamicObject.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -121,6 +122,7 @@ uint32 const PRIEST_CLASS_PERKS[] = { SPELL_PRIEST_DISCIPLINE, SPELL_PRIEST_HOLY
 // -------------------------------------------------------------------------
 uint32 const SPELL_MIRROR_IMAGE = 55342;
 uint32 const SPELL_LIVING_BOMB = 44457;
+uint32 const SPELL_MAGE_COMBUSTION = 11129;
 uint32 const SPELL_ICE_LANCE_R1 = 30455;
 uint32 const SPELL_ICE_LANCE_R2 = 42913;
 uint32 const SPELL_ICE_LANCE_R3 = 42914;
@@ -602,6 +604,7 @@ void GrantAndBroadcastClassPerks(Player* player)
 }
 
 void ApplyRogueCombatBladeFlurry(Player* player); // defined below, near TickRogueCombat
+void GrantMageFrostBlizzard(Player* player); // defined below, near IsBlizzardRank
 
 void SelectClassPerk(Player* player, uint32 spellId)
 {
@@ -623,6 +626,8 @@ void SelectClassPerk(Player* player, uint32 spellId)
         player->RemoveAurasDueToSpell(SPELL_BLADE_FLURRY);
     if (spellId == SPELL_ROGUE_COMBAT)
         ApplyRogueCombatBladeFlurry(player);
+    if (spellId == SPELL_MAGE_FROST)
+        GrantMageFrostBlizzard(player);
     GrantAndBroadcastClassPerks(player); // sends CPKALL, which the client actually handles
     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
         ChatHandler(player->GetSession()).PSendSysMessage(
@@ -673,9 +678,27 @@ bool IsHarmfulMageFireSpell(SpellInfo const* info)
         return false;
     if (!(info->GetSchoolMask() & SPELL_SCHOOL_MASK_FIRE))
         return false;
-    if (info->Id == SPELL_LIVING_BOMB)
-        return false;
+    switch (info->Id)
+    {
+        case SPELL_LIVING_BOMB:
+        case 44461: // Living Bomb explosion
+        case 55359: // Living Bomb explosion (rank)
+        case 55360:
+        case 55361:
+        case 55362:
+        case SPELL_MAGE_COMBUSTION:
+        case 28682: // Combustion crit-stack aura
+            return false;
+        default:
+            break;
+    }
     return true;
+}
+
+void ApplyMageCombustion(Player* player)
+{
+    if (!player->HasAura(SPELL_MAGE_COMBUSTION))
+        player->CastSpell(player, SPELL_MAGE_COMBUSTION, true);
 }
 
 void TryMageFireOnCast(Player* player, Spell* spell)
@@ -690,6 +713,7 @@ void TryMageFireOnCast(Player* player, Spell* spell)
         return;
     if (!target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
         player->CastSpell(target, SPELL_LIVING_BOMB, true);
+    ApplyMageCombustion(player);
 }
 
 void TickMageFire(Player* player, MageState& st, uint32 diff)
@@ -734,6 +758,34 @@ bool IsBlizzardRank(uint32 spellId)
         if (id == spellId)
             return true;
     return false;
+}
+
+// Blizzard is a real base-game spell mages only learn from a trainer at
+// specific levels -- picking the Frost class perk edits its behavior
+// (see PatchBlizzardServerSide) but never actually gave anyone the spell,
+// so characters who hadn't separately trained it had no way to use or
+// even test the perk. Grant the highest rank they qualify for. Standard
+// WotLK level breakpoints, matching SPELL_BLIZZARD_RANKS' rank 1-9 order.
+uint32 BlizzardRankForLevel(uint8 level)
+{
+    if (level >= 77) return SPELL_BLIZZARD_RANKS[8];
+    if (level >= 68) return SPELL_BLIZZARD_RANKS[7];
+    if (level >= 58) return SPELL_BLIZZARD_RANKS[6];
+    if (level >= 50) return SPELL_BLIZZARD_RANKS[5];
+    if (level >= 44) return SPELL_BLIZZARD_RANKS[4];
+    if (level >= 38) return SPELL_BLIZZARD_RANKS[3];
+    if (level >= 32) return SPELL_BLIZZARD_RANKS[2];
+    if (level >= 26) return SPELL_BLIZZARD_RANKS[1];
+    return SPELL_BLIZZARD_RANKS[0];
+}
+
+void GrantMageFrostBlizzard(Player* player)
+{
+    if (!player || GetClassPerk(player) != SPELL_MAGE_FROST)
+        return;
+    uint32 const rank = BlizzardRankForLevel(player->GetLevel());
+    if (!player->HasSpell(rank))
+        player->learnSpell(rank);
 }
 
 void TryMageFrostBlizzardLinger(Player* player, Spell* spell)
@@ -2229,6 +2281,7 @@ public:
         LoadClassPerk(player->GetGUID().GetCounter());
         GrantAndBroadcastClassPerks(player);
         ApplyRogueCombatBladeFlurry(player);
+        GrantMageFrostBlizzard(player);
     }
 
     void OnPlayerLogout(Player* player) override
@@ -2452,9 +2505,38 @@ public:
     void OnStartup() override
     {
         DetectSchema();
+        PatchBlizzardServerSide();
         LOG_INFO("server.loading",
             "Living Gear class perks module loaded (all 10 classes, 3 specs each except "
             "Paladin Holy/Retribution and Rogue Assassination/Subtlety, which live in other files)");
+    }
+
+private:
+    // build_patch.py patches the CLIENT's Spell.dbc so Blizzard *looks*
+    // instant/uncancelled, but the server loads its own independent copy of
+    // spell data and was still enforcing the real channel (move = interrupt,
+    // real cast/cooldown timers) underneath that visual. Mirror the same
+    // "instant, no cooldown, not channeled" change server-side so it isn't
+    // just cosmetic.
+    void PatchBlizzardServerSide()
+    {
+        SpellCastTimesEntry const* instant = sSpellCastTimesStore.LookupEntry(1);
+        uint32 n = 0;
+        for (uint32 id : SPELL_BLIZZARD_RANKS)
+        {
+            SpellInfo* info = const_cast<SpellInfo*>(sSpellMgr->GetSpellInfo(id));
+            if (!info)
+                continue;
+            info->AttributesEx &= ~(SPELL_ATTR1_IS_CHANNELED | SPELL_ATTR1_IS_SELF_CHANNELED);
+            info->CastTimeEntry = instant;
+            info->RecoveryTime = 0;
+            info->CategoryRecoveryTime = 0;
+            info->StartRecoveryTime = 0;
+            info->InterruptFlags = 0;
+            info->ChannelInterruptFlags = 0;
+            ++n;
+        }
+        LOG_INFO("server.loading", "Living Gear: patched {} Blizzard ranks server-side (instant, uncancellable, lingers like Death and Decay)", n);
     }
 };
 

@@ -32,3 +32,13 @@ like your tree's exact line numbers.
   instance would otherwise share (the query is keyed by creature
   *template* entry, not GUID). Purely cosmetic -- skip it if you don't
   care about that nameplate, the rest of the module works fine without it.
+
+- **0002-cap-spell-resist-chance.core-patch** -- `Unit.cpp`. Caps the
+  discrete magic-resist roll at 80% and removes the 100%/full-immunity
+  bucket entirely. Gameplay balance change, not cosmetic -- recommended
+  for anyone running this module.
+
+- **0003-playerbot-lfg-role.core-patch** -- `mod-playerbots`'s
+  `RandomPlayerbotMgr.cpp`. Fixes a client Lua error ("Unknown role:
+  UNKNOWN") when accepting a dungeon-finder pop that got filled with
+  bots. Only relevant if you also run mod-playerbots.

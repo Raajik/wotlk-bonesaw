@@ -46,6 +46,7 @@
 
 class Player;
 void SendVaultAndRuleSync(Player* player); // LivingGear_Vault.cpp
+void SendAutolootSync(Player* player); // LivingGear_Vault.cpp
 
 namespace LivingGear
 {
@@ -685,6 +686,7 @@ static void SendAddonSync(Player* player, bool includeBags = true)
 
     SendAddonLine(player, "CLR");
     ::SendVaultAndRuleSync(player);
+    ::SendAutolootSync(player);
 
     LgStats absorb = LoadAbsorbForPlayer(player);
     uint32 count = 0;

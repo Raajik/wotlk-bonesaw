@@ -29,6 +29,7 @@
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
+#include "SpellMgr.h"
 #include "StringFormat.h"
 
 #include <chrono>
@@ -92,11 +93,31 @@ std::unordered_map<uint32, std::vector<LgRule>> g_rules;
 std::unordered_set<uint32> g_vaultLoaded;
 std::unordered_set<uint32> g_rulesLoaded;
 
+std::unordered_map<uint32, bool> g_autolootOn;
+std::unordered_map<uint32, bool> g_autolootDe;
+std::unordered_set<uint32> g_autolootLoaded;
+
+// Player::Whisper(target=self) round-trips through the SAME
+// OnPlayerCanUseChat hook that intercepts real incoming client commands --
+// there is no other way to push a server->client addon line. That means a
+// sync line whose text happens to also match a command pattern gets
+// reprocessed as if the player had just sent it. "ALDE|{}" is exactly this:
+// used as both the outgoing sync line (SendAutolootSync) AND the incoming
+// ALDE|<0/1> toggle command (HandleVaultChat) -- sending it looped back
+// into HandleVaultChat, which called SendAutolootSync again, forever, and
+// blew the stack (SIGSEGV, confirmed via gdb backtrace 2026-08-21). Guard
+// every self-whisper send so HandleVaultChat can refuse to reprocess its
+// own outgoing traffic.
+thread_local bool g_sendingSyncLine = false;
+
 void SendLine(Player* player, std::string const& line)
 {
     if (!player || !player->GetSession())
         return;
+    bool const wasSending = g_sendingSyncLine;
+    g_sendingSyncLine = true;
     player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    g_sendingSyncLine = wasSending;
 }
 
 void LoadVault(uint32 accountId)
@@ -136,6 +157,36 @@ void LoadRules(uint32 accountId)
             g_rules[accountId].push_back(rule);
         } while (result->NextRow());
     }
+}
+
+void LoadAutolootPrefs(uint32 accountId)
+{
+    if (!g_autolootLoaded.insert(accountId).second)
+        return;
+    g_autolootOn[accountId] = true;
+    g_autolootDe[accountId] = false;
+    if (QueryResult q = CharacterDatabase.Query(
+        "SELECT `autoloot_on`, `autoloot_de` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+    {
+        g_autolootOn[accountId] = (*q)[0].Get<uint8>() != 0;
+        g_autolootDe[accountId] = (*q)[1].Get<uint8>() != 0;
+    }
+}
+
+bool AutolootOn(uint32 accountId)
+{
+    LoadAutolootPrefs(accountId);
+    return g_autolootOn[accountId];
+}
+
+void SendAutolootSync(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAutolootPrefs(accountId);
+    SendLine(player, Acore::StringFormat("AL|{}|0|10", g_autolootOn[accountId] ? 1 : 0));
+    SendLine(player, Acore::StringFormat("ALDE|{}", g_autolootDe[accountId] ? 1 : 0));
 }
 
 uint32 VaultCount(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEntry)
@@ -307,7 +358,8 @@ static void ApplyLootRuleAction(ObjectGuid playerGuid, ObjectGuid itemGuid, uint
 
 void ApplyLootRule(Player* player, Item* item)
 {
-    if (!player || !item || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT))
+    if (!player || !item || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
+        || !AutolootOn(player->GetSession()->GetAccountId()))
         return;
     ItemTemplate const* proto = item->GetTemplate();
     if (!proto)
@@ -367,7 +419,8 @@ void SendVaultAndRuleSync(Player* player)
 // free-for-all slot bookkeeping directly, which is easy to get subtly wrong.
 void AutolootCreatureKill(Player* player, Creature* creature)
 {
-    if (!player || !creature || !player->IsAlive() || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT))
+    if (!player || !creature || !player->IsAlive() || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
+        || !AutolootOn(player->GetSession()->GetAccountId()))
         return;
     if (!creature->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE))
         return;
@@ -427,7 +480,8 @@ void AutolootCreatureKill(Player* player, Creature* creature)
 // skill-up chance and requirement match normal (manual) skinning exactly.
 void AutolootSkinKill(Player* player, Creature* creature)
 {
-    if (!player || !creature || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT))
+    if (!player || !creature || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
+        || !AutolootOn(player->GetSession()->GetAccountId()))
         return;
     if (!creature->HasUnitFlag(UNIT_FLAG_SKINNABLE))
         return;
@@ -501,6 +555,8 @@ void DepositAll(Player* player)
 
 bool HandleVaultChat(Player* player, std::string msg)
 {
+    if (g_sendingSyncLine)
+        return true; // this is our own outgoing sync line looping back through Whisper(self) -- swallow it, don't reparse as a command
     if (msg.rfind("LG\t", 0) == 0)
         msg = msg.substr(3);
     if (!player || !player->GetSession())
@@ -517,6 +573,29 @@ bool HandleVaultChat(Player* player, std::string msg)
         LoadRules(accountId);
         g_rules[accountId].clear();
         CharacterDatabase.DirectExecute("DELETE FROM `lg_autoloot_rule` WHERE `account_id` = {}", accountId);
+        return true;
+    }
+    uint32 onOff = 0;
+    if (sscanf(msg.c_str(), "ALSET|%u", &onOff) == 1)
+    {
+        LoadAutolootPrefs(accountId);
+        g_autolootOn[accountId] = onOff != 0;
+        CharacterDatabase.DirectExecute(
+            "INSERT INTO `lg_account_meta` (`account_id`, `autoloot_on`) VALUES ({}, {}) "
+            "ON DUPLICATE KEY UPDATE `autoloot_on` = {}",
+            accountId, onOff ? 1 : 0, onOff ? 1 : 0);
+        SendAutolootSync(player);
+        return true;
+    }
+    if (sscanf(msg.c_str(), "ALDE|%u", &onOff) == 1)
+    {
+        LoadAutolootPrefs(accountId);
+        g_autolootDe[accountId] = onOff != 0;
+        CharacterDatabase.DirectExecute(
+            "INSERT INTO `lg_account_meta` (`account_id`, `autoloot_de`) VALUES ({}, {}) "
+            "ON DUPLICATE KEY UPDATE `autoloot_de` = {}",
+            accountId, onOff ? 1 : 0, onOff ? 1 : 0);
+        SendAutolootSync(player);
         return true;
     }
     uint32 idx = 0;
@@ -564,10 +643,31 @@ class VaultPlayer : public PlayerScript
 {
 public:
     VaultPlayer() : PlayerScript("LivingGearVaultPlayer", {
+        PLAYERHOOK_ON_LOGIN,
         PLAYERHOOK_ON_STORE_NEW_ITEM,
         PLAYERHOOK_ON_CREATURE_KILL,
         PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT
     }) { }
+
+    // *Autoloot (910008) is "on by default" -- there's no unlock condition,
+    // every account should just have it. It only ever silently no-ops if
+    // sSpellMgr has no spell_dbc row for it (see rev_living_gear_autoloot_dbc.sql).
+    void OnPlayerLogin(Player* player) override
+    {
+        if (!player || !player->GetSession() || !sSpellMgr->GetSpellInfo(SPELL_AUTOLOOT))
+            return;
+        uint32 const accountId = player->GetSession()->GetAccountId();
+        if (!player->HasSpell(SPELL_AUTOLOOT))
+            player->learnSpell(SPELL_AUTOLOOT);
+        // Also persist/sync it the same way UnlockPerk() elsewhere does, so
+        // the addon's db.perks[910008] (PerkKnown()) actually goes true --
+        // that's what gates the whole Autoloot toggle button being shown.
+        CharacterDatabase.DirectExecute(
+            "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
+            accountId, SPELL_AUTOLOOT);
+        SendLine(player, Acore::StringFormat("PK|{}|1", SPELL_AUTOLOOT));
+        SendAutolootSync(player);
+    }
 
     void OnPlayerStoreNewItem(Player* player, Item* item, uint32 /*count*/) override
     {
@@ -618,6 +718,18 @@ public:
 void SendVaultAndRuleSync(Player* player)
 {
     LivingGearVault::SendVaultAndRuleSync(player);
+}
+
+void SendAutolootSync(Player* player)
+{
+    LivingGearVault::SendAutolootSync(player);
+}
+
+bool IsAutolootEnabled(Player* player)
+{
+    if (!player || !player->GetSession() || !player->HasSpell(LivingGearVault::SPELL_AUTOLOOT))
+        return false;
+    return LivingGearVault::AutolootOn(player->GetSession()->GetAccountId());
 }
 
 void AddSC_LivingGearVault()

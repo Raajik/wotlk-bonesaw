@@ -2883,7 +2883,11 @@ function LG2.BuildArmoryPanel(f)
         row.text:SetJustifyH("LEFT")
         row:SetScript("OnEnter", function(self)
             Solid(self.bg, 0.16, 0.16, 0.16, 1)
-            if self.link and GameTooltip then
+            -- LG2.ItemLinkText() falls back to plain, non-hyperlink text
+            -- (e.g. "Item 12345") when the client hasn't cached that item's
+            -- info yet -- SetHyperlink throws "Unknown link type" if handed
+            -- that instead of a real |Hitem:...|h link.
+            if self.link and self.link:find("|Hitem:", 1, true) and GameTooltip then
                 GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
                 GameTooltip:SetHyperlink(self.link)
                 GameTooltip:Show()
