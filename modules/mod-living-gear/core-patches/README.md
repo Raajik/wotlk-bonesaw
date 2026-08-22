@@ -96,6 +96,19 @@ like your tree's exact line numbers.
   becomes invisible to the crafting system (SPELL_FAILED_REAGENTS even
   though the profession window shows it as available).
 
+- **0012-multi-realm-same-worldserver.core-patch** -- `WorldSocket.cpp`,
+  `HandleAuthSession()`. Adds `RealmID.Aliases` to worldserver.conf so extra
+  `acore_auth.realmlist` rows can describe THIS same worldserver reached at a
+  different address, instead of being rejected with "requested connecting with
+  realm id N but this realm has id M set in config". Needed because the host
+  machine can only reach the server at `127.0.0.1` (Tailscale does not hairpin
+  to a node's own address) while everyone else needs the tailnet address, and
+  no single value serves both -- AzerothCore's own `localAddress`/
+  `localSubnetMask` mechanism cannot help, because Docker NATs every
+  connection to the bridge gateway before the authserver sees a client IP.
+  Empty by default, so stock behaviour is unchanged without it. Skip it if
+  one address reaches your server from everywhere.
+
 Per-viewer mob level scaling (previously patch 0008, `Object.cpp`) no
 longer needs a core patch at all -- `Object::BuildValuesUpdate()` turned
 out to be dead code for creatures/players (`Unit` has its own override
