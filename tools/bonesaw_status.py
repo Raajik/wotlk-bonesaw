@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORLDSERVER_IMAGE = "acore/ac-wotlk-worldserver:master"
+MANIFEST_URL = ("https://raw.githubusercontent.com/Raajik/wotlk-bonesaw/main"
+                "/tools/client-update/Bonesaw.manifest.txt")
 PENDING_DIRS = {
     "acore_world": "data/sql/updates/pending_db_world",
     "acore_characters": "data/sql/updates/pending_db_characters",
@@ -185,19 +187,42 @@ def main():
         out.append("  pending SQL       all imported")
 
     # --- 5. client --------------------------------------------------------
-    rel = run(["gh", "release", "view", "--json", "tagName,publishedAt"], cwd=REPO)
+    # The manifest on main is what actually decides whether a player updates:
+    # the launcher fetches it from raw.githubusercontent.com and compares
+    # versions (tools/launcher/src/manifest.rs). The GitHub release only holds
+    # the asset the manifest points at.
+    #
+    # Checking only the release is how 0.1.50 reached nobody -- the release was
+    # created, the manifest on main was never pushed, so every launcher
+    # compared itself against the stale 0.1.49 line, matched, and never
+    # downloaded anything. Both are checked now, and the manifest is the one
+    # that gates.
+    rel = run(["gh", "release", "view", "--json", "tagName"], cwd=REPO)
     if rel:
         try:
-            j = json.loads(rel)
-            published = j.get("tagName", "?").lstrip("v")
-            ok = "OK" if published == version else "MISMATCH -- players pull %s" % published
-            out.append("  client release    latest GitHub release %s  %s" % (j.get("tagName", "?"), ok))
+            published = json.loads(rel).get("tagName", "?").lstrip("v")
+            ok = "OK" if published == version else "MISMATCH"
+            out.append("  github release    v%s  %s" % (published, ok))
             if published != version:
                 problems.append("GitHub release %s != Bonesaw.version %s" % (published, version))
         except (ValueError, AttributeError):
-            out.append("  client release    could not parse gh output")
+            out.append("  github release    could not parse gh output")
     else:
-        out.append("  client release    gh unavailable, not checked")
+        out.append("  github release    gh unavailable, not checked")
+
+    live = run(["curl", "-sf", "--max-time", "20", MANIFEST_URL])
+    if live is None:
+        out.append("  live manifest     unreachable, not checked")
+    else:
+        m = re.search(r"^version\s+(\S+)", live, re.M)
+        served = m.group(1) if m else "?"
+        if served == version:
+            out.append("  live manifest     %s  OK -- this is what launchers pull" % served)
+        else:
+            out.append("  live manifest     %s  STALE -- players stay on %s until this is pushed to main"
+                       % (served, served))
+            problems.append("manifest on main serves %s, not %s -- the client ship has reached nobody"
+                            % (served, version))
 
     out.append("")
     if problems:
