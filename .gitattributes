@@ -1,0 +1,10 @@
+# Every tracked file in this repo is text, and every blob is already stored
+# with LF. What was drifting was the working tree: core.autocrlf=true rewrites
+# files to CRLF on checkout, while any file a tool or editor rewrites stays
+# LF. The result was a 50/50 mix on disk -- LivingGear_Perks.cpp sat as the
+# only CRLF file in a directory of LF files, which quietly breaks exact-text
+# tooling (patch application, generated diffs, anything matching across
+# files) for no visible reason.
+#
+# This pins the working tree to LF too, so checkout stops undoing it.
+* text=auto eol=lf
