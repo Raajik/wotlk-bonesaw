@@ -10,6 +10,7 @@ Default for Bonesaw work: write the fix, save it in git-ready files, and wait. A
 Until that explicit go-ahead:
 
 - Keep writing C++, pending SQL, client-patch sources. `Bonesaw.version` may bump in the repo; do not publish it.
+- **Do** run `docker compose build ac-worldserver ac-db-import` to verify a change set compiles. Building writes images; it does not touch the running container. Uncompiled work is not ready to deploy.
 - Do not `docker compose up` / replace / restart `ac-worldserver`.
 - Do not run `tools/restart_worldserver.ps1` or saveall-for-reboot. `saveall` without a reboot is also unnecessary unless they ask.
 - Do not run `tools/client-update/deploy_client.ps1`.
