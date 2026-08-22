@@ -5063,8 +5063,22 @@ local function BuildQuestCompleteBtn()
     questCompleteBtn = CreateFrame("Button", "LivingGearQuestComplete", QuestLogFrame,
         "UIPanelButtonTemplate")
     questCompleteBtn:SetSize(130, 22)
-    -- Bottom left of the quest log, clear of Abandon/Share on the right.
-    questCompleteBtn:SetPoint("BOTTOMLEFT", QuestLogFrame, "BOTTOMLEFT", 22, 55)
+    -- Anchored OUTSIDE the quest log, hanging below its bottom edge, rather
+    -- than inside it (bug report #5, 2026-08-22: unclickable under ElvUI).
+    --
+    -- ElvUI reskins QuestLogFrame and lays its own textures and frames over
+    -- the stock one, so anything parented inside the window competes with
+    -- them for clicks and loses. Sitting outside the frame's bounds sidesteps
+    -- the whole argument -- there is nothing there to overlap with -- and it
+    -- looks the same on the default UI, just below the window instead of in
+    -- the empty strip above Abandon.
+    --
+    -- Strata and level are raised for the same reason: a reskin that draws a
+    -- backdrop over the region should still not end up on top of the button.
+    questCompleteBtn:SetPoint("TOP", QuestLogFrame, "BOTTOM", 0, 78)
+    questCompleteBtn:SetFrameStrata("HIGH")
+    questCompleteBtn:SetFrameLevel((QuestLogFrame:GetFrameLevel() or 0) + 10)
+    questCompleteBtn:SetToplevel(true)
     questCompleteBtn:SetText("Complete Quest")
     questCompleteBtn:SetScript("OnClick", function()
         local id = SelectedQuestId()

@@ -7,8 +7,8 @@
  *   Bug reports (2026-08-22): ".bug <description>" in chat, or /bug from the
  *   addon, files a report into `lg_bug_report` along with where the player
  *   was standing and what they had targeted. A separate scheduled script
- *   (tools/bug-reports/bug_digest.py) posts new rows to Discord every six
- *   hours and marks them sent. Nothing in the worldserver talks to Discord --
+ *   (tools/bug-reports/bug_digest.py) posts new rows to Discord every 15
+ *   minutes and marks them sent. Nothing in the worldserver talks to Discord --
  *   it only ever writes rows.
  *
  *   Quest Complete (2026-08-22): force-completes the quest the player has

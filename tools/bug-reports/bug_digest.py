@@ -4,7 +4,7 @@ Post new player bug reports to Discord.
 Reports are written into acore_characters.lg_bug_report by the worldserver
 (.bug in chat, or /bugreport from the addon). The worldserver never talks to
 Discord itself -- it only writes rows -- so this script is what actually
-delivers them. Run it on a schedule; every six hours is what it was built for.
+delivers them. Run it on a schedule; 15 minutes is the current cadence.
 
   python tools/bug-reports/bug_digest.py            # post anything new
   python tools/bug-reports/bug_digest.py --dry-run  # print, change nothing
