@@ -24,12 +24,14 @@
 -- after each cast and otherwise leaves it alone, so the client ticks a real
 -- countdown down instead of it being reset to full once a second.
 --
--- StackAmount 10 matches COMBO_MAX, so the icon carries the stack number the
--- HUD used to print.
+-- CumulativeAura 10 matches COMBO_MAX, so the icon carries the stack number
+-- the HUD used to print. Note the column is CumulativeAura, NOT StackAmount --
+-- the spell_dbc TABLE and the SpellEntry C++ struct do not use the same names
+-- for this field (the struct's comment does spell it m_cumulativeAura).
 UPDATE `spell_dbc` SET
   `Attributes` = 0,
   `DurationIndex` = 6,
-  `StackAmount` = 10,
+  `CumulativeAura` = 10,
   `Description_Lang_enUS` = 'Each kill stacks this, up to 10. Kill XP +20% and move speed +5% per stack. Refreshes for 10 minutes on every kill, and survives logging out.'
 WHERE `ID` = 910089;
 
