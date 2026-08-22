@@ -57,6 +57,8 @@
 class Player;
 void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp); // LivingGear.cpp
 uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
+void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
 namespace LivingGearPerks
 {
@@ -190,6 +192,15 @@ bool g_hasZoneScale = false;
 std::unordered_map<uint32, bool> g_pullRadiusOn;
 std::unordered_map<uint32, bool> g_trackOreOn;
 std::unordered_map<uint32, bool> g_trackHerbOn;
+std::unordered_map<uint32, uint32> g_jumpMode;
+bool g_hasJumpCol = false;
+// Which accounts have had their lg_account_meta toggles read in this
+// uptime. SendPerkSync now answers a client REQ as well as a login, and
+// REQ fires on /reload, on entering the world and every time a bank window
+// opens -- re-running six synchronous CharacterDatabase queries on the
+// world thread each time is not free. Every writer below updates the
+// in-memory maps too, so the cache cannot go stale.
+std::unordered_set<uint32> g_metaLoaded;
 
 void DetectSchema()
 {
@@ -213,15 +224,15 @@ void DetectSchema()
                 g_hasTrackOreCol = true;
             else if (name == "track_herb")
                 g_hasTrackHerbCol = true;
+            else if (name == "jump_mode")
+                g_hasJumpCol = true;
         } while (cols->NextRow());
     }
 }
 
 void SendLine(Player* player, std::string const& line)
 {
-    if (!player || !player->GetSession())
-        return;
-    player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    ::LivingGear_SendAddonLine(player, line);
 }
 
 void Say(Player* player, char const* msg)
@@ -278,8 +289,21 @@ bool HasPerk(Player* player, uint32 spellId)
 // g_perks[acc]/DB fallback works fine without ever calling learnSpell.
 void UnlockPerk(Player* player, uint32 spellId, char const* msg, bool learnSpellToo = true)
 {
-    if (!player || !player->GetSession() || !sSpellMgr->GetSpellInfo(spellId))
+    if (!player || !player->GetSession())
         return;
+    if (!sSpellMgr->GetSpellInfo(spellId))
+    {
+        // A perk whose spell_dbc row never made it into the world DB used
+        // to disappear right here without a word: the feature simply
+        // "stopped working" and there was nothing in any log to grep for.
+        // Once per spell id per uptime is enough to make it obvious.
+        static std::unordered_set<uint32> warned;
+        if (warned.insert(spellId).second)
+            LOG_ERROR("module.livinggear",
+                "Living Gear: perk spell {} has no spell_dbc row, so it can never unlock. "
+                "The migration that adds it has not been applied to the world DB.", spellId);
+        return;
+    }
     uint32 const acc = player->GetSession()->GetAccountId();
     LoadPerks(acc);
     if (!g_perks[acc].insert(spellId).second)
@@ -484,6 +508,39 @@ float IncomingScaleRatio(Creature* creature, uint32 effectiveLevel)
     return std::clamp(effStats->GenerateBaseDamage(info) / realDmg, 0.2f, 4.0f);
 }
 
+// AzerothCore picks the base-XP constant from the content tier, not from
+// the level: 45 for 1-60, 235 for 61-70, 580 for 71-80 (Formulas.h).
+ContentLevels ContentForLevel(uint32 level)
+{
+    if (level > 70)
+        return CONTENT_71_80;
+    if (level > 60)
+        return CONTENT_61_70;
+    return CONTENT_1_60;
+}
+
+// What a kill should be worth at the level the killer is actually being
+// SHOWN, which is the whole point of zone scaling. Returns 0 when scaling
+// does not apply to this pair, in which case the engine's own number
+// stands untouched.
+//
+// This used to be inlined into the grey-kill path with CONTENT_1_60
+// hardcoded, so a level 71 killing an effective-72 mob was paid off a base
+// of 45 instead of 580 -- under a third of the intended amount, before
+// ZoneRewardMult then took another ~65% off in a starter zone. That is the
+// "mob shows yellow and gives no XP" half of the complaint; the other half
+// was that only fully-grey kills went through this at all (see
+// PerksPlayer::OnPlayerGiveXP).
+uint32 ScaledKillXP(Player* killer, Creature* killed)
+{
+    if (!killer || !killed)
+        return 0;
+    uint32 const eff = EffectiveCreatureLevel(killed, killer);
+    if (!eff)
+        return 0;
+    return Acore::XP::BaseGain(uint8(killer->GetLevel()), uint8(eff), ContentForLevel(killer->GetLevel()));
+}
+
 // XP half of zone scaling: AzerothCore's own kill-XP formula hard-zeroes a
 // grey kill (mob_level <= GetGrayLevel(playerLevel)) well before any
 // module hook runs, so the existing OnPlayerGiveXP multiplier below can
@@ -499,12 +556,13 @@ void GrantScaledGreyKillXP(Player* killer, Creature* killed)
         return;
     if (killed->GetLevel() > Acore::XP::GetGrayLevel(uint8(killer->GetLevel())))
         return;
-    uint32 const eff = EffectiveCreatureLevel(killed, killer);
-    if (!eff)
-        return;
-    uint32 xp = Acore::XP::BaseGain(uint8(killer->GetLevel()), uint8(eff), CONTENT_1_60);
+    uint32 xp = ScaledKillXP(killer, killed);
     if (!xp)
         return;
+    // KillRewarder skips the OnPlayerGiveXP hook entirely when its own
+    // number is zero (KillRewarder.cpp, `if (xp)`), which is exactly the
+    // grey case -- so nothing else will apply the zone multiplier to this
+    // grant and it has to be applied here.
     xp = uint32(float(xp) * ZoneRewardMult(killer));
     if (xp)
         killer->GiveXP(xp, killed);
@@ -1420,9 +1478,11 @@ void AutoQuestFinish(Player* player)
 
 bool HandleLgChat(Player* player, std::string msg)
 {
+    if (!player || !player->GetSession())
+        return false;
     if (msg.rfind("LG\t", 0) == 0)
         msg = msg.substr(3);
-    uint32 acc = player->GetSession()->GetAccountId();
+    uint32 const acc = player->GetSession()->GetAccountId();
     uint32 v = 0;
     uint32 slot = 0;
     uint32 entry = 0;
@@ -1485,6 +1545,24 @@ bool HandleLgChat(Player* player, std::string msg)
         SendLine(player, Acore::StringFormat("TRACKHERB|{}", v ? 1 : 0));
         return true;
     }
+    if (sscanf(msg.c_str(), "JMPSET|%u", &v) == 1)
+    {
+        // Extra jump is deliberately off server-side (AGENTS.md: "Extra
+        // jump is disabled; do not advertise it"), so this remembers the
+        // selection and echoes it -- the client's own db.jump.max gate is
+        // what keeps the boosted modes unselectable. It matters because
+        // before this the client sent JMPSET| and absolutely nothing
+        // anywhere parsed it, so the panel never even acknowledged a click.
+        g_jumpMode[acc] = v;
+        DetectSchema();
+        if (g_hasJumpCol)
+            CharacterDatabase.DirectExecute(
+                "INSERT INTO `lg_account_meta` (`account_id`, `jump_mode`) VALUES ({}, {}) "
+                "ON DUPLICATE KEY UPDATE `jump_mode` = {}",
+                acc, v, v);
+        SendLine(player, Acore::StringFormat("JMP|{}|0", v));
+        return true;
+    }
     if (sscanf(msg.c_str(), "SOLOSET|%u", &v) == 1)
     {
         g_soloQueue[acc] = v != 0;
@@ -1533,6 +1611,93 @@ bool HandleLgChat(Player* player, std::string msg)
     return false;
 }
 
+// One row, one round trip, once per account -- this was six separate
+// single-column SELECTs against the same row. solo_queue in particular had
+// a column and a SOLOSET writer for as long as the others but nothing ever
+// read it back, so that toggle silently reset itself on every relog.
+void LoadAccountToggles(uint32 accountId)
+{
+    DetectSchema();
+    if (!g_metaLoaded.insert(accountId).second)
+        return;
+    g_autoMountOn[accountId] = !g_hasAutoMountCol; // no column: default on
+    g_pullRadiusOn[accountId] = false;
+    g_trackOreOn[accountId] = false;
+    g_trackHerbOn[accountId] = false;
+    g_soloQueue[accountId] = false;
+    g_jumpMode[accountId] = 0;
+    if (QueryResult q = CharacterDatabase.Query(
+        "SELECT {}, {}, {}, {}, {}, {} FROM `lg_account_meta` WHERE `account_id` = {}",
+        g_hasAutoMountCol ? "`auto_mount`" : "0",
+        g_hasPullRadiusCol ? "`pull_radius`" : "0",
+        g_hasTrackOreCol ? "`track_ore`" : "0",
+        g_hasTrackHerbCol ? "`track_herb`" : "0",
+        g_hasSoloCol ? "`solo_queue`" : "0",
+        g_hasJumpCol ? "`jump_mode`" : "0",
+        accountId))
+    {
+        Field* f = q->Fetch();
+        if (g_hasAutoMountCol)
+            g_autoMountOn[accountId] = f[0].Get<uint32>() != 0;
+        g_pullRadiusOn[accountId] = f[1].Get<uint32>() != 0;
+        g_trackOreOn[accountId] = f[2].Get<uint32>() != 0;
+        g_trackHerbOn[accountId] = f[3].Get<uint32>() != 0;
+        g_soloQueue[accountId] = f[4].Get<uint32>() != 0;
+        g_jumpMode[accountId] = f[5].Get<uint32>();
+    }
+}
+
+// Everything the client needs to render the World Perks / toggle UI.
+// Split out of OnPlayerLogin because it was ONLY ever sent at login: a
+// client REQ (which the addon fires on /reload and whenever it re-syncs)
+// was answered by LivingGear.cpp alone, so db.perks, the four toggles and
+// the solo-queue flag stayed empty until a full relog -- and since the
+// addon gates the buttons on PerkKnown(), half the panel simply looked
+// locked. LivingGear.cpp now calls this from its REQ path too.
+void SendPerkSync(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    DetectSchema();
+    uint32 const acc = player->GetSession()->GetAccountId();
+    LoadPerks(acc);
+    LoadAccountToggles(acc);
+    if (!g_perks[acc].empty())
+    {
+        // WotLK's addon-whisper channel silently truncates messages
+        // around ~255 bytes -- a single account can have 50+ unlocked
+        // perks, so one giant "PKALL|910002,910003,..." line can blow
+        // past that and drop whatever IDs land after the cutoff (e.g.
+        // Auto-Mount, 910105, always unlocking server-side but never
+        // reaching db.perks client-side, so its World Perks toggle
+        // looked locked and clicking it silently did nothing). The
+        // client's PKALL handler is purely additive (no db.perks = {}
+        // reset), so it's safe to split across multiple PKALL sends.
+        std::string ids;
+        for (uint32 spellId : g_perks[acc])
+        {
+            std::string next = std::to_string(spellId);
+            if (!ids.empty() && ids.size() + 1 + next.size() > 200)
+            {
+                SendLine(player, "PKALL|" + ids);
+                ids.clear();
+            }
+            if (!ids.empty())
+                ids += ',';
+            ids += next;
+        }
+        if (!ids.empty())
+            SendLine(player, "PKALL|" + ids);
+    }
+    NotifyZoneScale(player);
+    SendLine(player, Acore::StringFormat("JMP|{}|0", g_jumpMode[acc]));
+    SendLine(player, Acore::StringFormat("AM|{}", g_autoMountOn[acc] ? 1 : 0));
+    SendLine(player, Acore::StringFormat("PULL|{}", g_pullRadiusOn[acc] ? 1 : 0));
+    SendLine(player, Acore::StringFormat("TRACKORE|{}", g_trackOreOn[acc] ? 1 : 0));
+    SendLine(player, Acore::StringFormat("TRACKHERB|{}", g_trackHerbOn[acc] ? 1 : 0));
+    SendLine(player, Acore::StringFormat("SQ|{}", g_soloQueue[acc] ? 1 : 0));
+}
+
 class PerksPlayer : public PlayerScript
 {
 public:
@@ -1548,7 +1713,6 @@ public:
         PLAYERHOOK_ON_SPELL_CAST,
         PLAYERHOOK_ON_LEARN_SPELL,
         PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT,
-        PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT,
         PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL,
         PLAYERHOOK_ON_AFTER_SPEC_SLOT_CHANGED
     }) { }
@@ -1582,76 +1746,12 @@ public:
     {
         if (!player || !player->GetSession())
             return;
-        DetectSchema();
-        uint32 acc = player->GetSession()->GetAccountId();
-        LoadPerks(acc);
-        if (!g_perks[acc].empty())
-        {
-            // WotLK's addon-whisper channel silently truncates messages
-            // around ~255 bytes -- a single account can have 50+ unlocked
-            // perks, so one giant "PKALL|910002,910003,..." line can blow
-            // past that and drop whatever IDs land after the cutoff (e.g.
-            // Auto-Mount, 910105, always unlocking server-side but never
-            // reaching db.perks client-side, so its World Perks toggle
-            // looked locked and clicking it silently did nothing). The
-            // client's PKALL handler is purely additive (no db.perks = {}
-            // reset), so it's safe to split across multiple PKALL sends.
-            std::string ids;
-            for (uint32 spellId : g_perks[acc])
-            {
-                std::string next = std::to_string(spellId);
-                if (!ids.empty() && ids.size() + 1 + next.size() > 200)
-                {
-                    SendLine(player, "PKALL|" + ids);
-                    ids.clear();
-                }
-                if (!ids.empty())
-                    ids += ',';
-                ids += next;
-            }
-            if (!ids.empty())
-                SendLine(player, "PKALL|" + ids);
-        }
+        SendPerkSync(player);
         CatchUpProfession(player);
-        if (g_hasAutoMountCol)
-        {
-            g_autoMountOn[acc] = false;
-            if (QueryResult q = CharacterDatabase.Query(
-                "SELECT `auto_mount` FROM `lg_account_meta` WHERE `account_id` = {}", acc))
-                g_autoMountOn[acc] = (*q)[0].Get<uint32>() != 0;
-        }
-        else if (g_autoMountOn.find(acc) == g_autoMountOn.end())
-            g_autoMountOn[acc] = true;
-        if (g_hasPullRadiusCol)
-        {
-            g_pullRadiusOn[acc] = false;
-            if (QueryResult q = CharacterDatabase.Query(
-                "SELECT `pull_radius` FROM `lg_account_meta` WHERE `account_id` = {}", acc))
-                g_pullRadiusOn[acc] = (*q)[0].Get<uint32>() != 0;
-        }
-        if (g_hasTrackOreCol)
-        {
-            g_trackOreOn[acc] = false;
-            if (QueryResult q = CharacterDatabase.Query(
-                "SELECT `track_ore` FROM `lg_account_meta` WHERE `account_id` = {}", acc))
-                g_trackOreOn[acc] = (*q)[0].Get<uint32>() != 0;
-        }
-        if (g_hasTrackHerbCol)
-        {
-            g_trackHerbOn[acc] = false;
-            if (QueryResult q = CharacterDatabase.Query(
-                "SELECT `track_herb` FROM `lg_account_meta` WHERE `account_id` = {}", acc))
-                g_trackHerbOn[acc] = (*q)[0].Get<uint32>() != 0;
-        }
         if (HasPerk(player, SPELL_SWIM))
             player->CastSpell(player, SPELL_SWIM, true);
         GrantSubtletyPerks(player);
         RecastCombo(player);
-        NotifyZoneScale(player);
-        SendLine(player, Acore::StringFormat("AM|{}", g_autoMountOn[acc] ? 1 : 0));
-        SendLine(player, Acore::StringFormat("PULL|{}", g_pullRadiusOn[acc] ? 1 : 0));
-        SendLine(player, Acore::StringFormat("TRACKORE|{}", g_trackOreOn[acc] ? 1 : 0));
-        SendLine(player, Acore::StringFormat("TRACKHERB|{}", g_trackHerbOn[acc] ? 1 : 0));
     }
 
     void OnPlayerLogout(Player* player) override
@@ -1769,12 +1869,30 @@ public:
         GrantScaledGreyKillXP(owner, killed);
     }
 
-    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 /*xpSource*/) override
+    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override
     {
         if (!player || !amount)
             return;
-        float mult = ZoneRewardMult(player);
-        uint32 stacks = ComboCount(player);
+        float mult = 1.0f;
+        // Zone scaling is a rule about kills. It used to be applied to
+        // every XP source indiscriminately, so turning in a quest in a
+        // starter zone at 70 was also cut to ~35% -- the displayed level of
+        // some creature has nothing to say about quest, exploration or
+        // battleground XP.
+        if (xpSource == XPSOURCE_KILL)
+        {
+            // The engine paid out using the creature's REAL level. Anything
+            // the player is being shown as scaled has to be re-based onto
+            // the level they actually see, or a mob that reads as yellow
+            // still pays like the grey it really is. (Fully-grey kills
+            // never reach this hook -- KillRewarder zeroes them first --
+            // and are handled by GrantScaledGreyKillXP instead.)
+            if (Creature* creature = victim ? victim->ToCreature() : nullptr)
+                if (uint32 const scaled = ScaledKillXP(player, creature))
+                    amount = scaled;
+            mult *= ZoneRewardMult(player);
+        }
+        uint32 const stacks = ComboCount(player);
         if (HasPerk(player, SPELL_COMBO) && stacks)
             mult *= 1.0f + COMBO_XP_PCT_PER_STACK * float(stacks);
         if (Aura* pace = player->GetAura(SPELL_DUNGEON_PACE))
@@ -1900,16 +2018,6 @@ public:
     {
         CatchUpProfession(player);
     }
-
-    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& msg,
-        Player* /*receiver*/) override
-    {
-        if (!player || language != LANG_ADDON || type != CHAT_MSG_WHISPER)
-            return true;
-        if (HandleLgChat(player, msg))
-            return false;
-        return true;
-    }
 };
 
 class PerksSpell : public AllSpellScript
@@ -1965,7 +2073,7 @@ public:
 
     bool ShouldTrackValuesUpdatePosByIndex(Unit const* unit, uint8 /*updateType*/, uint16 index) override
     {
-        return unit && unit->GetTypeId() == TYPEID_UNIT && index == UNIT_FIELD_LEVEL;
+        return unit && unit->IsCreature() && index == UNIT_FIELD_LEVEL;
     }
 
     void OnPatchValuesUpdate(Unit const* unit, ByteBuffer& valuesUpdateBuf, BuildValuesCachePosPointers& posPointers, Player* target) override
@@ -2239,6 +2347,17 @@ void LivingGear_GrantSubtletyPerks(Player* player)
 bool LivingGear_BypassStealthRequirement(Unit* caster)
 {
     return LivingGearPerks::BypassStealthRequirement(caster);
+}
+
+// Addon-command entry point, called by the dispatcher in LivingGear.cpp.
+bool LivingGear_HandlePerksCommand(Player* player, std::string const& msg)
+{
+    return LivingGearPerks::HandleLgChat(player, msg);
+}
+
+void LivingGear_SendPerksSync(Player* player)
+{
+    LivingGearPerks::SendPerkSync(player);
 }
 
 void AddSC_LivingGearPerks()

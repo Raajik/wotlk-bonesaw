@@ -75,6 +75,10 @@
 // definition instead of an unresolved namespace-local declaration.
 void LivingGear_GrantSubtletyPerks(Player* player);
 
+class Player;
+void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
+
 namespace LivingGearClassPerks
 {
 // -------------------------------------------------------------------------
@@ -302,9 +306,7 @@ void DetectSchema()
 // -------------------------------------------------------------------------
 void SendLine(Player* player, std::string const& line)
 {
-    if (!player || !player->GetSession())
-        return;
-    player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    ::LivingGear_SendAddonLine(player, line);
 }
 
 void LoadPerks(uint32 accountId)
@@ -2280,8 +2282,7 @@ public:
         PLAYERHOOK_ON_UPDATE,
         PLAYERHOOK_ON_SPELL_CAST,
         PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT,
-        PLAYERHOOK_ON_PLAYER_RESURRECT,
-        PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT
+        PLAYERHOOK_ON_PLAYER_RESURRECT
     }) { }
 
     void OnPlayerResurrect(Player* player, float /*restore_percent*/, bool& /*applySickness*/) override
@@ -2417,27 +2418,6 @@ public:
     {
         OnLeaveCombatMage(player);
     }
-
-    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& msg,
-        Player* /*receiver*/) override
-    {
-        if (!player || language != LANG_ADDON || type != CHAT_MSG_WHISPER)
-            return true;
-        std::string body = msg;
-        if (body.rfind("LG\t", 0) == 0)
-            body = body.substr(3);
-        uint32 spellId = 0;
-        // Client's Class-tab buttons send "CLASS|<id>" (LivingGear.lua,
-        // ui.classBtns OnClick) -- this module originally only listened for
-        // a "CPERK|" format the client never actually sends or receives,
-        // so clicking a different spec silently did nothing.
-        if (sscanf(body.c_str(), "CLASS|%u", &spellId) == 1)
-        {
-            SelectClassPerk(player, spellId);
-            return false;
-        }
-        return true;
-    }
 };
 
 class ClassPerksSpell : public AllSpellScript
@@ -2561,6 +2541,26 @@ private:
 uint32 GetClassPerk(Player* player)
 {
     return LivingGearClassPerks::GetClassPerk(player);
+}
+
+// Addon-command entry point, called by the dispatcher in LivingGear.cpp.
+// The client's Class-tab buttons send "CLASS|<id>" (LivingGear.lua,
+// ui.classBtns OnClick).
+bool LivingGear_HandleClassPerksCommand(Player* player, std::string const& msg)
+{
+    uint32 spellId = 0;
+    if (sscanf(msg.c_str(), "CLASS|%u", &spellId) != 1)
+        return false;
+    LivingGearClassPerks::SelectClassPerk(player, spellId);
+    return true;
+}
+
+// CPKALL was login-only, so the Class tab was blank after any /reload
+// until the player logged out and back in. Idempotent: UnlockPerk skips
+// anything already known.
+void LivingGear_SendClassPerksSync(Player* player)
+{
+    LivingGearClassPerks::GrantAndBroadcastClassPerks(player);
 }
 
 void AddSC_LivingGearClassPerks()

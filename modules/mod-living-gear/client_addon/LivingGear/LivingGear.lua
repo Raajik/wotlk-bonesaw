@@ -4261,6 +4261,14 @@ function LG2.HandleAddon(prefix, message)
         if ui.frame and ui.frame:IsShown() then
             LayoutRows()
         end
+        -- A live VLT| (a withdraw, or an auto-deposit while looting) only
+        -- redrew the main rows, never the Reagents panel -- so taking an
+        -- item out left the list showing the old count and read as another
+        -- dead button. Hand it to the same OnUpdate poller the CLR/END
+        -- sync path uses rather than refreshing inline on every line.
+        if ui.reagents and ui.reagents:IsShown() then
+            vaultLayoutPending = true
+        end
         RefreshQuestWatch()
         return
     end
@@ -4844,6 +4852,55 @@ if origPopupShow then
     end
 end
 
+-- The 3.3.5 tradeskill/craft window works out "how many can I make"
+-- purely from what is in your bags, so a recipe whose reagents are sitting
+-- in the reagent vault reads as 0 and the Create button stays greyed out.
+-- The server's own top-up (Spell::CheckItems -> TopUpReagentFromVault)
+-- only runs on a cast the client is refusing to send, so nothing the
+-- server does on its own can unstick it. Tell the server which recipe is
+-- selected and let it move the reagents somewhere the client can see.
+--
+-- Hung off LG2 rather than made a file-local on purpose: the OnEvent
+-- closure below is already near Lua 5.1's 60-upvalue ceiling (see the
+-- BuildLootPanel/BuildClassTabs split-outs above) and LG2 is an upvalue it
+-- already holds.
+function LG2.SendCraftPrep()
+    local id
+    if GetTradeSkillSelectionIndex and GetTradeSkillRecipeLink then
+        local idx = GetTradeSkillSelectionIndex()
+        if idx and idx > 0 then
+            local link = GetTradeSkillRecipeLink(idx)
+            if link then
+                id = tonumber(string.match(link, "enchant:(%d+)"))
+            end
+        end
+    end
+    if not id and GetCraftSelectionIndex and GetCraftRecipeLink then
+        -- Enchanting (and beast training) use CraftFrame, not TradeSkillFrame.
+        local idx = GetCraftSelectionIndex()
+        if idx and idx > 0 then
+            local link = GetCraftRecipeLink(idx)
+            if link then
+                id = tonumber(string.match(link, "enchant:(%d+)"))
+            end
+        end
+    end
+    if not id then
+        return
+    end
+    -- TRADE_SKILL_UPDATE also fires as a result of the items we just asked
+    -- for landing in the bag, so throttle per recipe. The server side is
+    -- idempotent anyway (it no-ops once the bag already has enough), this
+    -- just keeps us from whispering on every bag tick.
+    local now = GetTime()
+    if LG2._craftPrepId == id and LG2._craftPrepAt and (now - LG2._craftPrepAt) < 1 then
+        return
+    end
+    LG2._craftPrepId = id
+    LG2._craftPrepAt = now
+    SendLine("CRAFTPREP|" .. tostring(id))
+end
+
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_LOGIN")
 ev:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -4855,6 +4912,10 @@ ev:RegisterEvent("BANKFRAME_CLOSED")
 ev:RegisterEvent("GOSSIP_SHOW")
 ev:RegisterEvent("QUEST_GREETING")
 ev:RegisterEvent("QUEST_DETAIL")
+ev:RegisterEvent("TRADE_SKILL_SHOW")
+ev:RegisterEvent("TRADE_SKILL_UPDATE")
+ev:RegisterEvent("CRAFT_SHOW")
+ev:RegisterEvent("CRAFT_UPDATE")
 ev:SetScript("OnEvent", function(_, event, a1, a2)
     if event == "PLAYER_LOGIN" then
         LG2.InstallChatFilter()
@@ -4894,6 +4955,9 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
                 SelectGossipAvailableQuest(1)
             end
         end
+    elseif event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_UPDATE"
+        or event == "CRAFT_SHOW" or event == "CRAFT_UPDATE" then
+        pcall(LG2.SendCraftPrep)
     elseif event == "UNIT_SPELLCAST_SENT" or event == "UNIT_SPELLCAST_SUCCEEDED" then
         if a1 == "player" and LG2.IsAccountPerksName(a2) then
             OpenFromCast()

@@ -37,6 +37,10 @@
 class Player;
 bool IsAutolootEnabled(Player* player); // LivingGear_Vault.cpp
 
+class Player;
+void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
+
 namespace LivingGearGather
 {
 uint32 const SPELL_MINE_YIELD[] = { 910109, 910110, 910111 };
@@ -79,9 +83,7 @@ std::unordered_set<uint32> g_perkLoaded;
 
 void SendLine(Player* player, std::string const& line)
 {
-    if (!player || !player->GetSession())
-        return;
-    player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    ::LivingGear_SendAddonLine(player, line);
 }
 
 void LoadPerks(uint32 accountId)

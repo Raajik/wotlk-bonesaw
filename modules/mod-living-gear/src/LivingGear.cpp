@@ -48,6 +48,54 @@ class Player;
 void SendVaultAndRuleSync(Player* player); // LivingGear_Vault.cpp
 void SendAutolootSync(Player* player); // LivingGear_Vault.cpp
 
+// Addon command handlers, one per module. Each returns true if it
+// recognised and consumed the message. See DispatchAddonCommand below.
+bool LivingGear_HandleVaultCommand(Player* player, std::string const& msg); // LivingGear_Vault.cpp
+bool LivingGear_HandlePerksCommand(Player* player, std::string const& msg); // LivingGear_Perks.cpp
+bool LivingGear_HandleClassPerksCommand(Player* player, std::string const& msg); // LivingGear_ClassPerks.cpp
+bool LivingGear_HandleNextCommand(Player* player, std::string const& msg); // LivingGear_Next.cpp
+
+// Login-time state pushes, reused to answer a client REQ. See SendAddonSync.
+void LivingGear_SendPerksSync(Player* player); // LivingGear_Perks.cpp
+void LivingGear_SendClassPerksSync(Player* player); // LivingGear_ClassPerks.cpp
+void LivingGear_SendNextSync(Player* player); // LivingGear_Next.cpp
+
+// ---------------------------------------------------------------------
+// Shared addon transport.
+//
+// Every server->client line is a self-whisper, and Player::Whisper runs
+// the *same* OnPlayerCanUseChat hook that incoming client commands arrive
+// on (Player.cpp) -- worse, a hook returning false there does not just
+// mean "not handled", it makes Whisper drop the packet before it is ever
+// built. So an outgoing line whose text also matches a command pattern is
+// both re-executed as a command AND silently never sent. That has already
+// cost this module a stack-overflow crash (ALDE| looping into itself) and
+// an entire session of "the client never receives corrected state" (every
+// Vault sync line being swallowed). One depth counter, checked once by the
+// one dispatcher, closes that off for every module at the same time --
+// which is why all eight modules now funnel their sends through here
+// rather than each keeping a private copy of Whisper plus, at best, a
+// private copy of the guard.
+// ---------------------------------------------------------------------
+namespace
+{
+thread_local uint32 g_addonSendDepth = 0;
+}
+
+bool LivingGear_IsAddonSendInProgress()
+{
+    return g_addonSendDepth != 0;
+}
+
+void LivingGear_SendAddonLine(Player* player, std::string const& line)
+{
+    if (!player || !player->GetSession())
+        return;
+    ++g_addonSendDepth;
+    player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    --g_addonSendDepth;
+}
+
 namespace LivingGear
 {
 struct LgConfig
@@ -574,9 +622,7 @@ static std::string SanitizeAddonName(std::string name)
 
 static void SendAddonLine(Player* player, std::string const& line)
 {
-    if (!player || !player->GetSession())
-        return;
-    player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    ::LivingGear_SendAddonLine(player, line);
 }
 
 // Account-wide UI scale (85-175%). Client sends SCALESET|<pct> when the
@@ -687,6 +733,15 @@ static void SendAddonSync(Player* player, bool includeBags = true)
     SendAddonLine(player, "CLR");
     ::SendVaultAndRuleSync(player);
     ::SendAutolootSync(player);
+    // These three used to be pushed at login and nowhere else, so a client
+    // REQ -- which the addon fires on /reload and on every re-sync --
+    // answered with the vault and attunement state only. db.perks,
+    // db.classPerks and the toggles stayed empty, and since the addon gates
+    // its buttons on PerkKnown(), half the panel simply rendered as locked
+    // until the player logged all the way out and back in.
+    ::LivingGear_SendPerksSync(player);
+    ::LivingGear_SendClassPerksSync(player);
+    ::LivingGear_SendNextSync(player);
 
     LgStats absorb = LoadAbsorbForPlayer(player);
     uint32 count = 0;
@@ -1111,6 +1166,63 @@ static bool HandleAutoAttuneSet(Player* player, std::string const& raw)
     return false;
 }
 
+// Returns true if some handler recognised and consumed `raw`. Callers
+// translate that into "suppress the whisper".
+bool DispatchAddonCommand(Player* player, std::string const& raw)
+{
+    // Our own outgoing lines arrive back through this very hook, because a
+    // server->client addon line IS a self-whisper (LivingGear_SendAddonLine).
+    // Never parse one as a command, and never report it as handled: the
+    // hook returning false makes Player::Whisper drop the packet before it
+    // is built, so "handled" here means "the client never gets this line".
+    if (::LivingGear_IsAddonSendInProgress())
+        return false;
+
+    std::string msg = raw;
+    bool const addressed = msg.rfind("LG\t", 0) == 0;
+    if (addressed)
+        msg = msg.substr(3);
+
+    if (msg == "REQ")
+    {
+        SendAddonSync(player, true);
+        return true;
+    }
+    uint32 pct = 0;
+    if (sscanf(msg.c_str(), "SCALESET|%u", &pct) == 1 && player->GetSession())
+    {
+        SaveUiScale(player->GetSession()->GetAccountId(), pct);
+        SendAddonSync(player, true);
+        return true;
+    }
+    if (HandleTipRequest(player, msg))
+        return true;
+    if (HandleAttuneMessage(player, msg))
+        return true;
+    if (HandleAutoAttuneSet(player, msg))
+        return true;
+    if (::LivingGear_HandleVaultCommand(player, msg))
+        return true;
+    if (::LivingGear_HandlePerksCommand(player, msg))
+        return true;
+    if (::LivingGear_HandleClassPerksCommand(player, msg))
+        return true;
+    if (::LivingGear_HandleNextCommand(player, msg))
+        return true;
+
+    // Every "this button does nothing" report against this module has
+    // turned out to be a client command with no server handler -- TAKE|
+    // (vault withdraw, never implemented at all), JMPSET|, SCAP| (gated on
+    // an unstripped prefix), CLASS| (listening for a format the client
+    // never sent). Not one of them left a trace anywhere. They all do now.
+    if (addressed)
+        LOG_ERROR("module.livinggear",
+            "Living Gear: no handler for addon command '{}' (from {}). "
+            "The client sends it and nothing on the server is listening.",
+            msg, player->GetName());
+    return false;
+}
+
 class LivingGearPlayer : public PlayerScript
 {
 public:
@@ -1197,34 +1309,25 @@ public:
         SendAddonSync(player);
     }
 
+    // The single addon-command entry point for the entire module.
+    //
+    // ScriptMgr's private-chat hook is a boolean hook, and
+    // CALL_ENABLED_BOOLEAN_HOOKS (ScriptMgrMacros.h) stops at the FIRST
+    // script that returns false -- it never consults the rest. This module
+    // used to register that hook five separate times (LivingGear, Next,
+    // Perks, ClassPerks, Vault), which meant the routing table for the
+    // whole addon protocol was "whatever order AddSC_* happens to run in":
+    // any prefix collision silently killed whichever module registered
+    // later, and a module returning false for a message it had not really
+    // acted on suppressed the whisper for everyone downstream -- which is
+    // exactly how every outgoing Vault sync line got dropped for a whole
+    // session. One hook, one explicit ordered list, one place that strips
+    // the "LG<tab>" prefix.
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& msg, Player* /*receiver*/) override
     {
-        if (language != LANG_ADDON || type != CHAT_MSG_WHISPER)
+        if (!player || language != LANG_ADDON || type != CHAT_MSG_WHISPER)
             return true;
-        if (msg == "LG\tREQ" || msg == "REQ")
-        {
-            SendAddonSync(player, true);
-            return false;
-        }
-        {
-            std::string body = msg;
-            if (body.rfind("LG\t", 0) == 0)
-                body = body.substr(3);
-            uint32 pct = 0;
-            if (sscanf(body.c_str(), "SCALESET|%u", &pct) == 1 && player->GetSession())
-            {
-                SaveUiScale(player->GetSession()->GetAccountId(), pct);
-                SendAddonSync(player, true);
-                return false;
-            }
-        }
-        if (HandleTipRequest(player, msg))
-            return false;
-        if (HandleAttuneMessage(player, msg))
-            return false;
-        if (HandleAutoAttuneSet(player, msg))
-            return false;
-        return true;
+        return !DispatchAddonCommand(player, msg);
     }
 };
 

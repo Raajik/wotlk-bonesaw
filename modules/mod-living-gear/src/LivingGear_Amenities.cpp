@@ -40,6 +40,10 @@
 
 using namespace std::chrono_literals;
 
+class Player;
+void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
+
 namespace LivingGearAmenities
 {
 uint32 const SPELL_MAILBOX = 910002;
@@ -64,9 +68,7 @@ uint32 const FRIENDLY_FACTION = 35;
 
 void SendLine(Player* player, std::string const& line)
 {
-    if (!player || !player->GetSession())
-        return;
-    player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    ::LivingGear_SendAddonLine(player, line);
 }
 
 void Say(Player* player, char const* msg)

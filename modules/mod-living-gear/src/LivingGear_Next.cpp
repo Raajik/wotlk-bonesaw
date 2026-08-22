@@ -34,6 +34,10 @@
 #include <unordered_set>
 #include <vector>
 
+class Player;
+void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
+
 namespace LivingGearNext
 {
 uint32 const SPELL_CLASS_BUFFS = 910106;
@@ -106,9 +110,7 @@ void DetectNextSchema()
 
 void SendLine(Player* player, std::string const& line)
 {
-    if (!player || !player->GetSession())
-        return;
-    player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    ::LivingGear_SendAddonLine(player, line);
 }
 
 bool HasPerk(Player* player, uint32 spellId)
@@ -581,7 +583,7 @@ void ApplyWeaponPeak(Player* player)
     player->UpdateAllStats();
 }
 
-void HandleNextMessage(Player* player, std::string const& raw)
+bool HandleNextMessage(Player* player, std::string const& raw)
 {
     std::string msg = raw;
     if (msg.rfind("LG\t", 0) == 0)
@@ -602,7 +604,19 @@ void HandleNextMessage(Player* player, std::string const& raw)
                 player->GetSession()->GetAccountId(), cap, cap);
         ApplySpeedCap(player);
         SendLine(player, Acore::StringFormat("SCAP|{}", cap));
+        return true;
     }
+    return false;
+}
+
+// The speed cap is the only state this module pushes at login, and a
+// client REQ never used to reach it, so the slider snapped back to its
+// default on every /reload.
+void SendNextSync(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    SendLine(player, Acore::StringFormat("SCAP|{}", SpeedCapPct(player)));
 }
 
 class NextPlayer : public PlayerScript
@@ -619,7 +633,6 @@ public:
         PLAYERHOOK_ON_GIVE_EXP,
         PLAYERHOOK_ON_EQUIP,
         PLAYERHOOK_ON_UNEQUIP_ITEM,
-        PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT,
         PLAYERHOOK_ON_PLAYER_QUEST_ACCEPT
     }) { }
 
@@ -740,17 +753,6 @@ public:
         ApplyWeaponPeak(player);
     }
 
-    bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 language, std::string& msg, Player* /*receiver*/) override
-    {
-        if (language != LANG_ADDON || type != CHAT_MSG_WHISPER)
-            return true;
-        if (msg.rfind("SCAP|", 0) == 0)
-        {
-            HandleNextMessage(player, msg);
-            return false;
-        }
-        return true;
-    }
 };
 
 class NextSpell : public AllSpellScript
@@ -863,6 +865,23 @@ public:
 };
 
 } // namespace LivingGearNext
+
+// Addon-command entry point, called by the dispatcher in LivingGear.cpp.
+// The gate that used to live in NextPlayer::OnPlayerCanUseChat tested the
+// RAW message against "SCAP|", but every client line arrives prefixed as
+// "LG<tab>SCAP|..." -- so it never matched once, and the speed cap slider
+// has never done anything. Routing through the dispatcher (which strips
+// the prefix in exactly one place) removes the chance to get that wrong
+// per module.
+bool LivingGear_HandleNextCommand(Player* player, std::string const& msg)
+{
+    return LivingGearNext::HandleNextMessage(player, msg);
+}
+
+void LivingGear_SendNextSync(Player* player)
+{
+    LivingGearNext::SendNextSync(player);
+}
 
 void AddSC_LivingGearNext()
 {

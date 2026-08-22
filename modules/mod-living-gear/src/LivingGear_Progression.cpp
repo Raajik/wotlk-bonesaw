@@ -33,6 +33,10 @@
 #include <unordered_map>
 #include <unordered_set>
 
+class Player;
+void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
+
 namespace LivingGearProgression
 {
 // ---------------------------------------------------------------------
@@ -123,9 +127,7 @@ std::unordered_map<uint32, std::unordered_set<uint32>> g_perks;
 
 void SendLine(Player* player, std::string const& line)
 {
-    if (!player || !player->GetSession())
-        return;
-    player->Whisper(std::string("LG\t") + line, LANG_ADDON, player);
+    ::LivingGear_SendAddonLine(player, line);
 }
 
 void LoadPerks(uint32 accountId)
