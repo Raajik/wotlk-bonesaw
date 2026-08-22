@@ -114,6 +114,24 @@ std::unordered_set<uint32> g_autolootLoaded;
 // own outgoing traffic.
 thread_local bool g_sendingSyncLine = false;
 
+// Account-wide Key Ring (2026-08-21): lg_account_key may not exist yet on
+// a fresh deploy that hasn't picked up the migration -- probe once and
+// degrade gracefully (matches LivingGear_ClassPerks.cpp's DetectSchema
+// pattern) rather than hard-failing every login/loot on a missing table.
+bool g_accountKeySchemaChecked = false;
+bool g_hasAccountKeyTable = false;
+
+void DetectAccountKeySchema()
+{
+    if (g_accountKeySchemaChecked)
+        return;
+    g_accountKeySchemaChecked = true;
+    if (QueryResult tables = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_key'"))
+        g_hasAccountKeyTable = (*tables)[0].Get<uint64>() > 0;
+}
+
 void SendLine(Player* player, std::string const& line)
 {
     if (!player || !player->GetSession())
@@ -247,14 +265,68 @@ bool IsQuestItem(ItemTemplate const* proto, Player* player = nullptr)
     return false;
 }
 
+bool IsKeyItem(ItemTemplate const* proto)
+{
+    return proto && proto->Class == ITEM_CLASS_KEY;
+}
+
+// Account-wide Key Ring: WotLK already auto-routes key items (BagFamily &
+// BAG_FAMILY_MASK_KEYS) into the real, native Key Ring bag on a normal
+// loot/StoreNewItem -- no code needed for the looting character itself.
+// This only handles the "every OTHER character on the account should also
+// have it" half. Following the exact convention lg_account_perk already
+// uses elsewhere in this module (LivingGear_Perks.cpp UnlockPerk/
+// GrantSubtletyPerks): no code anywhere in this codebase writes directly
+// into an offline character's inventory, so this records the key
+// account-wide and grants it to each OTHER character on their own next
+// login instead (GrantAccountKeys, called from OnPlayerLogin below).
+void RecordAccountKey(uint32 accountId, uint32 itemEntry)
+{
+    DetectAccountKeySchema();
+    if (!g_hasAccountKeyTable)
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT IGNORE INTO `lg_account_key` (`account_id`, `item_entry`) VALUES ({}, {})",
+        accountId, itemEntry);
+}
+
+void GrantAccountKeys(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    DetectAccountKeySchema();
+    if (!g_hasAccountKeyTable)
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `item_entry` FROM `lg_account_key` WHERE `account_id` = {}", accountId))
+    {
+        do
+        {
+            uint32 const itemEntry = (*result)[0].Get<uint32>();
+            if (!player->HasItemCount(itemEntry, 1))
+                player->AddItem(itemEntry, 1);
+        } while (result->NextRow());
+    }
+}
+
+// Profession tools (Mining Pick, Skinning Knife, Blacksmith Hammer,
+// Arclight Spanner, ...) are ITEM_CLASS_WEAPON / ITEM_SUBCLASS_WEAPON_MISC
+// in this item data, not ITEM_CLASS_TRADE_GOODS -- confirmed live against
+// item_template (2026-08-21) rather than assumed.
+bool IsToolItem(ItemTemplate const* proto)
+{
+    return proto && proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_MISC;
+}
+
 bool IsReagentItem(ItemTemplate const* proto, Player* player = nullptr)
 {
-    if (!proto || IsQuestItem(proto, player))
+    if (!proto || IsQuestItem(proto, player) || IsKeyItem(proto))
         return false;
     return proto->Class == ITEM_CLASS_TRADE_GOODS
         || proto->Class == ITEM_CLASS_GEM
         || proto->Class == ITEM_CLASS_REAGENT
-        || proto->Class == ITEM_CLASS_KEY;
+        || IsToolItem(proto);
 }
 
 bool IsLockbox(ItemTemplate const* proto)
@@ -334,8 +406,13 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
 {
     if (IsLockbox(proto))
         return ACT_BAG;
-    if (IsQuestItem(proto, player))
-        return ACT_QUEST_VAULT;
+    // 2026-08-21: quest vault dropped entirely per user request ("should no
+    // longer even exist") -- it never actually worked (nothing ever
+    // restored a vaulted item before a quest turn-in, so items just
+    // vanished from the player with no way back). Quest items now simply
+    // stay in the bag like anything else -- IsQuestItem(proto, player) is
+    // still used (via IsReagentItem's exclusion check below) to keep them
+    // out of the reagent vault, just no longer routed anywhere itself.
     if (IsReagentItem(proto, player))
         return ACT_REAGENT_VAULT;
     if (proto->Quality == ITEM_QUALITY_POOR)
@@ -836,10 +913,15 @@ public:
             accountId, SPELL_AUTOLOOT);
         SendLine(player, Acore::StringFormat("PK|{}|1", SPELL_AUTOLOOT));
         SendAutolootSync(player);
+        GrantAccountKeys(player);
     }
 
     void OnPlayerStoreNewItem(Player* player, Item* item, uint32 /*count*/) override
     {
+        if (player && player->GetSession() && item)
+            if (ItemTemplate const* proto = item->GetTemplate())
+                if (IsKeyItem(proto))
+                    RecordAccountKey(player->GetSession()->GetAccountId(), proto->ItemId);
         ApplyLootRule(player, item);
     }
 
