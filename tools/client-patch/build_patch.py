@@ -215,7 +215,7 @@ VISUAL_COPY = {
 # added to SkillLineAbility, so they do not appear as spellbook skills.
 CASTABLE_SPELLS = {
     910001, 910002, 910003, 910004, 910005, 910006, 910007, 910008, 910009,
-    910042, 910088, 910090, 910091, 910092, 910105, 910106, 910107, 910108,
+    910042, 910088, 910090, 910091, 910092, 910105,
 }
 
 # Hidden HoT used by First Aid Instant. Not added to SkillLineAbility / spellbook.

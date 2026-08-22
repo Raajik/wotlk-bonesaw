@@ -116,6 +116,13 @@ bool HasPerk(Player* player, uint32 spellId)
     return player && player->HasSpell(spellId);
 }
 
+// 2026-08-21: every caller in this file (Class Buffs, Riding, Auto-Accept)
+// is a pure account-perk flag with no CASTABLE_SPELLS/SkillLineAbility
+// entry -- player->learnSpell() marked them "known" with nothing to
+// categorize them, so the client dumped them into the General spellbook
+// tab regardless of being excluded from CASTABLE_SPELLS client-side.
+// HasPerk()'s g_perks[acc]/DB fallback (LivingGear_Perks.cpp) works fine
+// without ever calling learnSpell, so this no longer does.
 void UnlockPerk(Player* player, uint32 spellId)
 {
     if (!player || !player->GetSession() || !sSpellMgr->GetSpellInfo(spellId))
@@ -124,8 +131,6 @@ void UnlockPerk(Player* player, uint32 spellId)
     CharacterDatabase.DirectExecute(
         "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
         accountId, spellId);
-    if (!player->HasSpell(spellId))
-        player->learnSpell(spellId);
 }
 
 bool RankOf(SpellInfo const* info, uint32 firstId)

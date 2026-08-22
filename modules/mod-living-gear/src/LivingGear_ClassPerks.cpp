@@ -332,6 +332,16 @@ bool HasPerk(Player* player, uint32 spellId)
     return g_perks[acc].count(spellId) > 0;
 }
 
+// 2026-08-21: this file's only caller (GrantAndBroadcastClassPerks, below)
+// unlocks the three class-spec pick badges -- pure account-perk flags,
+// never meant to be castable/spellbook-visible (unlike LivingGear_Perks.cpp's
+// UnlockPerk, which also grants some genuinely castable perks and keeps
+// learnSpell). Calling player->learnSpell() here marked them "known" with
+// no SkillLineAbility entry to categorize them, so the client dumped them
+// into the General spellbook tab regardless of CASTABLE_SPELLS excluding
+// them -- exactly why "*Rogue: Subtlety" etc. kept showing up there even
+// after that client-side fix. HasPerk()'s g_perks[acc]/DB fallback still
+// works fine without ever calling learnSpell.
 void UnlockPerk(Player* player, uint32 spellId, char const* msg)
 {
     if (!player || !player->GetSession() || !sSpellMgr->GetSpellInfo(spellId))
@@ -343,8 +353,6 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg)
     CharacterDatabase.DirectExecute(
         "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
         acc, spellId);
-    if (!player->HasSpell(spellId))
-        player->learnSpell(spellId);
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
         ChatHandler(player->GetSession()).SendSysMessage(msg);

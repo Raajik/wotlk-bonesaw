@@ -260,7 +260,14 @@ bool HasPerk(Player* player, uint32 spellId)
     return g_perks[acc].count(spellId) > 0;
 }
 
-void UnlockPerk(Player* player, uint32 spellId, char const* msg)
+// 2026-08-21: learnSpellToo defaults true (most perks unlocked here ARE
+// meant to be real, castable spells) but must be false for pure account-
+// perk flags with no CASTABLE_SPELLS/SkillLineAbility entry (Shadow Dance,
+// Shadow Clone) -- player->learnSpell() marks them "known" with nothing to
+// categorize them, so the client dumps them into the General spellbook tab
+// regardless of being excluded from CASTABLE_SPELLS client-side. HasPerk()'s
+// g_perks[acc]/DB fallback works fine without ever calling learnSpell.
+void UnlockPerk(Player* player, uint32 spellId, char const* msg, bool learnSpellToo = true)
 {
     if (!player || !player->GetSession() || !sSpellMgr->GetSpellInfo(spellId))
         return;
@@ -271,7 +278,7 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg)
     CharacterDatabase.DirectExecute(
         "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
         acc, spellId);
-    if (!player->HasSpell(spellId))
+    if (learnSpellToo && !player->HasSpell(spellId))
         player->learnSpell(spellId);
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
@@ -1506,9 +1513,10 @@ public:
         // UnlockPerk (not raw learnSpell) so the client's db.perks
         // actually gets a PK|id|1 for these -- otherwise the addon UI
         // can never show them as known even though the character has
-        // them, since nothing else ever tells the client.
-        UnlockPerk(player, SPELL_SHADOW_DANCE, nullptr);
-        UnlockPerk(player, SPELL_SHADOW_CLONE, nullptr);
+        // them, since nothing else ever tells the client. learnSpellToo=false:
+        // pure flags, no CASTABLE_SPELLS entry -- see UnlockPerk's comment.
+        UnlockPerk(player, SPELL_SHADOW_DANCE, nullptr, false);
+        UnlockPerk(player, SPELL_SHADOW_CLONE, nullptr, false);
     }
 
     void OnPlayerAfterSpecSlotChanged(Player* player, uint8 /*newSlot*/) override
