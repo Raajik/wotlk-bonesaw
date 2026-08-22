@@ -616,7 +616,17 @@ GameObject* FindFishingBobber(Player* player)
 
 void TryAutoCatchFish(Player* player)
 {
-    if (!player || ExtraReach(player, SPELL_FISH_REACH) <= 0.0f)
+    // 2026-08-21: was incorrectly gated on ExtraReach(SPELL_FISH_REACH) > 0
+    // -- that's a RANGE-extension perk (how far away a node can be to
+    // interact with), not a prerequisite for auto-catching a bobber the
+    // player is already standing at and actively channeling themselves.
+    // Every other gather function in this file uses reach perks to extend
+    // range, never as an on/off gate for the feature working at all --
+    // this was the one inconsistent with its own established pattern,
+    // silently no-opping autofishing for anyone without a Fish Reach rank
+    // unlocked. FindFishingBobber's UNIT_FIELD_CHANNEL_OBJECT check already
+    // naturally scopes this to "only does something while actually fishing".
+    if (!player)
         return;
     GameObject* bobber = FindFishingBobber(player);
     if (!bobber || bobber->getLootState() != GO_READY)

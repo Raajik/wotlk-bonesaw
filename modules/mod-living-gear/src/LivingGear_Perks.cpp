@@ -249,6 +249,15 @@ void LoadPerks(uint32 accountId)
     }
 }
 
+// Gate for the various TEMP DEBUG chat prints scattered through this file
+// (Shadow Dance, Hemorrhage, Cooking) -- only the account actively
+// debugging should see them, not every player on the server (e.g. a
+// second real player sharing this realm).
+bool IsDebugRecipient(Player* player)
+{
+    return player && player->GetSession() && player->GetSession()->GetSecurity() > SEC_PLAYER;
+}
+
 bool HasPerk(Player* player, uint32 spellId)
 {
     if (!player || !player->GetSession())
@@ -627,7 +636,12 @@ void TryAutoMount(Player* player)
     uint32 acc = player->GetSession()->GetAccountId();
     if (!g_autoMountOn[acc])
         return;
-    if (player->IsInCombat() || player->IsMounted() || player->isDead())
+    // 2026-08-21: isDead() is the death-state flag, not ghost status -- a
+    // released spirit is alive-but-ghost in engine terms, so none of these
+    // guards caught it. OnPlayerLeaveCombat firing on a post-death combat
+    // exit let this cast a mount spell on a ghost, a state the client
+    // never expects -- suspected cause of "stuck, needs relog" after dying.
+    if (player->IsInCombat() || player->IsMounted() || player->isDead() || player->HasPlayerFlag(PLAYER_FLAGS_GHOST))
         return;
     if (player->GetVehicle() || player->isMoving())
         return;
@@ -922,7 +936,7 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
     {
         // TEMP DEBUG 2026-08-21: Hemorrhage AoE reported not working; see
         // ShouldHaveShadowDanceBuff for context. Remove once confirmed.
-        if (player && player->GetSession())
+        if (IsDebugRecipient(player))
             ChatHandler(player->GetSession()).PSendSysMessage(
                 "|cffff8800[Hemo debug]|r bail in Impl: inWorld={} GetClassPerk={}",
                 player->IsInWorld(), GetClassPerk(player));
@@ -944,7 +958,7 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
         player->CastSpell(u, SPELL_PICKPOCKET, true);
         ++hitCount;
     }
-    if (player->GetSession())
+    if (IsDebugRecipient(player))
         ChatHandler(player->GetSession()).PSendSysMessage(
             "|cffff8800[Hemo debug]|r Impl ran: garrote={} nearby={} hit={}",
             garrote, around.size(), hitCount);
@@ -983,7 +997,7 @@ bool ShouldHaveShadowDanceBuff(Player* player)
     // seen here. Remove once confirmed working.
     static uint32 s_debugTick = 0;
     uint32 const now = getMSTime();
-    bool const dbg = player->GetSession()
+    bool const dbg = IsDebugRecipient(player)
         && (!s_debugTick || getMSTimeDiff(s_debugTick, now) >= 3000);
     if (dbg)
     {
@@ -1025,7 +1039,7 @@ void ApplyShadowDanceBuff(Player* player, bool apply)
     bool const wasOn = g_shadowDanceBuffOn[guid];
     static uint32 s_applyDebugTick = 0;
     uint32 const applyNow = getMSTime();
-    bool const applyDbg = player->GetSession()
+    bool const applyDbg = IsDebugRecipient(player)
         && (!s_applyDebugTick || getMSTimeDiff(s_applyDebugTick, applyNow) >= 3000);
     if (applyDbg)
     {
@@ -1038,7 +1052,7 @@ void ApplyShadowDanceBuff(Player* player, bool apply)
         return;
     g_shadowDanceBuffOn[guid] = apply;
     player->ApplyStatPctModifier(UNIT_MOD_ATTACK_POWER, TOTAL_PCT, apply ? 10.0f : -10.0f);
-    if (player->GetSession())
+    if (IsDebugRecipient(player))
         ChatHandler(player->GetSession()).PSendSysMessage(
             "|cffff8800[SD debug]|r ApplyShadowDanceBuff: AP_after={}",
             player->GetTotalAttackPowerValue(BASE_ATTACK));
@@ -1064,7 +1078,7 @@ bool BypassStealthRequirement(Unit* caster)
         return false;
     bool const result = GetClassPerk(player) == SPELL_SUBTLETY && HasPerk(player, SPELL_SHADOW_DANCE);
     // TEMP DEBUG 2026-08-21: see ShouldHaveShadowDanceBuff for context.
-    if (player->GetSession())
+    if (IsDebugRecipient(player))
         ChatHandler(player->GetSession()).PSendSysMessage(
             "|cffff8800[SD debug]|r stealth-bypass check: result={}", result);
     return result;
@@ -1134,7 +1148,7 @@ void TickCooking(Player* player, uint32 diff)
     // TEMP DEBUG 2026-08-21: cooking regen reported not working.
     static uint32 s_debugTick = 0;
     uint32 const dbgNow = getMSTime();
-    bool const dbg = player->GetSession()
+    bool const dbg = IsDebugRecipient(player)
         && (!s_debugTick || getMSTimeDiff(s_debugTick, dbgNow) >= 3000);
     if (dbg)
         s_debugTick = dbgNow;
@@ -1162,7 +1176,7 @@ void TickCooking(Player* player, uint32 diff)
         pct = 2;
     else if (skill >= 75 && HasPerk(player, SPELL_COOK[0]))
         pct = 1;
-    if (player->GetSession())
+    if (IsDebugRecipient(player))
         ChatHandler(player->GetSession()).PSendSysMessage(
             "|cffff8800[Cook debug]|r tick: skill={} pct={} HasPerk[0..5]={},{},{},{},{},{}",
             skill, pct,
