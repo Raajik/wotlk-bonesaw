@@ -48,3 +48,43 @@ like your tree's exact line numbers.
   (35s/30s/20s -> 10s/10s/8s) so bots react to real-player queue demand
   faster. Gameplay tuning, not a bug fix -- skip it if you're happy with
   the slower default cadence.
+
+- **0005-account-wide-lockpicking.core-patch** -- `Spell.cpp`,
+  `Spell::CanOpenLock()`. Makes Lockpicking account-wide, matching Riding.
+  Required for the module's chest-autoloot Lockpicking handling to mean
+  anything across alts; skip it and Lockpicking stays per-character.
+
+- **0006-stackable-tracking.core-patch** -- `SpellInfo.cpp`,
+  `SpellInfo::IsAuraExclusiveBySpecificWith()`. Lets multiple minimap
+  tracking types be active simultaneously (Find Minerals + Find Herbs,
+  etc.) instead of one cancelling the other. Required for the Track
+  Ore/Track Herbs perks to both show at once; skip it and only one
+  tracking type can ever be active, matching stock Blizzard behavior.
+
+- **0007-locked-chest-autoloot.core-patch** -- `SpellEffects.cpp`,
+  `Spell::EffectOpenLock()`. Chest autoloot only ever fired for chests
+  with no lock at all -- any locked chest (Lockpicking, key, or
+  otherwise) opens through this completely separate code path, which
+  never touches `GameObject::Use()` (where the module's autoloot hook
+  lives) at all. Required for autoloot to do anything on the majority of
+  real chests, which tend to be locked; skip it and only trivially
+  unlocked chests ever autoloot.
+
+- **0009-shadow-dance-stealth-bypass.core-patch** -- `Spell.cpp`,
+  `Spell::CheckCast()`. Lets the Shadow Dance perk (Rogue Subtlety) use
+  stealth-only openers (Ambush, Garrote, etc.) without being stealthed --
+  a permanent "openers anytime" buff rather than a real stealth aura, so
+  it has no crouch/transparency/detection-range side effects. Required
+  for that half of the Shadow Dance perk; skip it and Subtlety rogues
+  keep the normal stealth requirement on those abilities (the party/raid
+  attack power buff half is unaffected either way).
+
+Per-viewer mob level scaling (previously patch 0008, `Object.cpp`) no
+longer needs a core patch at all -- `Object::BuildValuesUpdate()` turned
+out to be dead code for creatures/players (`Unit` has its own override
+that actually runs, via virtual dispatch). The real fix lives entirely
+in the module now: `PerksUnit` (`LivingGear_Perks.cpp`) hooks the stock
+`ShouldTrackValuesUpdatePosByIndex`/`OnPatchValuesUpdate` `UnitScript`
+callbacks, which is the same purpose-built per-viewer-field-patch
+mechanism the engine itself uses for things like `UNIT_NPC_FLAGS`. No
+core changes required for this feature at all anymore.

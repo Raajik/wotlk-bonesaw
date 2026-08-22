@@ -27,10 +27,13 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "QuestDef.h"
+#include "Random.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
+#include "World.h"
 
 #include <chrono>
 #include <string>
@@ -52,7 +55,8 @@ enum LgMatch : uint8
     MATCH_ALL = 0, MATCH_POOR = 1, MATCH_QUEST = 2, MATCH_REAGENT = 3,
     MATCH_LIVING = 4, MATCH_NAME = 5, MATCH_QUALITY = 6,
     MATCH_UNATTUNED = 7, MATCH_ATTUNED = 8, MATCH_RECIPE = 9,
-    MATCH_FOOD = 10, MATCH_POTION = 11, MATCH_BAGS = 12
+    MATCH_FOOD = 10, MATCH_POTION = 11, MATCH_BAGS = 12, MATCH_SCROLL = 13,
+    MATCH_ILVL = 14
 };
 enum LgAction : uint8
 {
@@ -210,14 +214,42 @@ void VaultAdd(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEntry, 
         accountId, ownerGuid, kind, itemEntry, count, count);
 }
 
-bool IsQuestItem(ItemTemplate const* proto)
+// 2026-08-21: proto->Class == ITEM_CLASS_QUEST / BIND_QUEST_ITEM alone
+// misses most real quest turn-in items (many are ITEM_CLASS_TRADE_GOODS or
+// similar) and quest-associated keys (ITEM_CLASS_KEY, which IsReagentItem
+// explicitly matches) -- both fell through to the reagent vault instead of
+// the quest vault (confirmed live with a Scarlet Key landing in the
+// reagent bank, unusable). The only reliable signal for "is this actually
+// a quest item" is whether it's required by one of the player's own
+// active quests, so check the player's quest log when a player is
+// available. `player` is optional (some MATCH_QUEST rule-evaluation paths
+// don't have one) -- falls back to the static-only check in that case.
+bool IsQuestItem(ItemTemplate const* proto, Player* player = nullptr)
 {
-    return proto && (proto->Class == ITEM_CLASS_QUEST || proto->Bonding == BIND_QUEST_ITEM);
+    if (!proto)
+        return false;
+    if (proto->Class == ITEM_CLASS_QUEST || proto->Bonding == BIND_QUEST_ITEM)
+        return true;
+    if (!player)
+        return false;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = player->GetQuestSlotQuestId(slot);
+        if (!questId)
+            continue;
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest)
+            continue;
+        for (uint32 reqItem : quest->RequiredItemId)
+            if (reqItem == proto->ItemId)
+                return true;
+    }
+    return false;
 }
 
-bool IsReagentItem(ItemTemplate const* proto)
+bool IsReagentItem(ItemTemplate const* proto, Player* player = nullptr)
 {
-    if (!proto || IsQuestItem(proto))
+    if (!proto || IsQuestItem(proto, player))
         return false;
     return proto->Class == ITEM_CLASS_TRADE_GOODS
         || proto->Class == ITEM_CLASS_GEM
@@ -248,18 +280,40 @@ bool IsAttuned(uint32 accountId, uint32 itemEntry)
     return false;
 }
 
-bool RuleMatches(LgRule const& rule, ItemTemplate const* proto, uint32 accountId)
+bool RuleMatches(LgRule const& rule, ItemTemplate const* proto, uint32 accountId, Player* player = nullptr)
 {
+    if (rule.match == MATCH_QUALITY)
+    {
+        // rule.negate is reused here as a 4-value comparison op
+        // (0 == , 1 != , 2 >= , 3 <=) instead of a plain negate bit --
+        // Type/Name rules below still treat it as a real 0/1 negate. No
+        // schema change needed: it was already a uint8 column/field.
+        switch (rule.negate)
+        {
+            case 1: return proto->Quality != rule.quality;
+            case 2: return proto->Quality >= rule.quality;
+            case 3: return proto->Quality <= rule.quality;
+            default: return proto->Quality == rule.quality;
+        }
+    }
+    if (rule.match == MATCH_ILVL)
+    {
+        // rule.text carries a "min-max" encoded range (reusing the same
+        // free-text column MATCH_NAME uses) rather than adding new columns.
+        uint32 lo = 0, hi = 0xFFFFFFFF;
+        sscanf(rule.text.c_str(), "%u-%u", &lo, &hi);
+        bool const result = proto->ItemLevel >= lo && proto->ItemLevel <= hi;
+        return rule.negate ? !result : result;
+    }
     bool result = false;
     switch (rule.match)
     {
         case MATCH_ALL: result = true; break;
         case MATCH_POOR: result = proto->Quality == ITEM_QUALITY_POOR; break;
-        case MATCH_QUEST: result = IsQuestItem(proto); break;
-        case MATCH_REAGENT: result = IsReagentItem(proto); break;
+        case MATCH_QUEST: result = IsQuestItem(proto, player); break;
+        case MATCH_REAGENT: result = IsReagentItem(proto, player); break;
         case MATCH_LIVING: result = IsLivingGearEligibleItem(proto); break;
         case MATCH_NAME: result = NamesMatch(rule.text, proto->Name1); break;
-        case MATCH_QUALITY: result = proto->Quality == rule.quality; break;
         case MATCH_UNATTUNED:
             result = IsLivingGearEligibleItem(proto) && !IsAttuned(accountId, proto->ItemId);
             break;
@@ -270,18 +324,19 @@ bool RuleMatches(LgRule const& rule, ItemTemplate const* proto, uint32 accountId
         case MATCH_FOOD: result = proto->Class == ITEM_CLASS_CONSUMABLE && proto->SubClass == ITEM_SUBCLASS_FOOD; break;
         case MATCH_POTION: result = proto->IsPotion(); break;
         case MATCH_BAGS: result = proto->Class == ITEM_CLASS_CONTAINER; break;
+        case MATCH_SCROLL: result = proto->Class == ITEM_CLASS_CONSUMABLE && proto->SubClass == ITEM_SUBCLASS_SCROLL; break;
         default: result = false; break;
     }
     return rule.negate ? !result : result;
 }
 
-uint8 DefaultLootAction(ItemTemplate const* proto)
+uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
 {
     if (IsLockbox(proto))
         return ACT_BAG;
-    if (IsQuestItem(proto))
+    if (IsQuestItem(proto, player))
         return ACT_QUEST_VAULT;
-    if (IsReagentItem(proto))
+    if (IsReagentItem(proto, player))
         return ACT_REAGENT_VAULT;
     if (proto->Quality == ITEM_QUALITY_POOR)
         return ACT_VENDOR;
@@ -295,9 +350,9 @@ uint8 ResolveLootAction(Player* player, ItemTemplate const* proto)
     uint32 const accountId = player->GetSession()->GetAccountId();
     LoadRules(accountId);
     for (LgRule const& rule : g_rules[accountId])
-        if (RuleMatches(rule, proto, accountId))
+        if (RuleMatches(rule, proto, accountId, player))
             return rule.action;
-    return DefaultLootAction(proto);
+    return DefaultLootAction(proto, player);
 }
 
 // Destroying an item from inside OnPlayerStoreNewItem is a use-after-free:
@@ -354,6 +409,47 @@ static void ApplyLootRuleAction(ObjectGuid playerGuid, ObjectGuid itemGuid, uint
     }
     if (action == ACT_SKIP)
         player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+    if (action == ACT_DISENCHANT)
+    {
+        // Same path the engine's own group-loot disenchant roll uses
+        // (Group.cpp: player->AutoStoreLoot(pProto->DisenchantID,
+        // LootTemplates_Disenchant, true)) -- both ACT_DISENCHANT and
+        // ACT_LEARN were already selectable in the rule builder's action
+        // dropdown (ACTION_NAMES) but had no handler here, so picking
+        // either was a silent no-op that just left the item in the bag.
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        if (proto && proto->DisenchantID)
+        {
+            player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+            player->AutoStoreLoot(proto->DisenchantID, LootTemplates_Disenchant, true);
+        }
+        return;
+    }
+    if (action == ACT_LEARN)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        if (proto)
+        {
+            for (uint8 i = 0; i < MAX_ITEM_PROTO_SPELLS; ++i)
+            {
+                if (proto->Spells[i].SpellId <= 0)
+                    continue;
+                SpellInfo const* useSpell = sSpellMgr->GetSpellInfo(uint32(proto->Spells[i].SpellId));
+                if (!useSpell)
+                    continue;
+                for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                {
+                    if (useSpell->Effects[e].Effect != SPELL_EFFECT_LEARN_SPELL)
+                        continue;
+                    uint32 const taught = useSpell->Effects[e].TriggerSpell;
+                    if (taught && !player->HasSpell(taught))
+                        player->learnSpell(taught);
+                    player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 void ApplyLootRule(Player* player, Item* item)
@@ -407,6 +503,63 @@ void SendVaultAndRuleSync(Player* player)
             idx, uint32(rule.match), uint32(rule.action), uint32(rule.negate), uint32(rule.quality), text));
         ++idx;
     }
+}
+
+// Called from a small core patch in Spell::EffectPickPocket (SpellEffects.cpp),
+// which normally just does player->SendLoot(target, LOOT_PICKPOCKETING) --
+// this replaces that with an autoloot grant when enabled. Replicates
+// Player::SendLoot's own LOOT_PICKPOCKETING fill logic (CanGeneratePickPocketLoot/
+// SetPickPocketLootTime/FillLoot/gold formula) exactly, since bypassing SendLoot
+// means that fill never happens otherwise. Returns false (caller falls back to
+// the normal SendLoot window) if autoloot is off or the creature was already
+// pickpocketed -- SendLoot's own "already pickpocketed" error message is worth
+// keeping for that case rather than silently doing nothing.
+bool TryAutolootPickpocket(Player* player, Unit* target)
+{
+    if (!player || !target || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
+        || !AutolootOn(player->GetSession()->GetAccountId()))
+        return false;
+    Creature* creature = target->ToCreature();
+    if (!creature || !creature->IsAlive() || player->IsFriendlyTo(creature))
+        return false;
+    if (!creature->CanGeneratePickPocketLoot())
+        return false;
+    creature->SetPickPocketLootTime();
+    Loot* loot = &creature->loot;
+    loot->clear();
+    if (uint32 const lootid = creature->GetCreatureTemplate()->pickpocketLootId)
+        loot->FillLoot(lootid, LootTemplates_Pickpocketing, player, true);
+    uint32 const a = urand(0, creature->GetLevel() / 2);
+    uint32 const b = urand(0, player->GetLevel() / 2);
+    loot->gold = uint32(10 * (a + b) * sWorld->getRate(RATE_DROP_MONEY));
+
+    // Spell::EffectPickPocket is still mid-execution on the caster when this
+    // runs -- same reentrancy hazard as chest autoloot (see LivingGear_Gather.cpp
+    // TryAutolootChest), same fix: defer the actual grant one tick.
+    ObjectGuid const playerGuid = player->GetGUID();
+    ObjectGuid const creatureGuid = creature->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid, creatureGuid]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !p->IsInWorld() || !p->GetMap())
+            return;
+        Creature* c = p->GetMap()->GetCreature(creatureGuid);
+        if (!c)
+            return;
+        Loot* l = &c->loot;
+        uint32 const maxSlot = l->GetMaxSlotInLootFor(p);
+        for (uint32 slot = 0; slot < maxSlot; ++slot)
+        {
+            InventoryResult msg = EQUIP_ERR_OK;
+            p->StoreLootItem(uint8(slot), l, msg);
+        }
+        if (l->gold)
+        {
+            p->ModifyMoney(int32(l->gold));
+            l->gold = 0;
+        }
+    }, std::chrono::milliseconds(1));
+    return true;
 }
 
 // Skips the manual loot window entirely on a kill: stores every lootable
@@ -529,7 +682,7 @@ void DepositAll(Player* player)
     std::vector<Item*> toDeposit;
     for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
         if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            if (IsReagentItem(item->GetTemplate()))
+            if (IsReagentItem(item->GetTemplate(), player))
                 toDeposit.push_back(item);
     for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
     {
@@ -538,7 +691,7 @@ void DepositAll(Player* player)
             continue;
         for (uint8 slot = 0; slot < container->GetBagSize(); ++slot)
             if (Item* item = container->GetItemByPos(slot))
-                if (IsReagentItem(item->GetTemplate()))
+                if (IsReagentItem(item->GetTemplate(), player))
                     toDeposit.push_back(item);
     }
     for (Item* item : toDeposit)
@@ -555,8 +708,23 @@ void DepositAll(Player* player)
 
 bool HandleVaultChat(Player* player, std::string msg)
 {
+    // 2026-08-21: returning true here (as this used to) doesn't just skip
+    // reprocessing our own outgoing sync line as a command -- it ALSO tells
+    // VaultPlayer::OnPlayerCanUseChat "this was a recognized command,
+    // suppress the whisper," which propagates all the way up through
+    // Player::Whisper (Player.cpp) to mean "don't build/send the packet at
+    // all." Every SendLine call in this file (VLT/AL/ALDE/ABS/AA/ITM/SCALE)
+    // sets g_sendingSyncLine for its whole duration, so this was silently
+    // discarding every single outgoing Vault sync line -- the client never
+    // received corrected state, which is why toggles/vault contents/rules
+    // never visibly updated no matter how many times the underlying logic
+    // was re-verified as correct. Returning false still exits immediately
+    // (no sscanf matching runs below, so the original infinite-recursion/
+    // SIGSEGV self-whisper-loop bug this guard was added for stays fixed),
+    // but now correctly says "not a recognized command" instead of
+    // "handled, suppress" -- letting the whisper/packet actually go out.
     if (g_sendingSyncLine)
-        return true; // this is our own outgoing sync line looping back through Whisper(self) -- swallow it, don't reparse as a command
+        return false;
     if (msg.rfind("LG\t", 0) == 0)
         msg = msg.substr(3);
     if (!player || !player->GetSession())
@@ -573,6 +741,7 @@ bool HandleVaultChat(Player* player, std::string msg)
         LoadRules(accountId);
         g_rules[accountId].clear();
         CharacterDatabase.DirectExecute("DELETE FROM `lg_autoloot_rule` WHERE `account_id` = {}", accountId);
+        SendVaultAndRuleSync(player); // client was never told the rules cleared -- button looked dead
         return true;
     }
     uint32 onOff = 0;
@@ -730,6 +899,12 @@ bool IsAutolootEnabled(Player* player)
     if (!player || !player->GetSession() || !player->HasSpell(LivingGearVault::SPELL_AUTOLOOT))
         return false;
     return LivingGearVault::AutolootOn(player->GetSession()->GetAccountId());
+}
+
+// Called from a core patch in Spell::EffectPickPocket (SpellEffects.cpp).
+bool LivingGear_TryAutolootPickpocket(Player* player, Unit* target)
+{
+    return LivingGearVault::TryAutolootPickpocket(player, target);
 }
 
 void AddSC_LivingGearVault()

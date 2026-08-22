@@ -48,25 +48,39 @@ local DEFAULT_RULES = {
     { match = 2, action = 2, negate = 0, quality = 0, text = "" },
     { match = 3, action = 3, negate = 0, quality = 0, text = "" },
     { match = 9, action = 6, negate = 0, quality = 0, text = "" },
-    { match = 10, action = 4, negate = 0, quality = 0, text = "" },
-    { match = 11, action = 4, negate = 0, quality = 0, text = "" },
+    -- Food/Potion/Scroll auto-vendor (action 1) instead of skip (action 4),
+    -- requested 2026-08-21.
+    { match = 10, action = 1, negate = 0, quality = 0, text = "" },
+    { match = 11, action = 1, negate = 0, quality = 0, text = "" },
+    { match = 13, action = 1, negate = 0, quality = 0, text = "" },
     { match = 12, action = 4, negate = 0, quality = 0, text = "" },
     { match = 7, action = 0, negate = 0, quality = 0, text = "" },
     { match = 8, action = 1, negate = 0, quality = 0, text = "" },
     { match = 1, action = 1, negate = 0, quality = 0, text = "" },
     { match = 0, action = 0, negate = 0, quality = 0, text = "" },
 }
-local RULE_FIELDS = { "Type", "Quality", "Name" }
+local RULE_FIELDS = { "Type", "Quality", "Name", "Item Level" }
 local RULE_OPS = { "==", "!=" }
+local RULE_QUAL_OPS = { "==", "!=", ">=", "<=" }
 local RULE_NAME_OPS = { "Matches", "Does not match" }
-local RULE_TYPES = { "All", "Quest", "Reagent", "Living", "Unattuned", "Attuned", "Recipe", "Food", "Potion", "Bags" }
-local RULE_TYPE_MATCH = { 0, 2, 3, 4, 7, 8, 9, 10, 11, 12 }
+local RULE_TYPES = { "All", "Quest", "Reagent", "Living", "Unattuned", "Attuned", "Recipe", "Food", "Potion", "Bags", "Scroll" }
+local RULE_TYPE_MATCH = { 0, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13 }
+-- Derived, not hand-maintained -- RuleText used to keep its own separate
+-- "names" array that fell out of sync with RULE_TYPES/RULE_TYPE_MATCH once
+-- (Food/Potion/Bags/Scroll rendered as "Type == ? -> ..." until this
+-- existed), so build the lookup from the single source of truth instead.
+local MATCH_TO_NAME = {}
+for i = 1, #RULE_TYPE_MATCH do
+    MATCH_TO_NAME[RULE_TYPE_MATCH[i]] = RULE_TYPES[i]
+end
 local RULE_QUALS = { "Grey", "White", "Green", "Blue", "Epic", "Legendary" }
 local RULE_ROWS = 10
 local WORLD_UNLOCKS = {
     { id = 910092, name = "Solo Queue", how = "Queue for dungeons and raids by yourself. No group required.", toggle = true, toggleKey = "solo" },
     { id = 910105, name = "Auto-Mount", how = "Automatically mount when you leave combat. Unlocked by learning a mount.", toggle = true, toggleKey = "autoMount" },
     { id = 910168, name = "Pull Radius", how = "Quadruples how far enemies detect and aggro onto you. For pulling everything in an area on purpose.", toggle = true, toggleKey = "pullRadius" },
+    { id = 910170, name = "Track Ore", how = "Shows nearby ore veins on the minimap.", toggle = true, toggleKey = "trackOre" },
+    { id = 910171, name = "Track Herbs", how = "Shows nearby herbs on the minimap.", toggle = true, toggleKey = "trackHerb" },
     { id = 910106, name = "Class Buffs", how = "Clear Naxxramas 25 on a class. That class then applies 10% primary stats to you and nearby party." },
     { id = 910107, name = "Riding", how = "Train riding on any character. Alts can mount from level 1." },
     { id = 910108, name = "Auto-Accept", how = "Accept a quest. Then auto-accept when you talk to an NPC. Hold Shift to skip." },
@@ -355,8 +369,8 @@ local CLASS_PERKS = {
     ROGUE = {
         { id = 910035, name = "Assassination", how = "Poisons deal +300% damage. DoTs spread within 10 yards." },
         { id = 910036, name = "Combat", how = "Blade Flurry always on. +50% energy regen. 30% free Killing Spree on builders." },
-        { id = 910037, name = "Subtlety", how = "Shadowstep has no cooldown and grants Stealth. Chains up to 5 Ambushes (+500% damage). Jack in the Box trap and Shadow Clone pet.",
-          subPerks = { { id = 910102, name = "Jack in the Box" }, { id = 910103, name = "Shadow Clone" } } },
+        { id = 910037, name = "Subtlety", how = "Shadowstep (6 sec cooldown) chains up to 8 Ambushes (+500% damage). Learn Shadow Dance.",
+          subPerks = { { id = 910102, name = "Shadow Dance", how = "Permanent. Openers usable without stealth. +10% attack power to your party/raid." } } },
     },
     PALADIN = {
         { id = 910069, name = "Holy", how = "Consecration follows you and toggles off if recast. Consecration damage +1000%. Holy Shock damage +300% and hits enemies within 10 yards of the target." },
@@ -747,15 +761,21 @@ local function RuleText(rule)
         local op = neg and "Does not match" or "Matches"
         return string.format("Name %s == %s -> %s", op, rule.text ~= "" and rule.text or "?", act)
     end
-    if m == 6 then
-        local q = RULE_QUALS[(tonumber(rule.quality) or 0) + 1] or "?"
-        return string.format("Quality %s %s -> %s", neg and "!=" or "==", q, act)
+    if m == 14 then
+        local rng = rule.text ~= "" and rule.text or "?"
+        return string.format("Item Level %s %s -> %s", neg and "not in" or "in", rng, act)
     end
-    local names = { "All", "Grey", "Quest", "Reagent", "Living", "Name", "Quality", "Unattuned", "Attuned", "Recipe" }
-    local n = names[m + 1] or "?"
+    if m == 6 then
+        -- rule.negate is a 4-value comparison op here (0..3), not a plain
+        -- negate bit -- see RuleMatches server-side for why.
+        local q = RULE_QUALS[(tonumber(rule.quality) or 0) + 1] or "?"
+        local qop = RULE_QUAL_OPS[(tonumber(rule.negate) or 0) + 1] or "=="
+        return string.format("Quality %s %s -> %s", qop, q, act)
+    end
     if m == 1 then
         return string.format("Quality %s Grey -> %s", neg and "!=" or "==", act)
     end
+    local n = MATCH_TO_NAME[m] or "?"
     return string.format("Type %s %s -> %s", neg and "!=" or "==", n, act)
 end
 
@@ -830,7 +850,7 @@ function LG2.ParseImportLine(line)
     if nameText then
         return { match = 5, action = action, negate = 0, quality = 0, text = nameText }
     end
-    local op, qual = string.match(left, "^Quality%s+(==|!=)%s+(%S+)$")
+    local op, qual = string.match(left, "^Quality%s+(==|!=|>=|<=)%s+(%S+)$")
     if op and qual then
         local q = nil
         for i = 1, #RULE_QUALS do
@@ -840,8 +860,19 @@ function LG2.ParseImportLine(line)
             end
         end
         if q then
-            return { match = 6, action = action, negate = op == "!=" and 1 or 0, quality = q, text = "" }
+            local qopIdx = 0
+            for i = 1, #RULE_QUAL_OPS do
+                if RULE_QUAL_OPS[i] == op then
+                    qopIdx = i - 1
+                    break
+                end
+            end
+            return { match = 6, action = action, negate = qopIdx, quality = q, text = "" }
         end
+    end
+    local ilOp, ilRange = string.match(left, "^Item Level%s+(in|not in)%s+(%d+%-%d+)$")
+    if ilOp and ilRange then
+        return { match = 14, action = action, negate = ilOp == "not in" and 1 or 0, quality = 0, text = ilRange }
     end
     local top, typ = string.match(left, "^Type%s+(==|!=)%s+(%S+)$")
     if top and typ then
@@ -1135,11 +1166,23 @@ function LG2.LayoutGear()
         ui.empty:Hide()
     end
     local ab = db.absorb
-    local stats = StatLine(ab.str, ab.agi, ab.sta, ab.intel, ab.spi, ab.armor)
-    if stats == "" then
-        ui.absorb:SetText(string.format("Absorb (%s attuned)", ab.count or 0))
-    else
-        ui.absorb:SetText(string.format("Absorb (%s attuned):  %s", ab.count or 0, stats))
+    ui.absorb:SetText(string.format("Attuned (%s) Items:", ab.count or 0))
+    local vals = {
+        { ab.str, "str" }, { ab.agi, "agi" }, { ab.sta, "sta" },
+        { ab.intel, "int" }, { ab.spi, "spi" }, { ab.armor, "armor" },
+    }
+    local n = 0
+    for i = 1, #vals do
+        local v = tonumber(vals[i][1]) or 0
+        if v ~= 0 and ui.absorbChips[n + 1] then
+            n = n + 1
+            local chip = ui.absorbChips[n]
+            chip:SetText(string.format("+%.0f %s", v, vals[i][2]))
+            chip:Show()
+        end
+    end
+    for i = n + 1, #ui.absorbChips do
+        ui.absorbChips[i]:Hide()
     end
 end
 
@@ -1186,11 +1229,16 @@ local function LayoutLoot()
     local rules = ActiveRules()
     local usingDefault = #db.rules == 0
     if ui.ruleHint then
-        if usingDefault then
-            ui.ruleHint:SetText("Default rules. Edit to customize. Reset restores these.")
-        else
-            ui.ruleHint:SetText("Custom rules. First match wins.")
+        local base = usingDefault and "Default rules. Edit to customize. Reset restores these."
+            or "Custom rules. First match wins."
+        -- The list scrolls via mouse wheel over it (db.ruleOff), but that
+        -- was completely undiscoverable -- with no scrollbar and no visible
+        -- affordance, rules past RULE_ROWS looked silently dropped instead
+        -- of just off-screen.
+        if #rules > RULE_ROWS then
+            base = base .. string.format("  (%d rules -- scroll list for more)", #rules)
         end
+        ui.ruleHint:SetText(base)
     end
     local off = db.ruleOff or 0
     local maxOff = #rules - RULE_ROWS
@@ -1217,46 +1265,52 @@ local function LayoutLoot()
 
     if ui.ruleField then
         ui.ruleField.label:SetText(RULE_FIELDS[db.ruleField] or "Type")
+        if ui.ruleType then
+            ui.ruleType:Hide()
+        end
+        if ui.ruleQual then
+            ui.ruleQual:Hide()
+        end
+        if ui.ruleNameWrap then
+            ui.ruleNameWrap:Hide()
+        end
         if db.ruleField == 3 then
             ui.ruleOp.label:SetText(RULE_NAME_OPS[db.ruleOp] or "Matches")
-            if ui.ruleType then
-                ui.ruleType:Hide()
-            end
-            if ui.ruleQual then
-                ui.ruleQual:Hide()
-            end
             if ui.ruleNameWrap then
                 ui.ruleNameWrap:Show()
             end
-        else
+        elseif db.ruleField == 4 then
             ui.ruleOp.label:SetText(RULE_OPS[db.ruleOp] or "==")
             if ui.ruleNameWrap then
-                ui.ruleNameWrap:Hide()
+                ui.ruleNameWrap:Show()
             end
-            if db.ruleField == 2 then
-                if ui.ruleType then
-                    ui.ruleType:Hide()
-                end
-                if ui.ruleQual then
-                    ui.ruleQual:Show()
-                    ui.ruleQual.label:SetText(RULE_QUALS[db.ruleQual] or "Grey")
-                end
-            else
-                if ui.ruleQual then
-                    ui.ruleQual:Hide()
-                end
-                if ui.ruleType then
-                    ui.ruleType:Show()
-                    ui.ruleType.label:SetText(RULE_TYPES[db.ruleType] or "Quest")
-                end
+        elseif db.ruleField == 2 then
+            ui.ruleOp.label:SetText(RULE_QUAL_OPS[db.ruleOp] or "==")
+            if ui.ruleQual then
+                ui.ruleQual:Show()
+                ui.ruleQual.label:SetText(RULE_QUALS[db.ruleQual] or "Grey")
+            end
+        else
+            ui.ruleOp.label:SetText(RULE_OPS[db.ruleOp] or "==")
+            if ui.ruleType then
+                ui.ruleType:Show()
+                ui.ruleType.label:SetText(RULE_TYPES[db.ruleType] or "Quest")
             end
         end
         ui.ruleThen.label:SetText(ACTION_NAMES[db.ruleAction] or "Bags")
         if ui.rulePreview then
+            local matchVal = RULE_TYPE_MATCH[db.ruleType]
+            if db.ruleField == 3 then
+                matchVal = 5
+            elseif db.ruleField == 2 then
+                matchVal = 6
+            elseif db.ruleField == 4 then
+                matchVal = 14
+            end
             ui.rulePreview:SetText(RuleText({
-                match = db.ruleField == 3 and 5 or (db.ruleField == 2 and 6 or RULE_TYPE_MATCH[db.ruleType]),
+                match = matchVal,
                 action = db.ruleAction - 1,
-                negate = db.ruleOp == 2 and 1 or 0,
+                negate = db.ruleField == 2 and (db.ruleOp - 1) or (db.ruleOp == 2 and 1 or 0),
                 quality = db.ruleQual - 1,
                 text = ui.ruleName and ui.ruleName:GetText() or "",
             }))
@@ -1341,7 +1395,7 @@ end
 
 local function VaultHint(kind)
     if kind == VAULT_REAGENT then
-        return "Click a stack to take it out."
+        return ""
     end
     return "Click a quest item to move a stack to your bags."
 end
@@ -1698,6 +1752,10 @@ function LG2.SendWorldToggle(info)
         SendLine("AMSET|" .. (WorldToggleOn(info) and "0" or "1"))
     elseif info.id == 910168 then
         SendLine("PULLSET|" .. (WorldToggleOn(info) and "0" or "1"))
+    elseif info.id == 910170 then
+        SendLine("TRACKORESET|" .. (WorldToggleOn(info) and "0" or "1"))
+    elseif info.id == 910171 then
+        SendLine("TRACKHERBSET|" .. (WorldToggleOn(info) and "0" or "1"))
     end
 end
 
@@ -2302,6 +2360,13 @@ function LG2.BuildLootPanel(f)
     ui.alToggle.label:SetJustifyH("CENTER")
     ui.alToggle.label:SetText("Autoloot: ON")
     ui.alToggle:SetScript("OnClick", function()
+        -- TEMP DEBUG 2026-08-21: user reports this button (and others on
+        -- the Autoloot tab) don't work, but three separate passes over the
+        -- server-side whisper-command wiring turned up nothing wrong. This
+        -- print needs no server round-trip at all, so it isolates whether
+        -- the click is even reaching this handler in the first place.
+        -- Remove once diagnosed.
+        print("|cffff8800[LG debug]|r Autoloot toggle clicked, current on=" .. tostring(db.autoloot.on))
         if tonumber(db.autoloot.on) == 1 then
             SendLine("ALSET|0")
         else
@@ -2420,7 +2485,7 @@ function LG2.BuildLootPanel(f)
     ui.ruleOp.label:SetJustifyH("CENTER")
     ui.ruleOp.label:SetText("==")
     ui.ruleOp:SetScript("OnClick", function()
-        Cycle(ui.ruleOp, 2, "ruleOp")
+        Cycle(ui.ruleOp, db.ruleField == 2 and 4 or 2, "ruleOp")
     end)
 
     ui.ruleType = CreateFrame("Button", nil, editPane)
@@ -2500,12 +2565,21 @@ function LG2.BuildLootPanel(f)
         local field = db.ruleField
         local op = db.ruleOp
         local action = db.ruleAction - 1
-        local rule = { match = 0, action = action, negate = op == 2 and 1 or 0, quality = 0, text = "" }
+        local rule = { match = 0, action = action,
+            negate = field == 2 and (op - 1) or (op == 2 and 1 or 0), quality = 0, text = "" }
         if field == 1 then
             rule.match = RULE_TYPE_MATCH[db.ruleType]
         elseif field == 2 then
             rule.match = 6
             rule.quality = db.ruleQual - 1
+        elseif field == 4 then
+            rule.match = 14
+            local text = ui.ruleName:GetText() or ""
+            local lo, hi = string.match(text, "^%s*(%d+)%s*-%s*(%d+)%s*$")
+            if not lo then
+                return
+            end
+            rule.text = lo .. "-" .. hi
         else
             rule.match = 5
             rule.text = string.gsub(ui.ruleName:GetText() or "", "|", "")
@@ -2640,10 +2714,29 @@ function LG2.BuildGearPanel(f)
 
     ui.absorb = Font(gear, 11, 0.85, 0.75, 0.45)
     ui.absorb:SetPoint("TOPLEFT", 10, -2)
-    ui.absorb:SetPoint("RIGHT", -10, 0)
+    ui.absorb:SetWordWrap(false)
+
+    -- Attuned stat totals used to be one long concatenated FontString that
+    -- word-wrapped mid-stat once there were enough non-zero stats to
+    -- overflow the panel width. Chips instead -- fixed grid, no wrap ever,
+    -- and headroom (12 slots) for stat types the server doesn't send yet
+    -- (haste/crit/hit rating) to just slot in later with zero layout work.
+    local ABSORB_CHIP_COLS = 4
+    local ABSORB_CHIP_ROWS = 3
+    ui.absorbChips = {}
+    for i = 1, ABSORB_CHIP_COLS * ABSORB_CHIP_ROWS do
+        local col = (i - 1) % ABSORB_CHIP_COLS
+        local row = math.floor((i - 1) / ABSORB_CHIP_COLS)
+        local chip = Font(gear, 10, 0.7, 0.75, 0.7)
+        chip:SetPoint("TOPLEFT", 10 + col * 130, -16 - row * 12)
+        chip:SetWidth(126)
+        chip:SetWordWrap(false)
+        chip:Hide()
+        ui.absorbChips[i] = chip
+    end
 
     ui.empty = Font(gear, 11, 0.6, 0.6, 0.6)
-    ui.empty:SetPoint("TOPLEFT", 10, -24)
+    ui.empty:SetPoint("TOPLEFT", 10, -58)
     ui.empty:Hide()
 
     ui.rows = {}
@@ -2655,7 +2748,7 @@ function LG2.BuildGearPanel(f)
         -- slot -- see LayoutGear).
         local row = CreateFrame("Button", nil, gear)
         row:SetSize(520, 18)
-        row:SetPoint("TOPLEFT", 10, -20 - (i - 1) * 19)
+        row:SetPoint("TOPLEFT", 10, -58 - (i - 1) * 19)
         row:EnableMouse(true)
         row:SetScript("OnEnter", function(self)
             if self.invSlot then
@@ -3996,6 +4089,14 @@ function LG2.HandleAddon(prefix, message)
         LayoutRows()
         RefreshOverlays()
         RefreshQuestWatch()
+        -- db.vault is fully populated by now (all VLT| lines land before
+        -- END in the same sync burst) -- without this, the vaultLayoutPending
+        -- flag this same statement just cleared above never gets a chance
+        -- to be consumed by the OnUpdate poller, so the Reagents panel got
+        -- stuck showing its empty initial state even with real data banked.
+        if ui.reagents and ui.reagents:IsShown() then
+            RefreshVaultPanel()
+        end
         return
     end
     local p = LG2.SplitPipe(message)
@@ -4052,10 +4153,12 @@ function LG2.HandleAddon(prefix, message)
         db.autoloot.on = tonumber(p[2]) or 0
         db.autoloot.corpses = tonumber(p[3]) or 0
         db.autoloot.need = tonumber(p[4]) or 10
+        LayoutLoot()
         return
     end
     if p[1] == "ALDE" then
         db.autoloot.de = tonumber(p[2]) or 0
+        LayoutLoot()
         return
     end
     if p[1] == "AA" then
@@ -4081,6 +4184,16 @@ function LG2.HandleAddon(prefix, message)
     end
     if p[1] == "PULL" then
         db.pullRadius = tonumber(p[2]) or 0
+        LayoutWorld()
+        return
+    end
+    if p[1] == "TRACKORE" then
+        db.trackOre = tonumber(p[2]) or 0
+        LayoutWorld()
+        return
+    end
+    if p[1] == "TRACKHERB" then
+        db.trackHerb = tonumber(p[2]) or 0
         LayoutWorld()
         return
     end

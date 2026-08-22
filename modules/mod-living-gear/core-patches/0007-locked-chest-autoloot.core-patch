@@ -1,0 +1,38 @@
+Give autoloot a chance at locked chests, not just unlocked ones.
+Touches: src/server/game/Spells/SpellEffects.cpp, Spell::EffectOpenLock()
+
+Why: chest autoloot (TryAutolootChest/OnPlayerUseGameObject, Living Gear's
+module) only ever fired from GameObject::Use()'s GAMEOBJECT_TYPE_CHEST
+case -- which turns out to only run for chests with NO lock at all.
+Any locked chest (Lockpicking, key, or otherwise) is opened through a
+completely different path: right-clicking triggers an implicit "open
+lock" spell cast, and a successful Spell::CanOpenLock() check goes
+straight to SendLoot() here, in EffectOpenLock(), never touching
+GameObject::Use() at all. This was confirmed via a debug pass (temporary
+prints, since removed) that showed a real "Solid Chest" (lockId 57)
+reaching CanOpenLock and succeeding, while a print on the literal first
+line of GameObject::Use() never fired once -- proving the two paths are
+genuinely disjoint, not a bug in the CHEST case logic itself. Locked
+chests are also the more common real-world case (any chest actually
+worth autolooting past trivial early-game ones tends to have a lock), so
+this was silently the majority of "why doesn't chest autoloot ever do
+anything" reports.
+
+--- a/src/server/game/Spells/SpellEffects.cpp
++++ b/src/server/game/Spells/SpellEffects.cpp
+@@ Spell::EffectOpenLock(SpellEffIndex effIndex)
+     sScriptMgr->OnPlayerOpenLock(player, lockId);
+
+     if (gameObjTarget)
+-        SendLoot(guid, LOOT_SKINNING);
++    {
++        // Living Gear: give autoloot the same shot at a successfully-
++        // unlocked chest that unlocked/no-lock chests already get in
++        // GameObject::Use()'s CHEST case -- fall back to the normal loot
++        // window only if it declines.
++        bool handled = false;
++        sScriptMgr->OnPlayerUseGameObject(player, gameObjTarget, handled);
++        if (!handled)
++            SendLoot(guid, LOOT_SKINNING);
++    }
+     else if (itemTarget)

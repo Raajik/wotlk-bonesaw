@@ -11,9 +11,12 @@
 #include "Chat.h"
 #include "Config.h"
 #include "CreatureAI.h"
+#include "CreatureData.h"
 #include "CreatureScript.h"
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
+#include "Formulas.h"
+#include "GameTime.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
@@ -25,6 +28,7 @@
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "Pet.h"
 #include "Player.h"
 #include "Random.h"
 #include "ScriptedCreature.h"
@@ -68,7 +72,14 @@ uint32 const SPELL_SWIM = 910098;
 uint32 const SPELL_DUNGEON_SPEED = 910099;
 uint32 const SPELL_DUNGEON_PACE = 910100;
 uint32 const SPELL_CURATOR = 910101;
-uint32 const SPELL_JACK_BOX = 910102;
+// Shadow Dance (2026-08-21, replaces the dropped Jack in the Box totem,
+// reuses its freed spell ID): permanent Subtlety perk, two effects --
+// lets stealth-only openers (Ambush/Garrote/Cheap Shot/etc.) be used
+// without actually being stealthed (LivingGear_BypassStealthRequirement,
+// a small core patch in Spell::CheckCast), and a +10% attack power buff
+// to the whole party/raid (ShouldHaveShadowDanceBuff/TickShadowDanceBuff
+// below, mirroring the existing Class Buffs pattern in LivingGear_Next.cpp).
+uint32 const SPELL_SHADOW_DANCE = 910102;
 uint32 const SPELL_SHADOW_CLONE = 910103;
 uint32 const SPELL_MOUNTED_OPENER = 910104;
 uint32 const SPELL_AUTO_MOUNT = 910105;
@@ -77,15 +88,31 @@ uint32 const SPELL_AUTO_MOUNT = 910105;
 // the ~20-yard same-level baseline in Creature::GetAttackDistance(). No
 // core changes needed; this is exactly what that aura type is for.
 uint32 const SPELL_PULL_RADIUS = 910168;
+// Track Ore / Track Herbs -- toggle badges gating the native tracking
+// spells (Find Minerals / Find Herbs, stock Blizzard spells not in our
+// spell_dbc table since they're resolved from the compiled client DBC).
+// Casting the native spell puts real nodes on the minimap; refreshed
+// periodically the same way SPELL_PULL_RADIUS/SPELL_COMBO are, since we
+// can't check the native spell's real duration from our sparse table.
+uint32 const SPELL_TRACK_ORE = 910170;
+uint32 const SPELL_TRACK_HERB = 910171;
+uint32 const NATIVE_FIND_MINERALS = 2580;
+uint32 const NATIVE_FIND_HERBS = 2383;
 uint32 const SPELL_SUBTLETY = 910037;
 uint32 const SPELL_ASSASSINATION = 910035;
-uint32 const NPC_JACK_BOX = 910200;
 uint32 const NPC_SHADOW_CLONE = 910201;
 uint32 const SPELL_STEALTH = 1784;
 uint32 const SPELL_SHADOWSTEP = 36554;
 uint32 const SPELL_AMBUSH = 8676;
 uint32 const SPELL_VANISH = 1856;
 uint32 const SPELL_PICKPOCKET = 921;
+// Hemorrhage AoE (2026-08-21, replaces Jack in the Box): on cast, applies
+// Garrote + Pickpocket to every enemy within 10 yards, via BestOwned() to
+// resolve each spell to the player's actual trained rank -- same pattern
+// ChainAmbush already uses for Ambush. Cheap Shot was in the original ask
+// but dropped (mass-stun on a whole pack agreed to be too strong).
+uint32 const SPELL_HEMORRHAGE = 16511;
+uint32 const SPELL_GARROTE = 703;
 uint32 const SPELL_DEADLY_THROW = 26679;
 uint32 const SPELL_SINISTER_STRIKE = 1752;
 uint32 const SPELL_EVISCERATE = 2098;
@@ -138,21 +165,31 @@ std::unordered_map<uint32, bool> g_soloQueue;
 std::unordered_map<uint32, bool> g_chatOn;
 std::unordered_map<uint32, uint32> g_lastMount;
 std::unordered_map<uint32, ObjectGuid> g_cloneGuid;
-std::unordered_map<uint32, ObjectGuid> g_boxGuid;
 std::unordered_map<uint32, uint32> g_dungeonStart;
 std::unordered_map<uint32, bool> g_dungeonDone;
 std::unordered_map<uint32, uint32> g_cookAcc;
 std::unordered_map<uint32, uint32> g_curatorAcc;
 std::unordered_map<uint32, uint32> g_comboTick;
+// Shadow Dance's +10% attack power half -- keyed by player GUID (not
+// account), since it's a real per-character stat modifier applied via
+// Player::ApplyStatPctModifier, not a persisted account toggle.
+std::unordered_map<uint32, bool> g_shadowDanceBuffOn;
+std::unordered_map<uint32, uint32> g_shadowDanceTick;
 std::unordered_map<uint32, uint32> g_pullRadiusTick;
+std::unordered_map<uint32, uint32> g_trackOreTick;
+std::unordered_map<uint32, uint32> g_trackHerbTick;
 std::unordered_set<uint32> g_perkLoaded;
 std::unordered_map<uint32, std::unordered_set<uint32>> g_perks;
 bool g_hasAutoMountCol = false;
 bool g_hasSoloCol = false;
 bool g_hasPullRadiusCol = false;
+bool g_hasTrackOreCol = false;
+bool g_hasTrackHerbCol = false;
 bool g_schemaReady = false;
 bool g_hasZoneScale = false;
 std::unordered_map<uint32, bool> g_pullRadiusOn;
+std::unordered_map<uint32, bool> g_trackOreOn;
+std::unordered_map<uint32, bool> g_trackHerbOn;
 
 void DetectSchema()
 {
@@ -172,6 +209,10 @@ void DetectSchema()
                 g_hasSoloCol = true;
             else if (name == "pull_radius")
                 g_hasPullRadiusCol = true;
+            else if (name == "track_ore")
+                g_hasTrackOreCol = true;
+            else if (name == "track_herb")
+                g_hasTrackHerbCol = true;
         } while (cols->NextRow());
     }
 }
@@ -341,18 +382,116 @@ float ZoneRewardMult(Player* player)
     return g_cfg.zoneFloor + (1.0f - g_cfg.zoneFloor) * std::exp(-gap / g_cfg.zoneDecay);
 }
 
-float ZoneCombatRatio(Player* player)
+// Shared "is this creature eligible for zone scaling, and what level
+// should it effectively be for this viewer" -- single source of truth for
+// the displayed level (below), real combat damage exchanged (PerksUnit::
+// OnDamage), and grey-kill XP (GrantScaledGreyKillXP), so all three always
+// agree on the same number. Always roughly a rank above the viewer --
+// "yellow, not trivial, not overwhelming" -- both up AND down from the
+// creature's real level, so open-world zones stay relevant no matter how
+// overleveled a player is, and mixed-level groups each get an
+// appropriately-scaled fight on the same mob instead of the higher level
+// just carrying. Returns 0 for "not eligible, use the real level."
+uint32 EffectiveCreatureLevel(Creature const* creature, Player* viewer)
 {
-    if (!g_cfg.zoneEnable || !OpenWorld(player))
+    if (!g_cfg.zoneEnable || !creature || !viewer || !creature->IsInWorld())
+        return 0;
+    if (!OpenWorld(viewer))
+        return 0;
+    if (creature->IsPet() || creature->IsTotem() || creature->IsGuardian() || creature->IsSummon())
+        return 0;
+    if (CreatureTemplate const* tmpl = creature->GetCreatureTemplate())
+        if (tmpl->type == CREATURE_TYPE_CRITTER)
+            return 0;
+    uint32 const viewerLevel = viewer->GetLevel();
+    if (viewerLevel < g_cfg.zoneMinLevel)
+        return 0;
+    uint32 effective = viewerLevel + 1;
+    if (effective > 80)
+        effective = 80;
+    return effective;
+}
+
+// Per-viewer displayed creature level (called from PerksUnit's
+// ShouldTrackValuesUpdatePosByIndex/OnPatchValuesUpdate UnitScript hooks --
+// Unit::PatchValuesUpdate already takes a per-target Player, so different
+// players looking at the SAME creature simultaneously can each see a
+// different level scaled to their own). Same eligibility as
+// EffectiveCreatureLevel, plus display-only requires the creature actually
+// be a valid attack target (a friendly town NPC keeps showing its real
+// level).
+uint32 DisplayLevelOverride(Unit const* unit, Player* viewer)
+{
+    Creature const* creature = unit ? unit->ToCreature() : nullptr;
+    if (!creature)
+        return 0;
+    uint32 const effective = EffectiveCreatureLevel(creature, viewer);
+    if (!effective)
+        return 0;
+    if (!viewer->IsValidAttackTarget(creature))
+        return 0;
+    return effective;
+}
+
+// Combat halves of zone scaling: rather than faking a creature's shared
+// (not per-viewer) health pool, scale the damage exchanged in both
+// directions by the ratio between its real-level stats and its
+// effective-level stats -- computed via the same engine formulas
+// Creature::SelectLevel uses at spawn (CreatureBaseStats::GenerateHealth/
+// GenerateBaseDamage, Creature.cpp/CreatureData.h). Hits-to-kill and
+// damage-taken both converge toward what they'd genuinely be at the
+// displayed level, without ever touching UNIT_FIELD_MAXHEALTH itself, so
+// there's no per-viewer desync on the shared health bar.
+float OutgoingScaleRatio(Creature* creature, uint32 effectiveLevel)
+{
+    CreatureTemplate const* info = creature->GetCreatureTemplate();
+    CreatureBaseStats const* realStats = sObjectMgr->GetCreatureBaseStats(creature->GetLevel(), info->unit_class);
+    CreatureBaseStats const* effStats = sObjectMgr->GetCreatureBaseStats(effectiveLevel, info->unit_class);
+    if (!realStats || !effStats)
         return 1.0f;
-    uint32 const real = player->GetLevel();
-    if (real < g_cfg.zoneMinLevel)
+    float const effHp = float(effStats->GenerateHealth(info));
+    if (effHp <= 0.0f)
         return 1.0f;
-    uint32 const z = ZoneLevel(player);
-    uint32 const cap = z + g_cfg.zoneBuffer;
-    if (real <= cap)
+    return std::clamp(float(realStats->GenerateHealth(info)) / effHp, 0.05f, 4.0f);
+}
+
+float IncomingScaleRatio(Creature* creature, uint32 effectiveLevel)
+{
+    CreatureTemplate const* info = creature->GetCreatureTemplate();
+    CreatureBaseStats const* realStats = sObjectMgr->GetCreatureBaseStats(creature->GetLevel(), info->unit_class);
+    CreatureBaseStats const* effStats = sObjectMgr->GetCreatureBaseStats(effectiveLevel, info->unit_class);
+    if (!realStats || !effStats)
         return 1.0f;
-    return float(cap) / float(real);
+    float const realDmg = realStats->GenerateBaseDamage(info);
+    if (realDmg <= 0.0f)
+        return 1.0f;
+    return std::clamp(effStats->GenerateBaseDamage(info) / realDmg, 0.2f, 4.0f);
+}
+
+// XP half of zone scaling: AzerothCore's own kill-XP formula hard-zeroes a
+// grey kill (mob_level <= GetGrayLevel(playerLevel)) well before any
+// module hook runs, so the existing OnPlayerGiveXP multiplier below can
+// only ever multiply that zero. Compute XP ourselves using the effective
+// (displayed) level and grant it directly -- safe from double-granting
+// since we only do this when the core's own grant for this exact kill was
+// definitely zero. Killer-only: does not replicate KillRewarder's
+// group-XP-sharing, so a grouped low-level member doesn't get a scaled
+// share of a high-level leader's grey kill. Revisit if that matters.
+void GrantScaledGreyKillXP(Player* killer, Creature* killed)
+{
+    if (!killer || !killed || !killer->IsAlive())
+        return;
+    if (killed->GetLevel() > Acore::XP::GetGrayLevel(uint8(killer->GetLevel())))
+        return;
+    uint32 const eff = EffectiveCreatureLevel(killed, killer);
+    if (!eff)
+        return;
+    uint32 xp = Acore::XP::BaseGain(uint8(killer->GetLevel()), uint8(eff), CONTENT_1_60);
+    if (!xp)
+        return;
+    xp = uint32(float(xp) * ZoneRewardMult(killer));
+    if (xp)
+        killer->GiveXP(xp, killed);
 }
 
 void NotifyZoneScale(Player* player)
@@ -660,17 +799,57 @@ static void ChainAmbushHit(ObjectGuid playerGuid, ObjectGuid targetGuid, uint32 
     clone->DespawnOrUnsummon(std::chrono::milliseconds(400));
 }
 
+// 2026-08-21: the 6s cooldown override used to live inside ChainAmbushImpl,
+// which only runs when a chain-ambush target actually resolves -- if the
+// player casts Shadowstep with no target, or the target guid stops
+// resolving one tick later, that whole path was skipped and the real
+// client-side Shadowstep cooldown (not present in our spell_dbc table at
+// all -- it's a stock spell resolved from the compiled DBC, ~30s) was left
+// standing. Split out into its own function that always runs, independent
+// of whether the chain-ambush effect itself fires.
+static void ApplyShadowstepCooldown(Player* player)
+{
+    if (!player || GetClassPerk(player) != SPELL_SUBTLETY)
+        return;
+    ObjectGuid playerGuid = player->GetGUID();
+    // Still has to be deferred rather than set from OnPlayerSpellCast
+    // directly -- that fires mid-way through Shadowstep's own cast(), before
+    // it's applied its own cooldown, so setting one there just gets
+    // overwritten once cast() finishes. 300ms gives ample margin for the
+    // engine's own real cooldown-set to have already happened.
+    //
+    // 2026-08-21: AddSpellCooldown's needSendToClient flag does NOT push a
+    // live packet -- _AddSpellCooldown (Player.cpp) only ever *stores* it on
+    // the cooldown entry, and the only place that flag is ever read is
+    // SendInitialSpells, i.e. login/spec-change. So the server's own
+    // castability was correctly set to 6s, but the client's action-bar
+    // swirl never got corrected -- it kept counting down from the real
+    // ~30s it originally predicted from the compiled DBC, and the client
+    // blocks *sending* another cast attempt locally while it thinks a
+    // spell is still on cooldown. Switched to ModifySpellCooldown, which
+    // DOES send SMSG_MODIFY_COOLDOWN live -- read the real remaining
+    // cooldown first and apply the exact delta needed to land on 6000ms.
+    player->m_Events.AddEventAtOffset([playerGuid]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !p->IsInWorld())
+            return;
+        int32 const remaining = int32(p->GetSpellCooldownDelay(SPELL_SHADOWSTEP));
+        int32 const delta = 6000 - remaining;
+        if (delta != 0)
+            p->ModifySpellCooldown(SPELL_SHADOWSTEP, delta);
+    }, std::chrono::milliseconds(300));
+}
+
 static void ChainAmbushImpl(Player* player, Unit* first)
 {
     if (!player || !first || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
-    player->CastSpell(player, SPELL_STEALTH, true);
-    // Removing the cooldown here (after Shadowstep's own cast() has already
-    // finished and applied its normal cooldown) is what actually sticks --
-    // doing it from OnPlayerSpellCast happens too early, before the spell
-    // sets its own cooldown, so it just gets overwritten.
-    player->RemoveSpellCooldown(SPELL_SHADOWSTEP, true);
-
+    // 2026-08-21: dropped the free Stealth grant here (called out as
+    // "cheaty" -- Shadowstep chaining into free Stealth every time was too
+    // strong). Cooldown override now applied unconditionally by
+    // ApplyShadowstepCooldown() regardless of whether this chain-ambush path
+    // runs -- see that function for why.
     uint32 ambush = BestOwned(player, SPELL_AMBUSH);
     if (!ambush)
         ambush = SPELL_AMBUSH;
@@ -692,7 +871,7 @@ static void ChainAmbushImpl(Player* player, Unit* first)
         return;
 
     ObjectGuid playerGuid = player->GetGUID();
-    for (uint32 i = 0; i < 5; ++i)
+    for (uint32 i = 0; i < 8; ++i) // was 5, bumped 2026-08-21
     {
         ObjectGuid tg = targets[i % targets.size()];
         player->m_Events.AddEventAtOffset([playerGuid, tg, ambush, dmg]()
@@ -729,28 +908,151 @@ void ChainAmbush(Player* player, Unit* first)
     }, std::chrono::milliseconds(1));
 }
 
-// caster provides the drop position (the player when they cast it
-// themselves, the Shadow Clone when it does) -- ownership/perk-check/
-// tracking always stays keyed to the real player, so the clone dropping a
-// box doesn't fight over box slots with the player's own.
-void SummonJackBox(Player* player, Unit* caster)
+static void HemorrhageAoEImpl(ObjectGuid playerGuid)
 {
-    if (!player || !caster || GetClassPerk(player) != SPELL_SUBTLETY)
-        return;
-    auto it = g_boxGuid.find(player->GetGUID().GetCounter());
-    if (it != g_boxGuid.end())
-        if (Creature* c = player->GetMap()->GetCreature(it->second))
-            c->DespawnOrUnsummon();
-    Position pos = caster->GetPosition();
-    if (TempSummon* s = caster->SummonCreature(NPC_JACK_BOX, pos, TEMPSUMMON_TIMED_DESPAWN, 60000))
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!player || !player->IsInWorld() || GetClassPerk(player) != SPELL_SUBTLETY)
     {
-        g_boxGuid[player->GetGUID().GetCounter()] = s->GetGUID();
-        s->SetFaction(player->GetFaction());
-        s->SetOwnerGUID(player->GetGUID());
-        s->SetVisible(false);
+        // TEMP DEBUG 2026-08-21: Hemorrhage AoE reported not working; see
+        // ShouldHaveShadowDanceBuff for context. Remove once confirmed.
+        if (player && player->GetSession())
+            ChatHandler(player->GetSession()).PSendSysMessage(
+                "|cffff8800[Hemo debug]|r bail in Impl: inWorld={} GetClassPerk={}",
+                player->IsInWorld(), GetClassPerk(player));
+        return;
     }
+    uint32 garrote = BestOwned(player, SPELL_GARROTE);
+    if (!garrote)
+        garrote = SPELL_GARROTE;
+    std::list<Unit*> around;
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, 10.0f);
+    Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
+    Cell::VisitObjects(player, searcher, 10.0f);
+    uint32 hitCount = 0;
+    for (Unit* u : around)
+    {
+        if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
+            continue;
+        player->CastSpell(u, garrote, true);
+        player->CastSpell(u, SPELL_PICKPOCKET, true);
+        ++hitCount;
+    }
+    if (player->GetSession())
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cffff8800[Hemo debug]|r Impl ran: garrote={} nearby={} hit={}",
+            garrote, around.size(), hitCount);
 }
 
+// Deferred the same way ChainAmbush is -- OnPlayerSpellCast fires mid-way
+// through Hemorrhage's own Spell::cast(), and casting more spells on the
+// same player from in there is a reentrant call into the aura/spell
+// system on a unit that's still "in progress" (the established
+// Unit::_AddAura assert crash this file's other deferred casts all guard
+// against the same way).
+void ApplyHemorrhageAoE(Player* player)
+{
+    if (!player || GetClassPerk(player) != SPELL_SUBTLETY)
+        return;
+    ObjectGuid playerGuid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid]()
+    {
+        HemorrhageAoEImpl(playerGuid);
+    }, std::chrono::milliseconds(1));
+}
+
+// Shadow Dance's +10% attack power half. Mirrors LivingGear_Next.cpp's
+// existing Class Buffs pattern exactly (ShouldHaveClassBuff/
+// ApplyClassBuffs/TickClassBuffs) -- self or any group member within 100
+// yards having the perk grants it to this player, applied via a native
+// stat-percent modifier rather than a real spell/aura.
+bool ShouldHaveShadowDanceBuff(Player* player)
+{
+    if (!player || !player->IsAlive())
+        return false;
+    // TEMP DEBUG 2026-08-21: Shadow Dance reported not activating despite
+    // DB confirming both GetClassPerk (lg_char_class_perk) and HasPerk
+    // (lg_account_perk) should be true for the test account -- code audit
+    // found nothing wrong statically, so report the live values actually
+    // seen here. Remove once confirmed working.
+    static uint32 s_debugTick = 0;
+    uint32 const now = getMSTime();
+    bool const dbg = player->GetSession()
+        && (!s_debugTick || getMSTimeDiff(s_debugTick, now) >= 3000);
+    if (dbg)
+    {
+        s_debugTick = now;
+        uint32 const cp = GetClassPerk(player);
+        bool const hp = HasPerk(player, SPELL_SHADOW_DANCE);
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cffff8800[SD debug]|r self: GetClassPerk={} (SPELL_SUBTLETY={}) HasPerk(SHADOW_DANCE)={}",
+            cp, SPELL_SUBTLETY, hp);
+    }
+    if (GetClassPerk(player) == SPELL_SUBTLETY && HasPerk(player, SPELL_SHADOW_DANCE))
+        return true;
+    Group* group = player->GetGroup();
+    if (!group)
+        return false;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || member == player || !member->IsInWorld())
+            continue;
+        if (!player->IsInMap(member) || !player->IsWithinDistInMap(member, 100.0f))
+            continue;
+        if (GetClassPerk(member) == SPELL_SUBTLETY && HasPerk(member, SPELL_SHADOW_DANCE))
+            return true;
+    }
+    return false;
+}
+
+void ApplyShadowDanceBuff(Player* player, bool apply)
+{
+    if (!player)
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (g_shadowDanceBuffOn[guid] == apply)
+        return;
+    g_shadowDanceBuffOn[guid] = apply;
+    player->ApplyStatPctModifier(UNIT_MOD_ATTACK_POWER, TOTAL_PCT, apply ? 10.0f : -10.0f);
+}
+
+void TickShadowDanceBuff(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    ApplyShadowDanceBuff(player, ShouldHaveShadowDanceBuff(player));
+}
+
+// Shadow Dance's "openers usable without stealth" half. Called from a
+// small core patch in Spell::CheckCast (Spell.cpp) -- self only, does NOT
+// extend to the whole party like the attack power buff above, since this
+// is about the caster's own ability to act, not a shared buff.
+bool BypassStealthRequirement(Unit* caster)
+{
+    if (!caster)
+        return false;
+    Player* player = caster->ToPlayer();
+    if (!player)
+        return false;
+    bool const result = GetClassPerk(player) == SPELL_SUBTLETY && HasPerk(player, SPELL_SHADOW_DANCE);
+    // TEMP DEBUG 2026-08-21: see ShouldHaveShadowDanceBuff for context.
+    if (player->GetSession())
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cffff8800[SD debug]|r stealth-bypass check: result={}", result);
+    return result;
+}
+
+// Rebuilt 2026-08-20/21: was a bare TempSummon + ScriptedAI ("not a real
+// playerbot" -- mod-playerbots hard-requires a real Player+WorldSession, so
+// that door is closed). This is a genuinely different approach: a real
+// SUMMON_PET-type Pet (same engine object model as a Warlock demon --
+// Spell::EffectSummonPet is the reference this mirrors), which gets the
+// native pet frame with real Aggressive/Defensive/Passive stance buttons
+// for free -- that's what actually gives the player aggro-level control,
+// no custom UI needed. npc_lg_shadow_cloneAI (below) still drives target
+// selection and which Rogue ability to cast, but now gates its own
+// eagerness to engage on me->GetReactState() so the stance buttons
+// actually mean something.
 void SummonClone(Player* player)
 {
     if (!player || GetClassPerk(player) != SPELL_SUBTLETY)
@@ -759,31 +1061,42 @@ void SummonClone(Player* player)
     if (it != g_cloneGuid.end())
         if (Creature* c = player->GetMap()->GetCreature(it->second))
             c->DespawnOrUnsummon();
-    // SummonCloneWithDisplay (see ChainAmbushHit) sets the display ID
-    // before the summon is ever visible to any client -- the plain
-    // SummonCreature()+SetDisplayId() this used to do caused a client-side
-    // model-swap glitch (reported as "spawns with no textures").
-    // TempSummon defaults to TEMPSUMMON_MANUAL_DESPAWN (see
-    // TempSummon::TempSummon), so despawnMs here has no auto-expiry effect
-    // -- this clone persists until DespawnOrUnsummon() is called on it
-    // explicitly, exactly like the old TEMPSUMMON_MANUAL_DESPAWN summon did.
-    if (TempSummon* s = SummonCloneWithDisplay(player, NPC_SHADOW_CLONE, player->GetPosition(),
-        0, LookAlikeDisplayId(player)))
-    {
-        g_cloneGuid[player->GetGUID().GetCounter()] = s->GetGUID();
-        s->SetOwnerGUID(player->GetGUID());
-        s->SetFaction(player->GetFaction());
-        s->SetLevel(player->GetLevel());
-        s->SetMaxHealth(player->GetMaxHealth());
-        s->SetHealth(player->GetMaxHealth());
-        if (Item* mh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
-            s->SetVirtualItem(0, mh->GetEntry());
-        if (Item* oh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
-            s->SetVirtualItem(1, oh->GetEntry());
-        if (Item* rh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
-            s->SetVirtualItem(2, rh->GetEntry());
-        s->SetPower(POWER_ENERGY, player->GetMaxPower(POWER_ENERGY));
-    }
+    if (Pet* existing = player->GetPet())
+        existing->Remove(PET_SAVE_AS_DELETED);
+
+    Pet* pet = player->SummonPet(NPC_SHADOW_CLONE, player->GetPositionX(), player->GetPositionY(),
+        player->GetPositionZ(), player->GetOrientation(), SUMMON_PET);
+    if (!pet)
+        return;
+
+    // Same model-swap-glitch note as before this rework: set the display
+    // before anything else touches the pet, while it's still brand new.
+    pet->SetDisplayId(LookAlikeDisplayId(player));
+    pet->SetNativeDisplayId(LookAlikeDisplayId(player));
+    pet->SetUInt32Value(UNIT_CREATED_BY_SPELL, SPELL_SHADOW_CLONE);
+    pet->SetReactState(REACT_DEFENSIVE);
+    pet->SetFaction(player->GetFaction());
+    pet->SetLevel(player->GetLevel());
+    pet->SetMaxHealth(player->GetMaxHealth());
+    pet->SetHealth(player->GetMaxHealth());
+    if (Item* mh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
+        pet->SetVirtualItem(0, mh->GetEntry());
+    if (Item* oh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
+        pet->SetVirtualItem(1, oh->GetEntry());
+    if (Item* rh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
+        pet->SetVirtualItem(2, rh->GetEntry());
+    pet->SetPower(POWER_ENERGY, player->GetMaxPower(POWER_ENERGY));
+    // SetVirtualItem above is purely cosmetic (what weapon model it holds) --
+    // a Creature/Pet's actual melee damage comes from its own weapon-damage
+    // stat, not from any item, so without this it hits for whatever the
+    // 910201 creature_template's near-nothing base damage is regardless of
+    // what it's visibly holding. Copy the owner's real current weapon
+    // damage range directly.
+    pet->SetBaseWeaponDamage(BASE_ATTACK, MINDAMAGE, player->GetWeaponDamageRange(BASE_ATTACK, MINDAMAGE));
+    pet->SetBaseWeaponDamage(BASE_ATTACK, MAXDAMAGE, player->GetWeaponDamageRange(BASE_ATTACK, MAXDAMAGE));
+    pet->UpdateDamagePhysical(BASE_ATTACK);
+    player->PetSpellInitialize(); // native pet frame: stance + follow/stay/attack commands
+    g_cloneGuid[player->GetGUID().GetCounter()] = pet->GetGUID();
 }
 
 void TickCooking(Player* player, uint32 diff)
@@ -835,6 +1148,8 @@ void CatchUpProfession(Player* player)
     UnlockPerk(player, SPELL_ARMORY, nullptr);
     UnlockPerk(player, SPELL_SOLO_QUEUE, nullptr);
     UnlockPerk(player, SPELL_PULL_RADIUS, nullptr);
+    UnlockPerk(player, SPELL_TRACK_ORE, nullptr);
+    UnlockPerk(player, SPELL_TRACK_HERB, nullptr);
     if (player->GetRewardedQuestCount() >= 50)
         UnlockPerk(player, SPELL_FIND_QUESTS, "|cff66ccff[Account Perks]|r *Quests - Find unlocked!");
     uint32 craft = 0;
@@ -1082,6 +1397,34 @@ bool HandleLgChat(Player* player, std::string msg)
         SendLine(player, Acore::StringFormat("PULL|{}", v ? 1 : 0));
         return true;
     }
+    if (sscanf(msg.c_str(), "TRACKORESET|%u", &v) == 1)
+    {
+        g_trackOreOn[acc] = v != 0;
+        DetectSchema();
+        if (g_hasTrackOreCol)
+            CharacterDatabase.DirectExecute(
+                "INSERT INTO `lg_account_meta` (`account_id`, `track_ore`) VALUES ({}, {}) "
+                "ON DUPLICATE KEY UPDATE `track_ore` = {}",
+                acc, v ? 1 : 0, v ? 1 : 0);
+        if (!v)
+            player->RemoveAurasDueToSpell(NATIVE_FIND_MINERALS);
+        SendLine(player, Acore::StringFormat("TRACKORE|{}", v ? 1 : 0));
+        return true;
+    }
+    if (sscanf(msg.c_str(), "TRACKHERBSET|%u", &v) == 1)
+    {
+        g_trackHerbOn[acc] = v != 0;
+        DetectSchema();
+        if (g_hasTrackHerbCol)
+            CharacterDatabase.DirectExecute(
+                "INSERT INTO `lg_account_meta` (`account_id`, `track_herb`) VALUES ({}, {}) "
+                "ON DUPLICATE KEY UPDATE `track_herb` = {}",
+                acc, v ? 1 : 0, v ? 1 : 0);
+        if (!v)
+            player->RemoveAurasDueToSpell(NATIVE_FIND_HERBS);
+        SendLine(player, Acore::StringFormat("TRACKHERB|{}", v ? 1 : 0));
+        return true;
+    }
     if (sscanf(msg.c_str(), "SOLOSET|%u", &v) == 1)
     {
         g_soloQueue[acc] = v != 0;
@@ -1146,8 +1489,33 @@ public:
         PLAYERHOOK_ON_LEARN_SPELL,
         PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT,
         PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT,
-        PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL
+        PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL,
+        PLAYERHOOK_ON_AFTER_SPEC_SLOT_CHANGED
     }) { }
+
+    // Subtlety-gated grants (Shadowstep + Shadow Dance + Shadow Clone).
+    // Called at login AND on a live dual-spec swap -- these used to only
+    // run at login, so swapping into Subtlety mid-session without relogging
+    // left Shadow Dance ungranted (HasPerk stayed false forever, even
+    // though the AP-buff tick already re-checks spec live every second).
+    static void GrantSubtletyPerks(Player* player)
+    {
+        if (GetClassPerk(player) != SPELL_SUBTLETY)
+            return;
+        player->learnSpell(SPELL_SHADOWSTEP);
+        // UnlockPerk (not raw learnSpell) so the client's db.perks
+        // actually gets a PK|id|1 for these -- otherwise the addon UI
+        // can never show them as known even though the character has
+        // them, since nothing else ever tells the client.
+        UnlockPerk(player, SPELL_SHADOW_DANCE, nullptr);
+        UnlockPerk(player, SPELL_SHADOW_CLONE, nullptr);
+    }
+
+    void OnPlayerAfterSpecSlotChanged(Player* player, uint8 /*newSlot*/) override
+    {
+        if (player)
+            GrantSubtletyPerks(player);
+    }
 
     void OnPlayerLogin(Player* player) override
     {
@@ -1200,22 +1568,29 @@ public:
                 "SELECT `pull_radius` FROM `lg_account_meta` WHERE `account_id` = {}", acc))
                 g_pullRadiusOn[acc] = (*q)[0].Get<uint32>() != 0;
         }
+        if (g_hasTrackOreCol)
+        {
+            g_trackOreOn[acc] = false;
+            if (QueryResult q = CharacterDatabase.Query(
+                "SELECT `track_ore` FROM `lg_account_meta` WHERE `account_id` = {}", acc))
+                g_trackOreOn[acc] = (*q)[0].Get<uint32>() != 0;
+        }
+        if (g_hasTrackHerbCol)
+        {
+            g_trackHerbOn[acc] = false;
+            if (QueryResult q = CharacterDatabase.Query(
+                "SELECT `track_herb` FROM `lg_account_meta` WHERE `account_id` = {}", acc))
+                g_trackHerbOn[acc] = (*q)[0].Get<uint32>() != 0;
+        }
         if (HasPerk(player, SPELL_SWIM))
             player->CastSpell(player, SPELL_SWIM, true);
-        if (GetClassPerk(player) == SPELL_SUBTLETY)
-        {
-            player->learnSpell(SPELL_SHADOWSTEP);
-            // UnlockPerk (not raw learnSpell) so the client's db.perks
-            // actually gets a PK|id|1 for these -- otherwise the addon UI
-            // can never show them as known even though the character has
-            // them, since nothing else ever tells the client.
-            UnlockPerk(player, SPELL_JACK_BOX, nullptr);
-            UnlockPerk(player, SPELL_SHADOW_CLONE, nullptr);
-        }
+        GrantSubtletyPerks(player);
         RecastCombo(player);
         NotifyZoneScale(player);
         SendLine(player, Acore::StringFormat("AM|{}", g_autoMountOn[acc] ? 1 : 0));
         SendLine(player, Acore::StringFormat("PULL|{}", g_pullRadiusOn[acc] ? 1 : 0));
+        SendLine(player, Acore::StringFormat("TRACKORE|{}", g_trackOreOn[acc] ? 1 : 0));
+        SendLine(player, Acore::StringFormat("TRACKHERB|{}", g_trackHerbOn[acc] ? 1 : 0));
     }
 
     void OnPlayerLogout(Player* player) override
@@ -1226,14 +1601,26 @@ public:
         g_combo.erase(g);
         g_comboTick.erase(g);
         g_pullRadiusTick.erase(g);
+        g_trackOreTick.erase(g);
+        g_trackHerbTick.erase(g);
         g_cloneGuid.erase(g);
-        g_boxGuid.erase(g);
+        g_shadowDanceBuffOn.erase(g);
+        g_shadowDanceTick.erase(g);
     }
 
     void OnPlayerUpdate(Player* player, uint32 diff) override
     {
         TickCooking(player, diff);
         TickCurator(player, diff);
+        {
+            uint32 const id = player->GetGUID().GetCounter();
+            g_shadowDanceTick[id] += diff;
+            if (g_shadowDanceTick[id] >= 1000)
+            {
+                g_shadowDanceTick[id] = 0;
+                TickShadowDanceBuff(player);
+            }
+        }
         if (HasPerk(player, SPELL_COMBO))
         {
             uint32 id = player->GetGUID().GetCounter();
@@ -1256,6 +1643,28 @@ public:
             {
                 g_pullRadiusTick[id] = 0;
                 player->CastSpell(player, SPELL_PULL_RADIUS, true);
+            }
+        }
+        if (player->GetSession() && g_trackOreOn[player->GetSession()->GetAccountId()]
+            && HasPerk(player, SPELL_TRACK_ORE))
+        {
+            uint32 id = player->GetGUID().GetCounter();
+            g_trackOreTick[id] += diff;
+            if (g_trackOreTick[id] >= 10000)
+            {
+                g_trackOreTick[id] = 0;
+                player->CastSpell(player, NATIVE_FIND_MINERALS, true);
+            }
+        }
+        if (player->GetSession() && g_trackHerbOn[player->GetSession()->GetAccountId()]
+            && HasPerk(player, SPELL_TRACK_HERB))
+        {
+            uint32 id = player->GetGUID().GetCounter();
+            g_trackHerbTick[id] += diff;
+            if (g_trackHerbTick[id] >= 10000)
+            {
+                g_trackHerbTick[id] = 0;
+                player->CastSpell(player, NATIVE_FIND_HERBS, true);
             }
         }
     }
@@ -1289,12 +1698,14 @@ public:
     {
         AddCombo(killer);
         CheckDungeonClear(killer, killed);
+        GrantScaledGreyKillXP(killer, killed);
     }
 
     void OnPlayerCreatureKilledByPet(Player* owner, Creature* killed) override
     {
         AddCombo(owner);
         CheckDungeonClear(owner, killed);
+        GrantScaledGreyKillXP(owner, killed);
     }
 
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 /*xpSource*/) override
@@ -1324,30 +1735,49 @@ public:
             g_lastMount[player->GetGUID().GetCounter()] = info->Id;
         if (info->Id == SPELL_SHADOWSTEP && GetClassPerk(player) == SPELL_SUBTLETY)
         {
+            ApplyShadowstepCooldown(player);
             Unit* t = spell->m_targets.GetUnitTarget();
             if (t)
                 ChainAmbush(player, t);
         }
-        if (info->Id == SPELL_JACK_BOX)
-            SummonJackBox(player, player);
-        if (info->Id == SPELL_SHADOW_CLONE)
-            SummonClone(player);
+        if (GetClassPerk(player) == SPELL_SUBTLETY
+            && sSpellMgr->GetFirstSpellInChain(info->Id) == SPELL_HEMORRHAGE)
+            ApplyHemorrhageAoE(player);
+        // Shadow Clone pet dropped 2026-08-21 -- the SUMMON_PET rework
+        // (real pet frame, stance buttons) didn't play the way the user
+        // wanted. SummonClone()/npc_lg_shadow_clone are kept but now
+        // unreachable, same "inert isn't broken" precedent as the old
+        // SacrificeItem path. Casting *Shadow Clone now does nothing;
+        // Shadowstep's own chain-ambush effect (ChainAmbush, unrelated
+        // code path, its own short-lived per-hit visual clone) is
+        // untouched and is where the real improvements went instead.
         if (info->Id == 8690 || info->Id == 556) // Hearthstone / Astral Recall
         {
-            // Cast-time reduction (OnSpellPrepare, above) always worked --
-            // the cooldown half of Travel was never implemented at all
-            // (found in the 2026-08-21 audit). Same 20%-per-rank curve as
-            // cast time, applied as a shorter cooldown right after the cast
-            // actually lands, overriding whatever the engine just set.
+            // 2026-08-21: Travel used to make Hearthstone a fully instant,
+            // no-cooldown teleport once unlocked -- a real "teleportation
+            // stone," not a gradual reduction. Restoring that instead of
+            // the partial per-rank scaling this got rewritten into earlier
+            // this session. Cast time is zeroed unconditionally in
+            // OnSpellPrepare above; this clears the cooldown entirely.
             uint32 travelRanks = 0;
             for (uint32 id : SPELL_TRAVEL)
                 if (HasPerk(player, id))
                     ++travelRanks;
             if (travelRanks)
             {
-                uint32 const baseRecovery = info->RecoveryTime ? info->RecoveryTime : 3600000;
-                uint32 const reduced = uint32(float(baseRecovery) * std::pow(0.80f, float(travelRanks)));
-                player->ModifySpellCooldown(info->Id, -int32(baseRecovery - reduced));
+                uint32 const spellId = info->Id;
+                ObjectGuid playerGuid = player->GetGUID();
+                // Still deferred -- OnPlayerSpellCast fires mid-way through
+                // the triggering Spell::cast(), before the engine has
+                // written its own real cooldown entry, so clearing it here
+                // synchronously would just get overwritten once cast()
+                // finishes and sets the real ~30 min cooldown.
+                player->m_Events.AddEventAtOffset([playerGuid, spellId]()
+                {
+                    Player* p = ObjectAccessor::FindPlayer(playerGuid);
+                    if (p && p->IsInWorld())
+                        p->RemoveSpellCooldown(spellId, true);
+                }, std::chrono::milliseconds(300));
             }
         }
         if (info->Id == SPELL_FIND_QUESTS)
@@ -1438,8 +1868,10 @@ public:
         for (uint32 id : SPELL_TRAVEL)
             if (HasPerk(player, id))
                 ++travel;
+        // 2026-08-21: full instant cast once Travel is unlocked at all
+        // ("teleportation stone"), not a gradual per-rank reduction.
         if (travel && (info->Id == 8690 || info->Id == 556))
-            spell->SetCastTime(int32(float(spell->GetCastTime()) * std::pow(0.80f, float(travel))));
+            spell->SetCastTime(0);
         uint32 ranks = 0;
         for (uint32 id : SPELL_CRAFT)
             if (HasPerk(player, id))
@@ -1465,8 +1897,26 @@ class PerksUnit : public UnitScript
 public:
     PerksUnit() : UnitScript("LivingGearPerksUnit", true, {
         UNITHOOK_ON_DAMAGE,
-        UNITHOOK_ON_AURA_APPLY
+        UNITHOOK_ON_AURA_APPLY,
+        UNITHOOK_SHOULD_TRACK_VALUES_UPDATE_POS_BY_INDEX,
+        UNITHOOK_ON_PATCH_VALUES_UPDATE
     }) { }
+
+    bool ShouldTrackValuesUpdatePosByIndex(Unit const* unit, uint8 /*updateType*/, uint16 index) override
+    {
+        return unit && unit->GetTypeId() == TYPEID_UNIT && index == UNIT_FIELD_LEVEL;
+    }
+
+    void OnPatchValuesUpdate(Unit const* unit, ByteBuffer& valuesUpdateBuf, BuildValuesCachePosPointers& posPointers, Player* target) override
+    {
+        if (!unit || !target)
+            return;
+        auto it = posPointers.other.find(UNIT_FIELD_LEVEL);
+        if (it == posPointers.other.end())
+            return;
+        if (uint32 const displayLevel = DisplayLevelOverride(unit, target))
+            valuesUpdateBuf.put(it->second, displayLevel);
+    }
 
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
     {
@@ -1474,7 +1924,9 @@ public:
             return;
         if (Player* p = attacker->ToPlayer())
         {
-            damage = uint32(float(damage) * ZoneCombatRatio(p));
+            if (Creature* c = victim->ToCreature())
+                if (uint32 const eff = EffectiveCreatureLevel(c, p))
+                    damage = uint32(float(damage) * OutgoingScaleRatio(c, eff));
             if (!damage)
                 damage = 1;
             if (GetClassPerk(p) == SPELL_ASSASSINATION && roll_chance_i(20))
@@ -1482,15 +1934,9 @@ public:
         }
         if (Player* v = victim->ToPlayer())
         {
-            float extra = 1.0f;
-            if (g_cfg.zoneEnable && OpenWorld(v))
-            {
-                uint32 real = v->GetLevel();
-                uint32 cap = ZoneLevel(v) + g_cfg.zoneBuffer;
-                if (real > cap && real >= g_cfg.zoneMinLevel)
-                    extra += float(real - cap) * g_cfg.zoneIncoming;
-            }
-            damage = uint32(float(damage) * extra);
+            if (Creature* c = attacker->ToCreature())
+                if (uint32 const eff = EffectiveCreatureLevel(c, v))
+                    damage = uint32(float(damage) * IncomingScaleRatio(c, eff));
         }
     }
 
@@ -1516,86 +1962,6 @@ public:
     }
 };
 
-struct npc_lg_jack_boxAI : public ScriptedAI
-{
-    npc_lg_jack_boxAI(Creature* c) : ScriptedAI(c), _ticks(0), _sprung(false) { }
-
-    void Reset() override
-    {
-        me->SetReactState(REACT_PASSIVE);
-        me->SetVisible(false);
-    }
-
-    void UpdateAI(uint32 diff) override
-    {
-        _wait += diff;
-        if (!_sprung)
-        {
-            if (_wait < 400)
-                return;
-            _wait = 0;
-            std::list<Unit*> list;
-            Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(me, me, 3.0f);
-            Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(
-                me, list, check);
-            Cell::VisitObjects(me, searcher, 3.0f);
-            if (list.empty())
-                return;
-            _sprung = true;
-            me->SetVisible(true);
-            uint32 howl = SPELL_HOWL;
-            if (Unit* owner = me->GetOwner())
-                if (Player* p = owner->ToPlayer())
-                    if (uint32 h = BestOwned(p, SPELL_HOWL))
-                        howl = h;
-            me->CastSpell(me, howl, true);
-            return;
-        }
-        if (_wait < 2000)
-            return;
-        _wait = 0;
-        if (++_ticks > 5)
-        {
-            me->DespawnOrUnsummon();
-            return;
-        }
-        Player* owner = nullptr;
-        if (Unit* o = me->GetOwner())
-            owner = o->ToPlayer();
-        uint32 thr = owner ? BestOwned(owner, SPELL_DEADLY_THROW) : SPELL_DEADLY_THROW;
-        if (!thr)
-            thr = SPELL_DEADLY_THROW;
-        std::list<Unit*> list;
-        Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(me, me, 20.0f);
-        Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(
-            me, list, check);
-        Cell::VisitObjects(me, searcher, 20.0f);
-        for (Unit* u : list)
-        {
-            if (!u || !u->IsAlive())
-                continue;
-            me->CastSpell(u, thr, true);
-            if (owner)
-                ApplyRandomPoison(owner, u);
-        }
-    }
-
-private:
-    uint32 _wait = 0;
-    uint32 _ticks = 0;
-    bool _sprung = false;
-};
-
-class npc_lg_jack_box : public CreatureScript
-{
-public:
-    npc_lg_jack_box() : CreatureScript("npc_lg_jack_box") { }
-    CreatureAI* GetAI(Creature* creature) const override
-    {
-        return new npc_lg_jack_boxAI(creature);
-    }
-};
-
 // Not a real playerbot (see the 2026-08-20 wiki note on why that's not
 // feasible for a temporary summon -- mod-playerbots hard-requires a real
 // Player+WorldSession). Instead this reads the owning player's actual
@@ -1613,17 +1979,14 @@ struct npc_lg_shadow_cloneAI : public ScriptedAI
         // at the engine level; the immediate-response part (was taking
         // ~10s to react) is handled explicitly below since this AI doesn't
         // go through the standard UpdateVictim()/threat-list path at all.
-        me->SetReactState(REACT_DEFENSIVE);
-        _boxCooldownMs = 0;
+        // No forced SetReactState here anymore -- this is a real SUMMON_PET
+        // now (2026-08-21 rework), and the player's Aggressive/Defensive/
+        // Passive choice from the native pet frame is what should govern
+        // this, not a hardcoded reset every time Reset() fires.
     }
 
-    void UpdateAI(uint32 diff) override
+    void UpdateAI(uint32 /*diff*/) override
     {
-        if (_boxCooldownMs > diff)
-            _boxCooldownMs -= diff;
-        else
-            _boxCooldownMs = 0;
-
         Unit* ownerUnit = me->GetOwner();
         Player* owner = ownerUnit ? ownerUnit->ToPlayer() : nullptr;
         if (!owner || !owner->IsInWorld() || !me->IsWithinDistInMap(owner, 60.0f))
@@ -1632,10 +1995,25 @@ struct npc_lg_shadow_cloneAI : public ScriptedAI
             return;
         }
 
+        ReactStates const stance = me->GetReactState();
+
+        // Passive: never auto-engage, just follow. Matches how a passive
+        // pet behaves everywhere else in the game.
+        if (stance == REACT_PASSIVE)
+        {
+            if (me->GetVictim())
+                me->AttackStop();
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+                me->GetMotionMaster()->MoveFollow(owner, 2.0f, frand(0.0f, 2.0f * float(M_PI)));
+            return;
+        }
+
         // Pet-aggressive: if something is actively hitting the clone and it
         // isn't already fighting back, engage immediately -- this is the
         // fix for "took ~10 seconds to react", since without it the clone
         // only ever picked a target from the owner's current selection.
+        // Applies at Defensive too (fighting back when attacked is not the
+        // same as picking fights), only true Passive skips this.
         if (!me->GetVictim())
         {
             if (Unit* attacker = me->getAttackerForHelper())
@@ -1644,6 +2022,26 @@ struct npc_lg_shadow_cloneAI : public ScriptedAI
                 RunRotation(owner, attacker);
                 DoMeleeAttackIfReady();
                 return;
+            }
+        }
+
+        // Aggressive: also proactively pick a fight with whatever's nearby,
+        // same as the native stance means for any other controllable pet.
+        if (stance == REACT_AGGRESSIVE && !me->GetVictim())
+        {
+            std::list<Unit*> nearby;
+            Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(me, me, 20.0f);
+            Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(me, nearby, check);
+            Cell::VisitObjects(me, searcher, 20.0f);
+            for (Unit* u : nearby)
+            {
+                if (u && u->IsAlive() && owner->IsValidAttackTarget(u))
+                {
+                    AttackStart(u);
+                    RunRotation(owner, u);
+                    DoMeleeAttackIfReady();
+                    return;
+                }
             }
         }
 
@@ -1663,8 +2061,6 @@ struct npc_lg_shadow_cloneAI : public ScriptedAI
         if (me->GetVictim() != ownerTarget)
             AttackStart(ownerTarget);
 
-        TryDropTrap(owner);
-
         if (!me->IsWithinMeleeRange(ownerTarget))
         {
             TryShadowstepTo(owner, ownerTarget);
@@ -1676,32 +2072,12 @@ struct npc_lg_shadow_cloneAI : public ScriptedAI
     }
 
 private:
-    // Jack in the Box has no meaningful baked-in spell cooldown of its own
-    // (its real recast timer only ever existed as client GCD/UI, never
-    // enforced server-side for a raw CastSpell), so relying on
-    // HasSpellCooldown() here could spam-drop boxes every tick. Tracked
-    // with our own timer instead, independent of anything spell-cooldown
-    // related.
-    uint32 _boxCooldownMs = 0;
-
     void TryShadowstepTo(Player* owner, Unit* target)
     {
         uint32 const step = BestOwned(owner, SPELL_SHADOWSTEP);
         if (!step || me->HasSpellCooldown(step))
             return;
         me->CastSpell(target, step, false);
-    }
-
-    // Never add SPELL_SHADOW_CLONE (910103) to anything this AI can cast --
-    // a clone summoning another clone was flagged explicitly as something
-    // to never let happen (2026-08-20 request). Jack in the Box (910102) is
-    // a stationary trap NPC, not another copy of the player, so it's fine.
-    void TryDropTrap(Player* owner)
-    {
-        if (_boxCooldownMs || !BestOwned(owner, SPELL_JACK_BOX))
-            return;
-        _boxCooldownMs = 45000;
-        SummonJackBox(owner, me);
     }
 
     void RunRotation(Player* owner, Unit* target)
@@ -1788,6 +2164,22 @@ public:
 
 } // namespace LivingGearPerks
 
+// Called from LivingGear_ClassPerks.cpp's SelectClassPerk() when a player
+// actively picks Rogue: Subtlety as their class perk -- the login-only
+// grant doesn't cover a live perk switch, so without this call Shadow
+// Dance/Shadowstep/Shadow Clone stayed ungranted until the player's next
+// login even after picking Subtlety.
+void LivingGear_GrantSubtletyPerks(Player* player)
+{
+    LivingGearPerks::PerksPlayer::GrantSubtletyPerks(player);
+}
+
+// Called from a core patch in Spell::CheckCast (Spell.cpp).
+bool LivingGear_BypassStealthRequirement(Unit* caster)
+{
+    return LivingGearPerks::BypassStealthRequirement(caster);
+}
+
 void AddSC_LivingGearPerks()
 {
     new LivingGearPerks::PerksWorld();
@@ -1795,6 +2187,5 @@ void AddSC_LivingGearPerks()
     new LivingGearPerks::PerksSpell();
     new LivingGearPerks::PerksUnit();
     new LivingGearPerks::PerksMap();
-    new LivingGearPerks::npc_lg_jack_box();
     new LivingGearPerks::npc_lg_shadow_clone();
 }

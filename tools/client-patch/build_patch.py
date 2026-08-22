@@ -81,18 +81,16 @@ CUSTOM_SPELLS = {
     910034: ("*Mage: Frost", "Blizzard is instant, no cooldown, and lingers like Death and Decay. In combat, Ice Lance hits enemies within 15 yards every 2 sec.", 188),
     910035: ("*Rogue: Assassination", "Poisons deal 300% increased damage. DoT poisons spread to enemies within 10 yards.", 500),
     910036: ("*Rogue: Combat", "Blade Flurry is always active. Energy regeneration increased by 50%. Combo builders have a 30% chance to cast free Killing Spree.", 514),
-    910037: ("*Rogue: Subtlety", "Gain Shadowstep with no cooldown. Shadowstep grants Stealth and chains up to 5 Ambushes (+500% damage). Learn Jack in the Box and Shadow Clone.", 250),
-    # icon 1330 rendered blank in-game (2026-08-20). Swapped for 95 (Kill
-    # Combo's icon, confirmed rendering fine in this same build) as a safe
-    # placeholder -- not a real totem icon, just guaranteed not blank.
-    # MPQ extraction tooling to properly look up a totem SpellIconID was
-    # broken when this was attempted (StormLib opens the archives fine,
-    # but SFileOpenFileEx returns ERROR_FILE_NOT_FOUND for paths that
-    # should exist -- not investigated further, out of scope for a cosmetic
-    # icon swap). Revisit with a real totem icon once that's fixed or
-    # verified another way.
-    910102: ("Jack in the Box", "Place a stealthed trap. Triggers Howl of Terror, then Deadly Throws with random poisons.", 95),
-    910103: ("Shadow Clone", "Summon a permanent shadow clone that mirrors your rogue abilities. One clone at a time.", 250),
+    910037: ("*Rogue: Subtlety", "Gain Shadowstep (6 sec cooldown). Shadowstep chains up to 8 Ambushes (+500% damage). Learn Shadow Dance.", 250),
+    # Jack in the Box dropped entirely 2026-08-21, replaced by Shadow Dance
+    # (reuses its freed spell ID). Icon 95 (Kill Combo's) reused
+    # deliberately -- confirmed rendering fine in this build already; MPQ
+    # extraction tooling to look up a real shadow-dance icon was broken
+    # when this was attempted for the old totem icon (StormLib opens the
+    # archives fine, but SFileOpenFileEx returns ERROR_FILE_NOT_FOUND for
+    # paths that should exist -- not investigated further). Revisit with a
+    # real icon once that's fixed or verified another way.
+    910102: ("*Shadow Dance", "Permanent. Stealth-only abilities (Ambush, Garrote, Cheap Shot, etc.) can be used without being stealthed. +10% attack power to your party/raid.", 95),
     910104: ("*Movement: Mounted Opener", "While mounted: jump forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap. Unlocked at level 40.", 1299),
     910105: ("*Auto-Mount", "Automatically mount when you leave combat. Toggle on the World tab or by casting this perk. Unlocked by learning a mount.", 132),
     910106: ("*Class Buffs", "After you clear Naxxramas 25 on a class, that class applies 10% primary stats to you and nearby party.", 149),
@@ -217,10 +215,6 @@ VISUAL_COPY = {
 # added to SkillLineAbility, so they do not appear as spellbook skills.
 CASTABLE_SPELLS = {
     910001, 910002, 910003, 910004, 910005, 910006, 910007, 910008, 910009,
-    910032, 910033, 910034, 910035, 910036, 910037,
-    910102, 910103,
-    910069, 910070, 910071,
-    910083, 910084, 910085,
     910042, 910088, 910090, 910091, 910092, 910105, 910106, 910107, 910108,
 }
 
@@ -262,19 +256,15 @@ INTERRUPT_ON_HIT = 0x08 | 0x10
 # requires an enemy/unit target, every custom spell that isn't a toggle
 # cast via a UI click (which never needs to pass a real target) inherits
 # that requirement too, and casting from the action bar with nothing
-# selected fails client-side with "Invalid target" -- hit for real with
-# Jack in the Box (910102), which is meant to drop in place like a totem,
-# no target needed. 0 = no target flags required at all.
-TARGETS_OVERRIDE = {
-    910102: 0,  # Jack in the Box: drop in place, no target needed
-}
+# selected fails client-side with "Invalid target". No entries currently
+# need this (Shadow Dance, 910102, isn't castable at all -- passive perk
+# flag only, not in CASTABLE_SPELLS).
+TARGETS_OVERRIDE = {}
 # All custom spells currently get RecoveryTime/CategoryRecoveryTime forced
 # to 0 (see make_custom), i.e. no real cooldown beyond the client's default
 # GCD. Per-spell overrides (milliseconds) for anything that actually needs
 # a real recast timer.
-RECOVERY_OVERRIDE_MS = {
-    910102: 4000,  # Jack in the Box: 4s, requested explicitly
-}
+RECOVERY_OVERRIDE_MS = {}
 # Pick Lock + Opening / Treasure / kneeling / tinkering / vehicle.
 CHEST_OPEN_LOCKTYPES = {1, 5, 6, 10, 12, 13, 14, 17, 21}
 # SPELL_AURA_MOUNTED = 78. Instant cast and usable while moving.

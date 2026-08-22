@@ -29,6 +29,7 @@
 #include "WorldSession.h"
 
 #include <algorithm>
+#include <chrono>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -198,6 +199,29 @@ uint32 YieldMult(Player* player, uint32 const* yieldIds)
     if (!ranks)
         return 1;
     return 1u << ranks;
+}
+
+uint32 const GATHER_SKILL_IDS[] = { SKILL_MINING, SKILL_HERBALISM, SKILL_SKINNING, SKILL_FISHING, SKILL_ENGINEERING };
+
+// Cross-profession skill-up acceleration: leveling any ONE gathering
+// profession to a 75-point milestone speeds up how fast every OTHER
+// gathering profession gains skill points (not itself) -- e.g. Fishing 300
+// grants +4 bonus skill points per gather action to Mining/Herbalism/etc.
+// Deliberately separate from YieldMult (own-skill-gated material count per
+// gather) and ExtraReach (own-skill-gated auto-loot range) -- three
+// complementary but independent systems.
+uint32 CrossProfessionTier(Player* player, uint32 selfSkillId)
+{
+    uint32 best = 0;
+    for (uint32 skillId : GATHER_SKILL_IDS)
+    {
+        if (skillId == selfSkillId)
+            continue;
+        uint32 const skill = AccountSkill(player, skillId);
+        if (skill > best)
+            best = skill;
+    }
+    return best / 75;
 }
 
 float ExtraReach(Player* player, uint32 const* reachIds)
@@ -452,15 +476,17 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
     uint32 skillId = 0, reqSkill = 0;
     if (GatherLockType(go->GetGOInfo()->GetLockId(), skillId, reqSkill))
         return; // gathering-skill chest (herbalism/mining/etc) -- leave to TryGatherChest
-    if (uint32 lockId = go->GetGOInfo()->GetLockId())
-    {
-        if (LockEntry const* lockInfo = sLockStore.LookupEntry(lockId))
-        {
-            for (int i = 0; i < MAX_LOCK_CASE; ++i)
-                if (lockInfo->Type[i] == LOCK_KEY_ITEM)
-                    return; // needs a physical key -- leave alone
-        }
-    }
+    // 2026-08-21: used to also bail here for any chest whose static
+    // template lock is LOCK_KEY_ITEM, "leave it for the manual spell
+    // path." That was correct back when this only ever ran from
+    // GameObject::Use()'s CHEST case (unlocked chests only) -- but it's
+    // also now reached from Spell::EffectOpenLock AFTER a lock has already
+    // been successfully opened (key matched or skill sufficient), where
+    // GetLockId() still reports the chest's unchanging static lock
+    // regardless. That made this unconditionally bounce every locked
+    // chest reaching autoloot via the new path, key or skill alike --
+    // exactly why "Solid Chest" kept refusing to autoloot even after
+    // being successfully unlocked.
     Loot* loot = &go->loot;
     loot->clear();
     if (uint32 lootId = go->GetGOInfo()->GetLootId())
@@ -468,19 +494,42 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
     if (GameObjectTemplateAddon const* addon = go->GetTemplateAddon())
         loot->generateMoneyLoot(addon->mingold, addon->maxgold);
     go->SetLootGenerationTime();
-    uint32 const maxSlot = loot->GetMaxSlotInLootFor(player);
-    for (uint32 slot = 0; slot < maxSlot; ++slot)
-    {
-        InventoryResult msg = EQUIP_ERR_OK;
-        player->StoreLootItem(uint8(slot), loot, msg);
-    }
-    if (loot->gold)
-    {
-        player->ModifyMoney(int32(loot->gold));
-        loot->gold = 0;
-    }
-    go->SetLootState(GO_JUST_DEACTIVATED);
     handled = true;
+
+    // 2026-08-21: this is reached both from a plain right-click (GameObject::
+    // Use(), safe) AND from Spell::EffectOpenLock -- which is still mid-
+    // execution on the caster when it fires OnPlayerUseGameObject. Calling
+    // player->StoreLootItem() synchronously from inside another Spell's own
+    // effect processing is the exact reentrancy hazard documented in the
+    // wiki's "Reentrant hook execution" section (same API, same crash
+    // signature previously hit via OnPlayerCreatureKill's autoloot). Defer
+    // the actual grant one tick and re-resolve both player and chest by
+    // GUID -- either may be gone by the time this runs. Deferring on the
+    // safe (right-click) path too is harmless, just one tick later.
+    ObjectGuid const playerGuid = player->GetGUID();
+    ObjectGuid const goGuid = go->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid, goGuid]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !p->IsInWorld() || !p->GetMap())
+            return;
+        GameObject* obj = p->GetMap()->GetGameObject(goGuid);
+        if (!obj)
+            return;
+        Loot* l = &obj->loot;
+        uint32 const maxSlot = l->GetMaxSlotInLootFor(p);
+        for (uint32 slot = 0; slot < maxSlot; ++slot)
+        {
+            InventoryResult msg = EQUIP_ERR_OK;
+            p->StoreLootItem(uint8(slot), l, msg);
+        }
+        if (l->gold)
+        {
+            p->ModifyMoney(int32(l->gold));
+            l->gold = 0;
+        }
+        obj->SetLootState(GO_JUST_DEACTIVATED);
+    }, std::chrono::milliseconds(1));
 }
 
 void TryGatherFishHole(Player* player, GameObject* go)
@@ -672,42 +721,29 @@ public:
         PLAYERHOOK_ON_UPDATE_FISHING_SKILL
     }) { }
 
-    // The yield perks (Mine/Herb/Skin/Fish/Eng, 2x/4x/8x) only ever
-    // multiplied loot item counts -- Living Gear never hooked the separate
-    // gathering-skill-up event AzerothCore fires (PLAYERHOOK_ON_UPDATE_GATHERING_SKILL
-    // for mining/herbalism/skinning, PLAYERHOOK_ON_UPDATE_FISHING_SKILL for
-    // fishing specifically), so skill-up rate was always just the vanilla
-    // 1-point-per-attempt regardless of unlocked yield rank. Reuses the
-    // same yield multiplier for skill-up count too, so "4x yield" also
-    // means "4x skill-ups" from the same rank.
+    // Skill-up rate is boosted by CrossProfessionTier (see above) -- how far
+    // your OTHER gathering professions are leveled, not this one. This is
+    // intentionally independent of YieldMult (material count per gather,
+    // gated on this profession's own skill).
     void OnPlayerUpdateGatheringSkill(Player* player, uint32 skillId, uint32 /*currentLevel*/,
         uint32 /*gray*/, uint32 /*green*/, uint32 /*yellow*/, uint32& gain) override
     {
-        uint32 const* yieldIds = nullptr;
-        if (skillId == SKILL_MINING)
-            yieldIds = SPELL_MINE_YIELD;
-        else if (skillId == SKILL_HERBALISM)
-            yieldIds = SPELL_HERB_YIELD;
-        else if (skillId == SKILL_SKINNING)
-            yieldIds = SPELL_SKIN_YIELD;
-        else if (skillId == SKILL_ENGINEERING)
-            yieldIds = SPELL_ENG_YIELD;
-        if (yieldIds)
-            gain *= YieldMult(player, yieldIds);
+        bool const tracked = skillId == SKILL_MINING || skillId == SKILL_HERBALISM ||
+            skillId == SKILL_SKINNING || skillId == SKILL_ENGINEERING;
+        if (tracked)
+            gain += CrossProfessionTier(player, skillId);
     }
 
     bool OnPlayerUpdateFishingSkill(Player* player, int32 /*skill*/, int32 /*zoneSkill*/,
         int32 /*chance*/, int32 /*roll*/) override
     {
         // Unlike the gathering hook above, this one has no gain-amount
-        // parameter to multiply -- it's a plain "does this attempt succeed"
+        // parameter to add to -- it's a plain "does this attempt succeed"
         // gate, and UpdateFishingSkill() itself always adds exactly 1 point.
-        // Simulate the same yield multiplier by calling it extra times
-        // ourselves, then letting the engine's own call (return true) add
-        // the last one -- e.g. 4x yield = 3 extra calls here + 1 from the
-        // caller = 4 total.
-        uint32 const mult = YieldMult(player, SPELL_FISH_YIELD);
-        for (uint32 i = 1; i < mult; ++i)
+        // Simulate the bonus by calling it extra times ourselves, then
+        // letting the engine's own call (return true) add the last one.
+        uint32 const extra = CrossProfessionTier(player, SKILL_FISHING);
+        for (uint32 i = 0; i < extra; ++i)
             player->UpdateFishingSkill();
         return true;
     }
@@ -869,6 +905,18 @@ public:
 };
 
 } // namespace LivingGearGather
+
+// Called from a small core-patch in Spell::CanOpenLock (SpellEffects.cpp)
+// so Lockpicking is account-wide like Riding already is -- an alt with 0
+// Lockpicking can open anything a higher-skill character on the same
+// account could. Only used for SKILL_LOCKPICKING specifically; the other
+// LOCK_KEY_SKILL types (Herbalism/Mining/Blasting/etc.) are gathering
+// locks already handled entirely by this module's own scan-based system
+// and never reach the engine's native skill check for that purpose.
+uint32 LivingGear_AccountLockpickSkill(Player* player)
+{
+    return LivingGearGather::AccountSkill(player, SKILL_LOCKPICKING);
+}
 
 void AddSC_LivingGearGather()
 {

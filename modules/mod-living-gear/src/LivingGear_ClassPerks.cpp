@@ -69,6 +69,12 @@
 #include <unordered_set>
 #include <vector>
 
+// LivingGear_Perks.cpp -- owns Rogue Subtlety. Declared at global scope
+// (not inside namespace LivingGearClassPerks below) so the unqualified
+// call in SelectClassPerk() actually binds to the real global-scope
+// definition instead of an unresolved namespace-local declaration.
+void LivingGear_GrantSubtletyPerks(Player* player);
+
 namespace LivingGearClassPerks
 {
 // -------------------------------------------------------------------------
@@ -628,6 +634,8 @@ void SelectClassPerk(Player* player, uint32 spellId)
         ApplyRogueCombatBladeFlurry(player);
     if (spellId == SPELL_MAGE_FROST)
         GrantMageFrostBlizzard(player);
+    if (spellId == SPELL_ROGUE_SUBTLETY)
+        LivingGear_GrantSubtletyPerks(player);
     GrantAndBroadcastClassPerks(player); // sends CPKALL, which the client actually handles
     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
         ChatHandler(player->GetSession()).PSendSysMessage(

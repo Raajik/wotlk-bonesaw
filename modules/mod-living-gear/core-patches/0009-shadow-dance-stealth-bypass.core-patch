@@ -1,0 +1,28 @@
+Let the Living Gear Shadow Dance perk (Rogue Subtlety) use
+stealth-only openers (Ambush, Garrote, etc.) without actually being
+stealthed.
+Touches: src/server/game/Spells/Spell.cpp, Spell::CheckCast()
+
+Why: the stealth-only gate is a single, precise check --
+SPELL_ATTR0_ONLY_STEALTHED + !HasStealthAura() -> SPELL_FAILED_ONLY_STEALTHED.
+Faking a real stealth aura instead of patching this check would also
+apply stealth's visual crouch/transparency and detection-range penalty,
+which isn't what "openers usable anytime, permanent buff" is supposed to
+feel like. LivingGear_BypassStealthRequirement (LivingGear_Perks.cpp)
+checks Subtlety spec + the Shadow Dance perk; skip this patch and
+Subtlety rogues keep the normal stealth requirement on those abilities,
+the rest of the perk (the party/raid attack power buff) is unaffected.
+
+--- a/src/server/game/Spells/Spell.cpp
++++ b/src/server/game/Spells/Spell.cpp
+@@ (near the top, alongside the existing LivingGear_AccountLockpickSkill forward-declare)
+ uint32 LivingGear_AccountLockpickSkill(Player* player);
++// Living Gear core-patch: Shadow Dance lets stealth-only openers be used
++// without actually being stealthed (LivingGear_Perks.cpp).
++bool LivingGear_BypassStealthRequirement(Unit* caster);
+
+@@ Spell::CheckCast(bool strict)
+-            if (m_spellInfo->HasAttribute(SPELL_ATTR0_ONLY_STEALTHED) && !(m_caster->HasStealthAura()))
++            if (m_spellInfo->HasAttribute(SPELL_ATTR0_ONLY_STEALTHED) && !(m_caster->HasStealthAura())
++                    && !LivingGear_BypassStealthRequirement(m_caster))
+                 return SPELL_FAILED_ONLY_STEALTHED;
