@@ -35,6 +35,7 @@
 #include "StringFormat.h"
 #include "World.h"
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 #include <unordered_map>
@@ -230,6 +231,49 @@ void VaultAdd(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEntry, 
         "INSERT INTO `lg_vault` (`account_id`, `owner_guid`, `kind`, `item_entry`, `item_count`) "
         "VALUES ({}, {}, {}, {}, {}) ON DUPLICATE KEY UPDATE `item_count` = `item_count` + {}",
         accountId, ownerGuid, kind, itemEntry, count, count);
+}
+
+// Removes up to `count` from the vault, capped to what's actually there.
+// Returns how much was actually removed.
+uint32 VaultRemove(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEntry, uint32 count)
+{
+    if (!count)
+        return 0;
+    LoadVault(accountId);
+    VaultKey const key{ ownerGuid, kind, itemEntry };
+    auto it = g_vaults[accountId].find(key);
+    if (it == g_vaults[accountId].end() || !it->second)
+        return 0;
+    uint32 const take = std::min(count, it->second);
+    it->second -= take;
+    CharacterDatabase.DirectExecute(
+        "UPDATE `lg_vault` SET `item_count` = `item_count` - {} "
+        "WHERE `account_id` = {} AND `owner_guid` = {} AND `kind` = {} AND `item_entry` = {}",
+        take, accountId, ownerGuid, kind, itemEntry);
+    return take;
+}
+
+// Called from a core patch in Spell::CheckCast (Spell.cpp), right before
+// the engine's own reagent-count check -- reagents/tools that got
+// auto-banked (ACT_REAGENT_VAULT) need to still "count as in your
+// backpack" for crafting per user request, not require a manual withdraw
+// first. Tops the bag up from the account-wide reagent vault just before
+// the real HasItemCount check runs, so normal consumption/inventory
+// bookkeeping handles everything else completely unmodified.
+void TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
+{
+    if (!player || !player->GetSession() || !needed)
+        return;
+    uint32 const have = player->GetItemCount(itemId, true);
+    if (have >= needed)
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    uint32 const shortfall = needed - have;
+    uint32 const taken = VaultRemove(accountId, 0, VAULT_REAGENT, itemId, shortfall);
+    if (!taken)
+        return;
+    if (!player->AddItem(itemId, taken))
+        VaultAdd(accountId, 0, VAULT_REAGENT, itemId, taken); // bag full -- put it back
 }
 
 // 2026-08-21: proto->Class == ITEM_CLASS_QUEST / BIND_QUEST_ITEM alone
@@ -987,6 +1031,12 @@ bool IsAutolootEnabled(Player* player)
 bool LivingGear_TryAutolootPickpocket(Player* player, Unit* target)
 {
     return LivingGearVault::TryAutolootPickpocket(player, target);
+}
+
+// Called from a core patch in Spell::CheckCast (Spell.cpp).
+void LivingGear_TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
+{
+    LivingGearVault::TopUpReagentFromVault(player, itemId, needed);
 }
 
 void AddSC_LivingGearVault()

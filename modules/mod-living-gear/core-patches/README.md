@@ -79,6 +79,23 @@ like your tree's exact line numbers.
   keep the normal stealth requirement on those abilities (the party/raid
   attack power buff half is unaffected either way).
 
+- **0010-pickpocket-junkbox-autoloot.core-patch** -- `SpellEffects.cpp`,
+  `Spell::EffectPickPocket()`. Gives autoloot a chance at Pickpocket's
+  junk-box loot, the one loot source the existing chest/creature-kill
+  autoloot hooks could never reach (Pickpocket doesn't kill its target
+  and doesn't go through the GameObject chest path). Required for
+  pickpocket loot to autoloot at all; skip it and it always opens the
+  manual loot window.
+
+- **0011-reagent-vault-craft-from-anywhere.core-patch** -- `Spell.cpp`,
+  `Spell::CheckCast()`. Tops the bag up from the account-wide reagent
+  vault right before the engine's own reagent check, so auto-banked
+  reagents/tools still count as "in your backpack" when crafting instead
+  of needing a manual withdraw first. Required for crafting to work at
+  all once reagents/tools are auto-banked; skip it and anything vaulted
+  becomes invisible to the crafting system (SPELL_FAILED_REAGENTS even
+  though the profession window shows it as available).
+
 Per-viewer mob level scaling (previously patch 0008, `Object.cpp`) no
 longer needs a core patch at all -- `Object::BuildValuesUpdate()` turned
 out to be dead code for creatures/players (`Unit` has its own override

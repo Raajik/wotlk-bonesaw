@@ -1017,10 +1017,31 @@ void ApplyShadowDanceBuff(Player* player, bool apply)
     if (!player)
         return;
     uint32 const guid = player->GetGUID().GetCounter();
-    if (g_shadowDanceBuffOn[guid] == apply)
+    // TEMP DEBUG 2026-08-21: gating condition confirmed true every tick,
+    // but "no buff" still reported -- this is the one untested step past
+    // that. It's also a raw stat modifier with no aura icon by design, so
+    // even a successful apply has zero visible feedback -- print AP before/
+    // after so there's an unambiguous signal either way.
+    bool const wasOn = g_shadowDanceBuffOn[guid];
+    static uint32 s_applyDebugTick = 0;
+    uint32 const applyNow = getMSTime();
+    bool const applyDbg = player->GetSession()
+        && (!s_applyDebugTick || getMSTimeDiff(s_applyDebugTick, applyNow) >= 3000);
+    if (applyDbg)
+    {
+        s_applyDebugTick = applyNow;
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cffff8800[SD debug]|r ApplyShadowDanceBuff: apply={} wasOn={} AP_before={}",
+            apply, wasOn, player->GetTotalAttackPowerValue(BASE_ATTACK));
+    }
+    if (wasOn == apply)
         return;
     g_shadowDanceBuffOn[guid] = apply;
     player->ApplyStatPctModifier(UNIT_MOD_ATTACK_POWER, TOTAL_PCT, apply ? 10.0f : -10.0f);
+    if (player->GetSession())
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cffff8800[SD debug]|r ApplyShadowDanceBuff: AP_after={}",
+            player->GetTotalAttackPowerValue(BASE_ATTACK));
 }
 
 void TickShadowDanceBuff(Player* player)
@@ -1108,8 +1129,20 @@ void SummonClone(Player* player)
 
 void TickCooking(Player* player, uint32 diff)
 {
-    if (!player || player->IsInCombat())
+    if (!player)
         return;
+    // TEMP DEBUG 2026-08-21: cooking regen reported not working.
+    static uint32 s_debugTick = 0;
+    uint32 const dbgNow = getMSTime();
+    bool const dbg = player->GetSession()
+        && (!s_debugTick || getMSTimeDiff(s_debugTick, dbgNow) >= 3000);
+    if (dbg)
+        s_debugTick = dbgNow;
+    if (player->IsInCombat())
+    {
+        if (dbg) ChatHandler(player->GetSession()).PSendSysMessage("|cffff8800[Cook debug]|r bail: in combat");
+        return;
+    }
     uint32 acc = player->GetGUID().GetCounter();
     g_cookAcc[acc] += diff;
     if (g_cookAcc[acc] < COOK_MS)
@@ -1129,6 +1162,12 @@ void TickCooking(Player* player, uint32 diff)
         pct = 2;
     else if (skill >= 75 && HasPerk(player, SPELL_COOK[0]))
         pct = 1;
+    if (player->GetSession())
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cffff8800[Cook debug]|r tick: skill={} pct={} HasPerk[0..5]={},{},{},{},{},{}",
+            skill, pct,
+            HasPerk(player, SPELL_COOK[0]), HasPerk(player, SPELL_COOK[1]), HasPerk(player, SPELL_COOK[2]),
+            HasPerk(player, SPELL_COOK[3]), HasPerk(player, SPELL_COOK[4]), HasPerk(player, SPELL_COOK[5]));
     if (!pct)
         return;
     uint32 hp = player->CountPctFromMaxHealth(pct);

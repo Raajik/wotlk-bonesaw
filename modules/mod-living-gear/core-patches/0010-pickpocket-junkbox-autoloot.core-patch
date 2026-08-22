@@ -1,0 +1,41 @@
+Give autoloot a chance at Pickpocket's junk-box loot, not just chests.
+Touches: src/server/game/Spells/SpellEffects.cpp, Spell::EffectPickPocket()
+
+Why: EffectPickPocket normally just calls player->SendLoot(target,
+LOOT_PICKPOCKETING), which opens the manual loot window directly --
+there was no hook here at all for a module to intervene, unlike the
+GameObject chest path (GameObject::Use()'s OnPlayerUseGameObject). Since
+Pickpocket doesn't kill its target, the existing creature-kill autoloot
+hook (OnPlayerCreatureKill) never applies either -- junkboxes were the
+one loot source autoloot could never reach.
+
+--- a/src/server/game/Spells/SpellEffects.cpp
++++ b/src/server/game/Spells/SpellEffects.cpp
+@@ Spell::EffectPickPocket(SpellEffIndex effIndex)
++// Living Gear core-patch: pickpocket junkbox autoloot.
++bool LivingGear_TryAutolootPickpocket(Player* player, Unit* target);
++
+ void Spell::EffectPickPocket(SpellEffIndex /*effIndex*/)
+ {
+     if (effectHandleMode != SPELL_EFFECT_HANDLE_HIT_TARGET)
+         return;
+
+     if (!m_caster->IsPlayer())
+         return;
+
++    if (LivingGear_TryAutolootPickpocket(m_caster->ToPlayer(), unitTarget))
++        return;
++
+     m_caster->ToPlayer()->SendLoot(unitTarget->GetGUID(), LOOT_PICKPOCKETING);
+ }
+
+LivingGear_TryAutolootPickpocket (LivingGear_Vault.cpp) replicates
+Player::SendLoot's own LOOT_PICKPOCKETING fill logic (CanGeneratePickPocketLoot/
+SetPickPocketLootTime/FillLoot/gold formula) exactly, since bypassing
+SendLoot means that fill never happens otherwise, then grants the loot
+the same deferred way chest autoloot does (Spell::EffectPickPocket is
+still mid-execution on the caster when this runs -- same reentrancy
+hazard as chest autoloot). Falls back to the normal SendLoot window
+(returns false) if autoloot is off or the creature was already
+pickpocketed, so the real "already pickpocketed" error message still
+shows for that case.
