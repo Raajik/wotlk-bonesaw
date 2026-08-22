@@ -1840,8 +1840,36 @@ public:
         PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT,
         PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL,
         PLAYERHOOK_ON_QUEST_COMPUTE_EXP,
+        PLAYERHOOK_CAN_SOLO_QUEUE,
         PLAYERHOOK_ON_AFTER_SPEC_SLOT_CHANGED
     }) { }
+
+    // Bug report #17, 2026-08-22, partial. The Solo Queue perk (910092) has
+    // always been a DEAD SWITCH: toggling it wrote a bool, synced it to the
+    // client, and was then read by absolutely nothing. The core has offered
+    // OnPlayerCanSoloQueue the whole time -- LFGMgr consults it in three
+    // places -- and this module simply never answered. Exactly the failure
+    // CLAUDE.md warns about, one layer further in than usual: the command had a
+    // handler, but the state that handler wrote had no reader.
+    //
+    // Answering it makes the toggle mean something: it waives the Deserter
+    // check when queueing, and skips the playerbot fill for RAID finder groups.
+    //
+    // It does NOT yet deliver the whole request. Two pieces are missing, both
+    // deliberately left for a design pass rather than improvised:
+    //   - Dungeons still get bots. LFGMgr's raid branch consults this hook
+    //     before OnPlayerbotFillLfgRaid, but the dungeon branch calls
+    //     OnPlayerbotFillLfgDungeon unconditionally.
+    //   - A lone player still cannot cause a proposal to form, so the queue
+    //     would never pop for them at all.
+    // Doing only the first would be worse than doing neither: solo queue would
+    // then mean "you queue forever and nothing ever arrives".
+    bool OnPlayerCanSoloQueue(Player* player) override
+    {
+        if (!player || !player->GetSession())
+            return false;
+        return g_soloQueue[player->GetSession()->GetAccountId()];
+    }
 
     // Subtlety-gated grants (Shadowstep + Shadow Dance + Shadow Clone).
     // Called at login AND on a live dual-spec swap -- these used to only
