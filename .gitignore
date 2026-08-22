@@ -135,3 +135,10 @@ tools/client-update/discord.webhook
 # SOAP GM credentials for tools/save_world.ps1 (never commit)
 tools/soap.env
 tools/client-update/soap.env
+
+# worldserver image spelunking: extracted container layer + its tarball (1.2G)
+/tools/ws-layer.tar
+/tools/ws-extract/
+
+# build transcripts kept for a single session
+/build-*.txt
