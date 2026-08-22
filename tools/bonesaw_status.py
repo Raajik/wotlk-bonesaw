@@ -224,6 +224,37 @@ def main():
             problems.append("manifest on main serves %s, not %s -- the client ship has reached nobody"
                             % (served, version))
 
+    # --- 6. can a remote player actually reach the world server? ----------
+    # Two addresses have to agree. The manifest tells the client where to send
+    # its LOGIN; acore_auth.realmlist.address is what the auth server then
+    # hands back as the WORLD server. Only the first is visible from the
+    # client, so when the second is wrong a player logs in fine and then hangs
+    # at the character screen with nothing to go on.
+    #
+    # It was 127.0.0.1 on 2026-08-22 while the manifest pointed at the tailnet
+    # address, which meant no remote player could get past login at all.
+    realm = run([
+        "docker", "exec", "ac-database", "mysql", "-uroot", "-ppassword", "-N", "-B",
+        "-e", "SELECT address, localAddress FROM acore_auth.realmlist WHERE id=1",
+    ])
+    if realm is None:
+        out.append("  realm address     database unreachable, not checked")
+    else:
+        parts = realm.split()
+        addr = parts[0] if parts else "?"
+        m = re.search(r"^realmlist\s+(\S+)", live, re.M) if live else None
+        want = m.group(1) if m else None
+        if want and addr != want:
+            out.append("  realm address     %s  MISMATCH -- manifest sends players to %s" % (addr, want))
+            problems.append("realm address %s != manifest realmlist %s -- remote players stall after login"
+                            % (addr, want))
+        elif addr.startswith("127."):
+            out.append("  realm address     %s  LOOPBACK -- only this machine can play" % addr)
+            problems.append("realm address is loopback: remote players stall after login")
+        else:
+            out.append("  realm address     %s  OK (local clients get %s)"
+                       % (addr, parts[1] if len(parts) > 1 else "?"))
+
     out.append("")
     if problems:
         out.append("  NOT SHIPPED CLEAN:")
