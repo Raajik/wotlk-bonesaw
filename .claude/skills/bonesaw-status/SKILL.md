@@ -11,6 +11,11 @@ Run:
 python tools/bonesaw_status.py
 ```
 
+The script derives the repo from its own location, so if the session did not
+start in `A:/wow-bonesaw` (a t3 worktree, say), invoke it by absolute path
+instead -- `python A:/wow-bonesaw/tools/bonesaw_status.py` -- and it still
+reports on the real checkout.
+
 Report its output to the user, then interpret it. Exit code 0 means everything
 is shipped and consistent; 1 means something is pending.
 

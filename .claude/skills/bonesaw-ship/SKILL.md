@@ -1,12 +1,14 @@
 ---
 name: bonesaw-ship
-description: Ship accumulated Bonesaw work to the live realm and to players - build, warn, save, replace worldserver, import SQL, publish the client, tag, and post Discord notes. Use ONLY when the user explicitly says ship, deploy, push live, or release. Never run it to "check" something.
+description: Ship accumulated Bonesaw work to the live realm and to players - build, warn, save, replace worldserver, import SQL, publish the client, tag, and post Discord notes. Only ever invoked by the user typing /bonesaw-ship.
+disable-model-invocation: true
 ---
 
 # Ship Bonesaw
 
-The user has explicitly asked to ship. This is the only skill allowed to touch
-the live realm. Work through the phases in order and **stop at the first
+The user has explicitly asked to ship -- `disable-model-invocation` means this
+cannot start any other way. This is the only skill allowed to touch the live
+realm. Work through the phases in order and **stop at the first
 failure** - do not carry on to a later phase to "get most of it out".
 
 Announce which phase you are entering as you go, so an interrupted ship can be
