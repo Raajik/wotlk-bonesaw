@@ -162,8 +162,13 @@ def main():
         out.append("  worldserver       image not found (docker down, or never built)")
         problems.append("no worldserver image")
     else:
+        # Only commits that can actually change the binary count. A tool or
+        # docs commit landing after the build does not mean players are
+        # running stale code, and a checker that cries wolf gets ignored.
         after = [l for l in (git("log", "--format=%h %cI %s",
-                                 "--since", built.astimezone(timezone.utc).isoformat()) or "").splitlines()]
+                                 "--since", built.astimezone(timezone.utc).isoformat(),
+                                 "--", "src", "modules", "data/sql", "apps/docker",
+                                 "CMakeLists.txt", "conf") or "").splitlines()]
         state = "container %s" % (running or "not running")
         out.append("  worldserver       image built %s, %s" % (fmt(built), state))
         if after:
