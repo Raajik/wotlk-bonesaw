@@ -671,10 +671,31 @@ void RecastCombo(Player* player)
         g_comboShown.erase(guid);
         return;
     }
+    // Bug report #14, 2026-08-22: "it should also refresh back to 10 minute
+    // duration on each kill."
+    //
+    // AddCombo has always pushed expiresAt out to a full window on every kill,
+    // but the recast that shows it was skipped whenever the stack count had not
+    // changed -- which is exactly what happens at 10/10. So a player holding max
+    // stacks watched the buff tick towards zero while the server quietly
+    // considered it freshly refreshed. Recast when the DISPLAYED time has
+    // drifted meaningfully behind the real remaining time as well as on a stack
+    // change. The one-second slack stops a recast every tick from rounding.
     Aura* aura = player->GetAura(SPELL_COMBO);
     auto const shown = g_comboShown.find(guid);
     if (aura && shown != g_comboShown.end() && shown->second == stacks)
+    {
+        uint32 const now = uint32(GameTime::GetGameTime().count());
+        ComboState const& st = player->GetGroup()
+            ? g_groupCombo[player->GetGroup()->GetGUID().GetCounter()]
+            : g_combo[guid];
+        int32 const realLeftMs = st.expiresAt > now ? int32(st.expiresAt - now) * IN_MILLISECONDS : 0;
+        if (realLeftMs - aura->GetDuration() < IN_MILLISECONDS)
+            return;
+        aura->SetMaxDuration(int32(COMBO_SECONDS) * IN_MILLISECONDS);
+        aura->SetDuration(realLeftMs);
         return;
+    }
 
     // bp0 is just a display/marker value (effect 1, dummy) -- the real xp
     // bonus is read from ComboCount() directly in OnPlayerGiveXP, not from

@@ -471,13 +471,40 @@ void TryGatherChest(Player* player, GameObject* go, uint32 skillId, uint32 reqSk
 // handling exactly (same lock-type checks) so it only ever fires for the
 // same chests that would otherwise go straight to player->SendLoot() --
 // key- and gathering-skill-gated chests are left alone, same as before.
+// Bug report #15, 2026-08-22: "solid chests STILL not autolooting, whether in
+// or out of combat" -- the second report of this against a path patch 0007 was
+// written to fix.
+//
+// Static analysis has ruled out everything checkable: Solid Chest is
+// GAMEOBJECT_TYPE_CHEST (type 3) as required; its lock (57) is OPEN/TREASURE
+// with a skill requirement of 0, so it goes through GameObject::Use() where the
+// hook is invoked before anything else; GatherLockType does not claim it; and
+// the reporter's account has autoloot enabled. So the failure is somewhere this
+// code cannot be reasoned about from the outside.
+//
+// These are log lines, NOT chat prints -- nothing reaches a player, so unlike
+// the TEMP DEBUG spam removed on this same day there is no reason to rush them
+// back out. They record which stage gives up, so the next occurrence names the
+// cause instead of costing another round of guessing.
 void TryAutolootChest(Player* player, GameObject* go, bool& handled)
 {
-    if (!player || !go || go->GetGoType() != GAMEOBJECT_TYPE_CHEST || !IsAutolootEnabled(player))
+    if (!player || !go)
         return;
+    if (go->GetGoType() != GAMEOBJECT_TYPE_CHEST)
+        return;
+    if (!IsAutolootEnabled(player))
+    {
+        LOG_INFO("module.livinggear", "chest autoloot: {} declined for '{}' -- autoloot disabled",
+            player->GetName(), go->GetGOInfo()->name);
+        return;
+    }
     uint32 skillId = 0, reqSkill = 0;
     if (GatherLockType(go->GetGOInfo()->GetLockId(), skillId, reqSkill))
+    {
+        LOG_INFO("module.livinggear", "chest autoloot: '{}' left to the gathering path (skill {})",
+            go->GetGOInfo()->name, skillId);
         return; // gathering-skill chest (herbalism/mining/etc) -- leave to TryGatherChest
+    }
     // 2026-08-21: used to also bail here for any chest whose static
     // template lock is LOCK_KEY_ITEM, "leave it for the manual spell
     // path." That was correct back when this only ever ran from
@@ -497,6 +524,9 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
         loot->generateMoneyLoot(addon->mingold, addon->maxgold);
     go->SetLootGenerationTime();
     handled = true;
+    LOG_INFO("module.livinggear", "chest autoloot: '{}' (entry {}, lock {}) filled lootId {} -- {} slot(s), {} gold",
+        go->GetGOInfo()->name, go->GetEntry(), go->GetGOInfo()->GetLockId(),
+        go->GetGOInfo()->GetLootId(), loot->GetMaxSlotInLootFor(player), loot->gold);
 
     // 2026-08-21: this is reached both from a plain right-click (GameObject::
     // Use(), safe) AND from Spell::EffectOpenLock -- which is still mid-
@@ -520,11 +550,18 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
             return;
         Loot* l = &obj->loot;
         uint32 const maxSlot = l->GetMaxSlotInLootFor(p);
+        uint32 taken = 0, refused = 0;
         for (uint32 slot = 0; slot < maxSlot; ++slot)
         {
             InventoryResult msg = EQUIP_ERR_OK;
             p->StoreLootItem(uint8(slot), l, msg);
+            if (msg == EQUIP_ERR_OK)
+                ++taken;
+            else
+                ++refused;
         }
+        LOG_INFO("module.livinggear", "chest autoloot: granted {}/{} slot(s) to {} ({} refused)",
+            taken, maxSlot, p->GetName(), refused);
         if (l->gold)
         {
             p->ModifyMoney(int32(l->gold));

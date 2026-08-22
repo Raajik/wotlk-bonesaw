@@ -140,6 +140,10 @@ uint32 const SPELL_BLIZZARD_RANKS[] = { 10, 6141, 8427, 10185, 10186, 10187, 270
 uint32 const SPELL_BLADESTORM = 46924;
 uint32 const SPELL_SHOCKWAVE = 46968;
 uint32 const SPELL_THUNDER_CLAP = 6343;
+uint32 const SPELL_WHIRLWIND = 1680;
+// Bug report #19: while Bladestorm is spinning, Whirlwind and Thunder Clap fire
+// on their own on this cadence, shortened by haste.
+uint32 const BLADESTORM_AUTOCAST_MS = 6000;
 uint32 const SPELL_REND = 772;
 uint32 const SPELL_DEEP_WOUNDS_DOT = 12721;
 uint32 const SPELL_DEEP_WOUNDS_TALENT[] = { 12834, 12849, 12867 };
@@ -278,6 +282,9 @@ struct TickState
     uint32 acc = 0;
 };
 std::unordered_map<uint32, TickState> g_afflictionTick;
+// Bladestorm autocast accumulator, keyed by character guid. See
+// TickWarriorArmsBladestorm (bug report #19).
+std::unordered_map<uint32, uint32> g_bladestormTick;
 std::unordered_map<uint32, TickState> g_eclipseTick;
 std::unordered_map<uint32, TickState> g_rejuvTick;
 
@@ -942,6 +949,53 @@ void TryRogueCombatKillingSpree(Player* player, Spell* spell)
 // ALLOW_ONLY_ABILITY effect (see Bonesaw.md), not something this file
 // needs to add.
 // -------------------------------------------------------------------------
+// Bug report #19, 2026-08-22: "should also autocast whirlwind and thunderclap
+// every 6 seconds (affected by haste)" while Bladestorm is active.
+//
+// Driven from the per-player update tick rather than from any spell hook, and
+// deliberately so. Bonesaw.md records a real crash history on this exact spell
+// around effect-3/CheckCast-after-aura-removal, which is why the "does not end"
+// toggle was never implemented. Ticking from the update loop means we only ever
+// observe the aura, never interfere with its lifetime -- and every cast is
+// triggered, so nothing re-enters Bladestorm's own CheckCast.
+//
+// Haste uses UNIT_MOD_CAST_SPEED, where values below 1 mean faster. Floored at
+// one second so no amount of haste can turn this into a per-tick cast loop.
+void TickWarriorArmsBladestorm(Player* player, uint32& acc, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_WARRIOR_ARMS)
+        return;
+    if (!player->HasAura(SPELL_BLADESTORM))
+    {
+        acc = 0;
+        return;
+    }
+
+    float haste = player->GetFloatValue(UNIT_MOD_CAST_SPEED);
+    if (haste <= 0.0f)
+        haste = 1.0f;
+    uint32 interval = uint32(float(BLADESTORM_AUTOCAST_MS) * haste);
+    if (interval < 1000)
+        interval = 1000;
+
+    acc += diff;
+    if (acc < interval)
+        return;
+    acc = 0;
+
+    ObjectGuid const guid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([guid]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(guid);
+        if (!p || !p->IsInWorld() || !p->IsAlive() || !p->HasAura(SPELL_BLADESTORM))
+            return;
+        if (uint32 const ww = BestOwned(p, SPELL_WHIRLWIND))
+            p->CastSpell(p, ww, true);
+        if (uint32 const tc = BestOwned(p, SPELL_THUNDER_CLAP))
+            p->CastSpell(p, tc, true);
+    }, std::chrono::milliseconds(1));
+}
+
 void TryWarriorArmsOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_WARRIOR_ARMS)
@@ -2313,6 +2367,7 @@ public:
         g_fury.erase(guid);
         g_rogue.erase(guid);
         g_afflictionTick.erase(guid);
+        g_bladestormTick.erase(guid);
         g_eclipseTick.erase(guid);
         g_rejuvTick.erase(guid);
         auto army = g_armyGroup.find(guid);
@@ -2350,6 +2405,10 @@ public:
         {
             TickMageFrostBlizzard(player);
             TickMageFrostIceLance(player, g_mage[player->GetGUID().GetCounter()], diff);
+        }
+        else if (selected == SPELL_WARRIOR_ARMS)
+        {
+            TickWarriorArmsBladestorm(player, g_bladestormTick[player->GetGUID().GetCounter()], diff);
         }
         else if (selected == SPELL_ROGUE_COMBAT)
         {

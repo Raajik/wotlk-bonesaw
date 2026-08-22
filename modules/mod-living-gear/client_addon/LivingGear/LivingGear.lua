@@ -43,7 +43,9 @@ local PREFIX = "LG"
 local WHITE = "Interface\\Buttons\\WHITE8X8"
 local ACCOUNT_PERKS_ID = 910001
 
-local ACTION_NAMES = { "Bags", "Vendor", "Hold", "Reagent vault", "Skip", "Disenchant", "Learn" }
+-- Index order is a wire format shared with LgAction in LivingGear_Vault.cpp.
+-- Entries can be renamed but never reordered. "Destroy" (7) added 2026-08-22.
+local ACTION_NAMES = { "Bags", "Vendor", "Hold", "Reagent vault", "Skip", "Disenchant", "Learn", "Destroy" }
 local DEFAULT_RULES = {
     { match = 2, action = 2, negate = 0, quality = 0, text = "" },
     { match = 3, action = 3, negate = 0, quality = 0, text = "" },
@@ -4860,7 +4862,7 @@ end
 -- closure below is already near Lua 5.1's 60-upvalue ceiling (see the
 -- BuildLootPanel/BuildClassTabs split-outs above) and LG2 is an upvalue it
 -- already holds.
-function LG2.SendCraftPrep()
+function LG2.SendCraftPrep(force)
     local id
     if GetTradeSkillSelectionIndex and GetTradeSkillRecipeLink then
         local idx = GetTradeSkillSelectionIndex()
@@ -4889,12 +4891,57 @@ function LG2.SendCraftPrep()
     -- idempotent anyway (it no-ops once the bag already has enough), this
     -- just keeps us from whispering on every bag tick.
     local now = GetTime()
-    if LG2._craftPrepId == id and LG2._craftPrepAt and (now - LG2._craftPrepAt) < 1 then
+    if not force and LG2._craftPrepId == id and LG2._craftPrepAt and (now - LG2._craftPrepAt) < 1 then
         return
     end
     LG2._craftPrepId = id
     LG2._craftPrepAt = now
     SendLine("CRAFTPREP|" .. tostring(id))
+end
+
+-- Bug report #16, 2026-08-22: "STILL can't do professions directly from reagent
+-- bank, 'missing reagent: x' ... even though it shows up in the profession
+-- interface already."
+--
+-- Both halves of that sentence are true at once, and that is the whole bug.
+-- GetTradeSkillReagentInfo is hooked further up to report vault-inclusive
+-- counts, so the recipe LOOKS craftable. But the client validates a craft
+-- against the REAL bag contents in code we cannot hook, and refuses before the
+-- cast is ever sent -- so the server-side top-up in Spell::CheckCast
+-- (core-patch 0011) never gets the chance to run. The reagents have to be
+-- physically in the bags BEFORE Create is pressed, which is what CRAFTPREP does.
+--
+-- It was only being asked for on TRADE_SKILL_SHOW / TRADE_SKILL_UPDATE. Neither
+-- of those fires when you click a different recipe in the list, so the recipe
+-- you actually selected was the one case never prepared. Hooking the selection
+-- functions closes that, and hooking the craft calls keeps the bag topped up
+-- across repeat crafts as each one consumes what was staged.
+local function HookCraftPrep()
+    if LG2._craftPrepHooked then
+        return
+    end
+    LG2._craftPrepHooked = true
+    if type(TradeSkillFrame_SetSelection) == "function" then
+        hooksecurefunc("TradeSkillFrame_SetSelection", function()
+            pcall(LG2.SendCraftPrep, true)
+        end)
+    end
+    if type(CraftFrame_SetSelection) == "function" then
+        hooksecurefunc("CraftFrame_SetSelection", function()
+            pcall(LG2.SendCraftPrep, true)
+        end)
+    end
+    -- Fires as the craft starts, so the NEXT one in a repeat run is covered.
+    if type(DoTradeSkill) == "function" then
+        hooksecurefunc("DoTradeSkill", function()
+            pcall(LG2.SendCraftPrep, true)
+        end)
+    end
+    if type(DoCraft) == "function" then
+        hooksecurefunc("DoCraft", function()
+            pcall(LG2.SendCraftPrep, true)
+        end)
+    end
 end
 
 local ev = CreateFrame("Frame")
@@ -4953,6 +5000,7 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
         end
     elseif event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_UPDATE"
         or event == "CRAFT_SHOW" or event == "CRAFT_UPDATE" then
+        pcall(HookCraftPrep)
         pcall(LG2.SendCraftPrep)
     elseif event == "UNIT_SPELLCAST_SENT" or event == "UNIT_SPELLCAST_SUCCEEDED" then
         if a1 == "player" and LG2.IsAccountPerksName(a2) then

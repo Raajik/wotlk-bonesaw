@@ -79,10 +79,15 @@ enum LgMatch : uint8
 // withdraw path (583 items were stranded there). It now means what the
 // label says -- leave it alone. Stranded rows are handed back by
 // DrainLegacyQuestVault() at login.
+//
+// ACT_DESTROY (7) added 2026-08-22 for bug report #18 ("auto delete <item>").
+// ACT_SKIP already destroyed the item, but "Skip" reads as "leave it alone",
+// so nobody would ever have guessed it was the destroy action. Rather than
+// renumber a wire format, the honest label gets its own value.
 enum LgAction : uint8
 {
     ACT_BAG = 0, ACT_VENDOR = 1, ACT_HOLD = 2, ACT_REAGENT_VAULT = 3,
-    ACT_SKIP = 4, ACT_DISENCHANT = 5, ACT_LEARN = 6
+    ACT_SKIP = 4, ACT_DISENCHANT = 5, ACT_LEARN = 6, ACT_DESTROY = 7
 };
 
 struct LgRule
@@ -764,6 +769,23 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
         return ACT_REAGENT_VAULT;
     if (proto->Quality == ITEM_QUALITY_POOR)
         return ACT_VENDOR;
+    // Bug report #13, 2026-08-22: "still looting food/potions/consumables --
+    // automatically vendor/destroy please."
+    //
+    // The client's DEFAULT_RULES has vendored these since 2026-08-21, but those
+    // defaults only exist once a player opens and saves the autoloot rules UI.
+    // Anyone who never touched that screen -- i.e. almost everyone -- fell
+    // through to this function, which had no opinion on consumables and put
+    // them in the bags. Matching the client's documented defaults here means
+    // the behaviour is the same whether or not the UI has ever been opened.
+    //
+    // An explicit rule still wins: ResolveLootAction only calls this when no
+    // rule matched, so anyone who wants to keep their food just says so.
+    if (proto->Class == ITEM_CLASS_CONSUMABLE
+        && (proto->SubClass == ITEM_SUBCLASS_FOOD
+            || proto->SubClass == ITEM_SUBCLASS_SCROLL
+            || proto->IsPotion()))
+        return ACT_VENDOR;
     return ACT_BAG;
 }
 
@@ -820,8 +842,11 @@ static void ApplyLootRuleAction(ObjectGuid playerGuid, ObjectGuid itemGuid, uint
             sObjectMgr->GetItemTemplate(itemId) ? sObjectMgr->GetItemTemplate(itemId)->Name1 : "Item"));
         return;
     }
-    if (action == ACT_SKIP)
+    if (action == ACT_SKIP || action == ACT_DESTROY)
+    {
         player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+        return;
+    }
     if (action == ACT_DISENCHANT)
     {
         // Same path the engine's own group-loot disenchant roll uses

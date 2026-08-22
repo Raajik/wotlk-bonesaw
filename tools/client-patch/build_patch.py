@@ -166,7 +166,15 @@ CUSTOM_SPELLS = {
     910086: ("*Warrior: Fury Haste", "Melee haste from the Fury class perk.", 38),
     910087: ("*Living Gear Speed", "Movement speed +40% for 30 seconds.", 516),
     910088: ("*Quests - Find", "Adds up to 5 available quests in your current zone, lowest level first. Unlocked by completing 50 quests.", 141),
-    910089: ("*Kill Combo", "Party kills stack this, up to 10. Kill XP +20% and movement speed +5% per stack. Refreshes for 10 minutes on every kill, and survives logging out.", 95),
+    # No leading asterisk (bug report #14): the "*" prefix marks perks the player
+    # casts from the Account Perks panel. Kill Combo is a buff that happens TO
+    # you, so it reads as a normal buff and is named like one.
+    910089: ("Kill Combo", "Kills stack this, up to 10.
+
+Kill XP increased by 20% per stack.
+Movement speed increased by 5% per stack.
+
+Refreshes to 10 minutes on every kill. Survives death and logging out.", 95),
     910090: ("*Quests - Finish", "Summon the questgivers for completed quests in your log for 60 sec. Turn in and take follow-ups from them. Unlocked by completing 1 quest.", 141),
     910091: ("*Attuned Armory", "Make a wearable copy of an item you have attuned. The attunement stays on the account.", 249),
     910092: ("*Solo Queue", "Queue for dungeons and raids by yourself. No group required.", 169),
