@@ -253,6 +253,31 @@ uint32 VaultRemove(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEn
     return take;
 }
 
+// Set while a vault withdraw is materialising items into the player's bags.
+//
+// Player::StoreNewItem() fires OnPlayerStoreNewItem, which is the very hook
+// the autoloot rule engine runs on (ApplyLootRule) -- and a reagent coming
+// OUT of the reagent vault matches the same rule that put it in there, so
+// every withdraw was immediately re-deposited a tick later. Clicking a
+// Reagents row appeared to do nothing; DEPOSITALL looked like the only
+// direction that worked. Worse, this also broke crafting outright: the
+// whole point of PrepareCraftReagents (CRAFTPREP) is to put reagents
+// somewhere the 3.3.5 tradeskill window can see them, and they were being
+// vacuumed straight back out before the client ever counted them, so every
+// recipe kept reading "0 craftable" / missing reagents even with a full
+// vault. This flag is the "these items were deliberately handed to the
+// player, do not re-file them" signal, checked once in ApplyLootRule.
+//
+// A depth counter rather than a bool: TopUpReagentFromVault can be reached
+// from inside a withdraw path already holding it.
+uint32 g_vaultGrantDepth = 0;
+
+struct VaultGrantScope
+{
+    VaultGrantScope() { ++g_vaultGrantDepth; }
+    ~VaultGrantScope() { --g_vaultGrantDepth; }
+};
+
 // Player::AddItem() silently drops whatever doesn't fit and still returns
 // true, so anything pulling out of the vault has to do the store by hand
 // to learn how much actually landed -- otherwise the overflow is removed
@@ -267,6 +292,7 @@ uint32 StoreFromVault(Player* player, uint32 itemEntry, uint32 count)
     uint32 const fits = count > noSpace ? count - noSpace : 0;
     if (!fits || dest.empty())
         return 0;
+    VaultGrantScope const guard;
     Item* item = player->StoreNewItem(dest, itemEntry, true);
     if (!item)
         return 0;
@@ -313,22 +339,38 @@ void TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
 // cheaper: no quest-log walk per looted item.
 std::unordered_set<uint32> g_questItemIds;
 
+// The same index the other way round: which quests each item id belongs to.
+// Needed by PurgeCompletedQuestItems -- "is this item still wanted by
+// anything" is only answerable if you can enumerate every quest that
+// references it, and walking all ~10k quest templates per bag slot is not
+// an option.
+std::unordered_map<uint32, std::vector<uint32>> g_questItemQuests;
+
+void NoteQuestItem(uint32 itemId, uint32 questId)
+{
+    if (!itemId)
+        return;
+    g_questItemIds.insert(itemId);
+    std::vector<uint32>& quests = g_questItemQuests[itemId];
+    if (std::find(quests.begin(), quests.end(), questId) == quests.end())
+        quests.push_back(questId);
+}
+
 void BuildQuestItemIndex()
 {
     g_questItemIds.clear();
+    g_questItemQuests.clear();
     for (auto const& questPair : sObjectMgr->GetQuestTemplates())
     {
         Quest const* quest = questPair.second;
         if (!quest)
             continue;
+        uint32 const questId = quest->GetQuestId();
         for (uint32 id : quest->RequiredItemId)
-            if (id)
-                g_questItemIds.insert(id);
+            NoteQuestItem(id, questId);
         for (uint32 id : quest->ItemDrop)
-            if (id)
-                g_questItemIds.insert(id);
-        if (uint32 const src = quest->GetSrcItemId())
-            g_questItemIds.insert(src);
+            NoteQuestItem(id, questId);
+        NoteQuestItem(quest->GetSrcItemId(), questId);
     }
     LOG_INFO("server.loading", "Living Gear vault: indexed {} quest-related item ids", g_questItemIds.size());
 }
@@ -362,6 +404,125 @@ bool IsQuestItem(ItemTemplate const* proto, Player* player = nullptr)
                 return true;
     }
     return false;
+}
+
+// Quest leftovers: an item is only worth deleting if it is quest-only gear
+// (ITEM_CLASS_QUEST or BIND_QUEST_ITEM) AND every quest that references it
+// has already been turned in by this character.
+//
+// Both halves matter. Plenty of ordinary trade goods and consumables are
+// listed as some quest's RequiredItemId -- Thick Leather, Runecloth, Refreshing
+// Spring Water -- and deleting a stack of those because one obscure quest that
+// wants them happens to be complete would be a disaster, so the class/bind
+// test is a hard gate, not a heuristic. And an item shared between a done
+// quest and an undone one (very common in quest chains and in the "collect N,
+// two different NPCs want them" pattern) has to survive.
+bool IsSpentQuestItem(Player* player, ItemTemplate const* proto)
+{
+    if (!player || !proto)
+        return false;
+    if (proto->Class != ITEM_CLASS_QUEST && proto->Bonding != BIND_QUEST_ITEM)
+        return false;
+    // An item that starts a quest is only spent once that quest is done --
+    // otherwise this would eat quest-starting drops before they're used.
+    if (proto->StartQuest && !player->IsQuestRewarded(proto->StartQuest))
+        return false;
+
+    auto const it = g_questItemQuests.find(proto->ItemId);
+    if (it == g_questItemQuests.end() || it->second.empty())
+        return false; // referenced by no quest at all -- not ours to judge
+    for (uint32 questId : it->second)
+    {
+        if (!player->IsQuestRewarded(questId))
+            return false;
+        // "Rewarded" is not "done" for a quest you can hand in again.
+        // Dailies, weeklies and plain repeatables are rewarded and available
+        // at the same time, and stockpiling their turn-in items between runs
+        // is normal play -- deleting that stockpile would be the single most
+        // destructive thing this function could do.
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest || quest->IsRepeatable() || quest->IsDaily() || quest->IsWeekly()
+            || quest->IsMonthly() || quest->IsSeasonal())
+            return false;
+    }
+    return true;
+}
+
+// Deletes quest items whose quests are all already turned in. Runs at login
+// and again after every turn-in, which is where they actually accumulate:
+// Player::RewardQuest only removes the exact RequiredItemCount the quest
+// asked for, so overflow from a shared drop, items from a quest that never
+// takes them back, and anything looted after the turn-in all just sit in the
+// bags forever.
+void PurgeCompletedQuestItems(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    // Never run against a half-built quest state: the index is what decides
+    // "no quest wants this", and an empty one would make that true of
+    // everything.
+    if (g_questItemQuests.empty())
+        return;
+
+    std::vector<Item*> doomed;
+    auto consider = [&doomed, player](Item* item)
+    {
+        if (!item)
+            return;
+        if (ItemTemplate const* proto = item->GetTemplate())
+            if (IsSpentQuestItem(player, proto))
+                doomed.push_back(item);
+    };
+
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Bag* container = player->GetBagByPos(bag);
+        if (!container)
+            continue;
+        for (uint8 slot = 0; slot < container->GetBagSize(); ++slot)
+            consider(container->GetItemByPos(slot));
+    }
+
+    if (doomed.empty())
+        return;
+
+    // Drop anything still wanted by an active log quest. Done as a second
+    // pass over the (small) candidate list rather than inside IsSpentQuestItem
+    // so the quest-log walk happens at most once per candidate item, not once
+    // per bag slot.
+    std::unordered_set<uint32> activeItems;
+    for (uint16 logSlot = 0; logSlot < MAX_QUEST_LOG_SIZE; ++logSlot)
+    {
+        uint32 const questId = player->GetQuestSlotQuestId(logSlot);
+        if (!questId)
+            continue;
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest)
+            continue;
+        for (uint32 id : quest->RequiredItemId)
+            if (id)
+                activeItems.insert(id);
+        for (uint32 id : quest->ItemDrop)
+            if (id)
+                activeItems.insert(id);
+        if (uint32 const src = quest->GetSrcItemId())
+            activeItems.insert(src);
+    }
+
+    uint32 removed = 0;
+    for (Item* item : doomed)
+    {
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || activeItems.count(proto->ItemId))
+            continue;
+        removed += item->GetCount();
+        player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+    }
+    if (removed)
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "[Bags] Cleared {} quest item(s) left over from quests you have already completed.", removed);
 }
 
 // The engine only ever disenchants behind a skill check (Group.cpp's
@@ -631,6 +792,11 @@ static void ApplyLootRuleAction(ObjectGuid playerGuid, ObjectGuid itemGuid, uint
 
 void ApplyLootRule(Player* player, Item* item)
 {
+    // A withdraw is not a loot. Without this the rule engine files the item
+    // straight back into the vault it just came out of -- see
+    // g_vaultGrantDepth above.
+    if (g_vaultGrantDepth)
+        return;
     if (!player || !item || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
         || !AutolootOn(player->GetSession()->GetAccountId()))
         return;
@@ -1114,7 +1280,8 @@ public:
     VaultPlayer() : PlayerScript("LivingGearVaultPlayer", {
         PLAYERHOOK_ON_LOGIN,
         PLAYERHOOK_ON_STORE_NEW_ITEM,
-        PLAYERHOOK_ON_CREATURE_KILL
+        PLAYERHOOK_ON_CREATURE_KILL,
+        PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST
     }) { }
 
     // *Autoloot (910008) is "on by default" -- there's no unlock condition,
@@ -1155,6 +1322,25 @@ public:
         SendAutolootSync(player);
         GrantAccountKeys(player);
         DrainLegacyQuestVault(player);
+        PurgeCompletedQuestItems(player);
+    }
+
+    // Fired at the tail of Player::RewardQuest (PlayerQuest.cpp), so the
+    // quest is already in m_RewardedQuests by the time this runs -- which is
+    // exactly what makes its own leftovers collectable here. Deferred a tick
+    // anyway: this is still inside the turn-in call stack, and destroying
+    // items from in there is the same hazard ApplyLootRule documents above.
+    void OnPlayerCompleteQuest(Player* player, Quest const* /*quest*/) override
+    {
+        if (!player)
+            return;
+        ObjectGuid const playerGuid = player->GetGUID();
+        player->m_Events.AddEventAtOffset([playerGuid]()
+        {
+            if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+                if (p->IsInWorld())
+                    PurgeCompletedQuestItems(p);
+        }, std::chrono::milliseconds(1));
     }
 
     void OnPlayerStoreNewItem(Player* player, Item* item, uint32 /*count*/) override

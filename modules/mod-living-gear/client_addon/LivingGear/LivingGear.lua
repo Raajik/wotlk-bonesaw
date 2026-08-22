@@ -82,7 +82,8 @@ local WORLD_UNLOCKS = {
     { id = 910170, name = "Track Ore", how = "Shows nearby ore veins on the minimap.", toggle = true, toggleKey = "trackOre" },
     { id = 910171, name = "Track Herbs", how = "Shows nearby herbs on the minimap.", toggle = true, toggleKey = "trackHerb" },
     { id = 910106, name = "Class Buffs", how = "Clear Naxxramas 25 on a class. That class then applies 10% primary stats to you and nearby party." },
-    { id = 910107, name = "Riding", how = "Train riding on any character. Alts can mount from level 1." },
+    { id = 910107, name = "Riding", how = "Train riding on any character. Alts can mount from level 1, and every mount and pet you own is shared across the account." },
+    { id = 910172, name = "CC Reduction", how = "Get crowd controlled once. Stuns, roots, fears, snares and other crowd control then last 95% less on you." },
     { id = 910108, name = "Auto-Accept", how = "Accept a quest. Then auto-accept when you talk to an NPC. Hold Shift to skip." },
     { id = 910091, name = "Armory", how = "Copy an attuned item into your bags to wear." },
     { id = 910003, name = "Auction", how = "List or bid at an auction house." },
@@ -466,6 +467,10 @@ local db = {
     vault = {},
     autoloot = { on = 0, corpses = 0, need = 10, de = 0 },
     attune = { on = 1, count = 0, off = 0 },
+    -- [itemId] = true for every item entry attuned on this account. Fed by
+    -- ATL| (batched, at sync) and ATT| (one entry, live as it attunes);
+    -- read only by the tooltip's ATTUNED line.
+    attuned = {},
     tab = "world",
     addMatch = 1,
     addAction = 1,
@@ -4070,6 +4075,9 @@ function LG2.HandleAddon(prefix, message)
         db.vault = {}
         db.armory = {}
         db.attune = { on = 1, count = 0, off = 0 }
+        -- Rebuilt in full by the ATL| burst that follows in this same sync,
+        -- so clearing here is what keeps a de-attuned entry from lingering.
+        db.attuned = {}
         db.jump = { mode = 2, max = 0 }
         -- db.solo/db.autoMount are NOT reset here, same reasoning as
         -- db.perks above: they're owned by the independent SQ|/AM|
@@ -4165,6 +4173,22 @@ function LG2.HandleAddon(prefix, message)
         db.attune.on = tonumber(p[2]) or 0
         db.attune.count = tonumber(p[3]) or 0
         db.attune.off = tonumber(p[4]) or 0
+        return
+    end
+    if p[1] == "ATL" then
+        for id in string.gmatch(p[2] or "", "[^,]+") do
+            local n = tonumber(id)
+            if n then
+                db.attuned[n] = true
+            end
+        end
+        return
+    end
+    if p[1] == "ATT" then
+        local n = tonumber(p[2])
+        if n then
+            db.attuned[n] = true
+        end
         return
     end
     if p[1] == "JMP" then
@@ -4682,6 +4706,31 @@ function LG2.AddLivingFooter(tip, it)
     tip:AddLine(string.format("|cff66ccffLiving Gear|r  Lv %s  %s", it.lv or "1", xp), 1, 1, 1)
 end
 
+-- "Do I already have this attuned?" -- the one question a player asks while
+-- looking at a drop, which until now could only be answered by opening the
+-- Armory and scrolling. Runs off db.attuned (ATL|/ATT|), so it is a table
+-- lookup with no server round trip and no delay.
+--
+-- Guarded by its own _lgAttuned flag rather than sharing _lgFooter: the
+-- footer is added from OnTooltipSetItem only, but this also has to survive
+-- the paper doll re-showing the same tooltip every frame, and one shared
+-- flag meant whichever ran first suppressed the other.
+function LG2.AddAttunedLine(tip)
+    if tip._lgAttuned then
+        return
+    end
+    local _, link = tip:GetItem()
+    if not link then
+        return
+    end
+    local id = LG2.ItemIdFromArg(link)
+    if not id or not db.attuned[id] then
+        return
+    end
+    tip._lgAttuned = true
+    tip:AddLine("|cff66ccffATTUNED|r", 0.4, 0.8, 1)
+end
+
 local function LivingForTip(tip)
     local key = tip and tip._lgKey
     if not key then
@@ -4713,6 +4762,7 @@ local function HookTooltip(tip)
     local origInv = tip.SetInventoryItem
     tip.SetInventoryItem = function(self, unit, slot, ...)
         self._lgFooter = nil
+        self._lgAttuned = nil
         self._lgUsed = nil
         if unit == "player" and slot then
             self._lgKey = "inv:" .. tostring(tonumber(slot) - 1)
@@ -4727,6 +4777,7 @@ local function HookTooltip(tip)
     local origBag = tip.SetBagItem
     tip.SetBagItem = function(self, bag, slot, ...)
         self._lgFooter = nil
+        self._lgAttuned = nil
         self._lgUsed = nil
         if bag ~= nil and slot ~= nil then
             self._lgKey = "bag:" .. tostring(bag) .. ":" .. tostring(slot)
@@ -4742,6 +4793,11 @@ local function HookTooltip(tip)
     -- paper doll refreshes the tooltip every frame while hovered.
     tip:HookScript("OnTooltipSetItem", function(self)
         HideDurability(self)
+        -- Before the Living Gear footer and outside its "is this a tracked
+        -- living item" gate: attunement is an account fact about the item
+        -- entry, so it applies to a vendor listing or a link in chat just
+        -- as much as to a piece the server is tracking for this character.
+        LG2.AddAttunedLine(self)
         local it = LivingForTip(self)
         if not it then
             return
@@ -4759,6 +4815,7 @@ local function HookTooltip(tip)
     tip:HookScript("OnHide", function(self)
         self._lgKey = nil
         self._lgFooter = nil
+        self._lgAttuned = nil
         self._lgUsed = nil
     end)
 end

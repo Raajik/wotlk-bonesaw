@@ -83,6 +83,7 @@ bool g_metaReady = false;
 bool g_hasSpeedCapCol = false;
 bool g_hasRidingCol = false;
 bool g_hasClassBuffTable = false;
+bool g_hasAccountMountTable = false;
 
 void DetectNextSchema()
 {
@@ -106,6 +107,10 @@ void DetectNextSchema()
         "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
         "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_class_buff_unlock'"))
         g_hasClassBuffTable = (*tables)[0].Get<uint64>() > 0;
+    if (QueryResult tables = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_mount'"))
+        g_hasAccountMountTable = (*tables)[0].Get<uint64>() > 0;
 }
 
 void SendLine(Player* player, std::string const& line)
@@ -334,6 +339,100 @@ void NoteRiding(Player* player)
         return;
     SaveAccountRiding(player->GetSession()->GetAccountId(), val);
     UnlockPerk(player, SPELL_RIDING_SHARE);
+}
+
+// ---------------------------------------------------------------------
+// Account-wide mounts and companions.
+//
+// Riding skill has been shared across the account for a while (above), but
+// the mounts and pets themselves were not -- so an alt could ride at level 1
+// and had nothing to ride. Same shape as the account Key Ring
+// (LivingGear_Vault.cpp RecordAccountKey/GrantAccountKeys) and for the same
+// reason: nothing in this codebase writes into an offline character's
+// spellbook, so a learn is recorded account-wide here and handed to each
+// other character on its own next login.
+// ---------------------------------------------------------------------
+
+// Skill line 777 (Mounts) / 778 (Companions) is what the 3.3.5 client itself
+// uses to sort a spell into the spellbook's Pet tab, so it is exactly the set
+// of spells a player would call "my mounts and pets" -- and it is a much
+// tighter test than "has SPELL_AURA_MOUNTED", which also catches vehicle
+// auras, taxi/quest-scripted rides and boss mechanics we have no business
+// copying onto alts.
+bool IsCollectionSpell(uint32 spellId)
+{
+    SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+    for (auto itr = bounds.first; itr != bounds.second; ++itr)
+        if (itr->second->SkillLine == SKILL_MOUNTS || itr->second->SkillLine == SKILL_COMPANIONS)
+            return true;
+    return false;
+}
+
+void RecordAccountCollection(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetSession() || !spellId)
+        return;
+    DetectNextSchema();
+    if (!g_hasAccountMountTable || !IsCollectionSpell(spellId))
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT IGNORE INTO `lg_account_mount` (`account_id`, `spell_id`) VALUES ({}, {})",
+        player->GetSession()->GetAccountId(), spellId);
+}
+
+// Records everything this character already knows. Without it the feature
+// would only ever see mounts learned from the moment it shipped, and every
+// collection already sitting in the DB would stay stranded on whichever
+// character earned it.
+void HarvestAccountCollection(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    DetectNextSchema();
+    if (!g_hasAccountMountTable)
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    // One statement, not one per mount: a collector logging in would
+    // otherwise fire a hundred-odd synchronous writes on the world thread
+    // every single login, all of them no-ops after the first time.
+    std::string values;
+    for (auto const& [spellId, state] : player->GetSpellMap())
+    {
+        if (!state || state->State == PLAYERSPELL_REMOVED || !state->Active)
+            continue;
+        if (!IsCollectionSpell(spellId))
+            continue;
+        if (!values.empty())
+            values += ',';
+        values += Acore::StringFormat("({},{})", accountId, spellId);
+    }
+    if (values.empty())
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT IGNORE INTO `lg_account_mount` (`account_id`, `spell_id`) VALUES {}", values);
+}
+
+void GrantAccountCollection(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    DetectNextSchema();
+    if (!g_hasAccountMountTable)
+        return;
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT `spell_id` FROM `lg_account_mount` WHERE `account_id` = {}",
+        player->GetSession()->GetAccountId());
+    if (!result)
+        return;
+    do
+    {
+        uint32 const spellId = (*result)[0].Get<uint32>();
+        // The spell may have come from a character of the other faction or a
+        // different race. That is the entire point -- learnSpell does not
+        // enforce SkillLineAbility RaceMask, so the alt simply gets it.
+        if (!player->HasSpell(spellId) && sSpellMgr->GetSpellInfo(spellId))
+            player->learnSpell(spellId);
+    } while (result->NextRow());
 }
 
 uint8 GroupMedianLevel(Group* group, bool humansOnly)
@@ -655,6 +754,10 @@ public:
             }
         }
         ApplyAccountRiding(player);
+        // Harvest before grant: what this character already owns joins the
+        // account pool in the same login it receives everyone else's.
+        HarvestAccountCollection(player);
+        GrantAccountCollection(player);
         if (g_classBuffUnlock[accountId].count(player->getClass()))
             UnlockPerk(player, SPELL_CLASS_BUFFS);
         ApplyWeaponPeak(player);
@@ -723,9 +826,10 @@ public:
         }
     }
 
-    void OnPlayerLearnSpell(Player* player, uint32 /*spellId*/) override
+    void OnPlayerLearnSpell(Player* player, uint32 spellId) override
     {
         NoteRiding(player);
+        RecordAccountCollection(player, spellId);
     }
 
     void OnPlayerUpdateSkill(Player* player, uint32 skillId, uint32 /*value*/, uint32 /*max*/,

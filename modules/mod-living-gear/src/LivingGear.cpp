@@ -395,10 +395,12 @@ static void BankAttunement(Player* player, uint32 itemEntry, LgItemState const& 
 
     uint32 const accountId = player->GetSession()->GetAccountId();
     float existingTotal = 0.0f;
+    bool firstTime = true;
     if (QueryResult prev = CharacterDatabase.Query(
         "SELECT `str`, `agi`, `sta`, `intel`, `spi`, `armor` FROM `lg_absorb` "
         "WHERE `account_id` = {} AND `item_entry` = {}", accountId, itemEntry))
     {
+        firstTime = false;
         Field* f = prev->Fetch();
         existingTotal = f[0].Get<float>() + f[1].Get<float>() + f[2].Get<float>()
             + f[3].Get<float>() + f[4].Get<float>() + f[5].Get<float>();
@@ -414,6 +416,13 @@ static void BankAttunement(Player* player, uint32 itemEntry, LgItemState const& 
         "`intel`, `spi`, `armor`, `item_level`) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
         accountId, itemEntry, absorb.str, absorb.agi, absorb.sta,
         absorb.intel, absorb.spi, absorb.armor, st.level);
+
+    // Keep the client's attuned set live so the tooltip's ATTUNED line
+    // appears the moment an item first attunes, rather than at next login.
+    // Only on the row's first appearance -- every subsequent level-up
+    // re-banks the same entry and the client already has it.
+    if (firstTime)
+        ::LivingGear_SendAddonLine(player, Acore::StringFormat("ATT|{}", itemEntry));
 }
 
 // Shared level-up path for both equipped gear (GrantKillXp) and
@@ -679,6 +688,49 @@ void SaveUiScale(uint32 accountId, uint32 pct)
         accountId, pct, pct);
 }
 
+// ---------------------------------------------------------------------
+// Attuned-item set push (ATL| / ATT|).
+//
+// The Armory panel already knew which items were attuned, but only as its
+// own on-demand ARM| listing -- nothing the tooltip code could consult. So
+// the one question a player actually asks while looking at a drop, "do I
+// already have this attuned?", had no answer anywhere in the UI and the
+// only way to find out was to open the Armory and scroll.
+//
+// Pushed as the bare entry ids, batched, for the same reason PKALL is
+// batched (LivingGear_Perks.cpp SendPerkSync): the WotLK addon-whisper
+// channel truncates somewhere around 255 bytes and a mature account has
+// well over a thousand attuned entries, so one line would silently lose
+// most of them. The client's handler is purely additive, so splitting is
+// safe. Names are deliberately not sent -- the client already has the item
+// in its own cache by the time it is rendering a tooltip for it.
+// ---------------------------------------------------------------------
+static void SendAttunedSet(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT `item_entry` FROM `lg_absorb` WHERE `account_id` = {}",
+        player->GetSession()->GetAccountId());
+    if (!result)
+        return;
+    std::string ids;
+    do
+    {
+        std::string next = std::to_string((*result)[0].Get<uint32>());
+        if (!ids.empty() && ids.size() + 1 + next.size() > 200)
+        {
+            SendAddonLine(player, "ATL|" + ids);
+            ids.clear();
+        }
+        if (!ids.empty())
+            ids += ',';
+        ids += next;
+    } while (result->NextRow());
+    if (!ids.empty())
+        SendAddonLine(player, "ATL|" + ids);
+}
+
 static void SendLivingItem(Player* player, Item* item, std::string const& loc)
 {
     if (!player || !item)
@@ -766,6 +818,8 @@ static void SendAddonSync(Player* player, bool includeBags = true)
         }
         SendAddonLine(player, Acore::StringFormat("AA|{}|{}|{}", autoOn, count, autoOff));
     }
+
+    SendAttunedSet(player);
 
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {

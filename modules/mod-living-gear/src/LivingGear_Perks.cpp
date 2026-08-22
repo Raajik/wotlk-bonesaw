@@ -98,6 +98,14 @@ uint32 const SPELL_PULL_RADIUS = 910168;
 // can't check the native spell's real duration from our sparse table.
 uint32 const SPELL_TRACK_ORE = 910170;
 uint32 const SPELL_TRACK_HERB = 910171;
+// CC Reduction (2026-08-22): passive account perk, cuts the duration of any
+// crowd control landing on you by 95%. Deliberately not a real castable
+// spell (learnSpellToo = false at its UnlockPerk call) -- there is nothing
+// to press, and a spell with no SkillLineAbility row would just land in the
+// General spellbook tab. Unlocks the first time anything crowd controls
+// you, which for most characters is the first pull that goes wrong.
+uint32 const SPELL_CC_REDUCTION = 910172;
+float const CC_REDUCTION_PCT = 0.95f;
 uint32 const NATIVE_FIND_MINERALS = 2580;
 uint32 const NATIVE_FIND_HERBS = 2383;
 uint32 const SPELL_SUBTLETY = 910037;
@@ -779,6 +787,85 @@ void NeutralizeStealthSpeed(Unit* unit, Aura* aura)
             || type == SPELL_AURA_MOD_INCREASE_SPEED) && eff->GetAmount() < 0)
             eff->ChangeAmount(0);
     }
+}
+
+// True for anything a player would call crowd control: stuns, roots, fears,
+// charms, sleeps, polymorphs, snares and silences.
+//
+// Two tests, because neither alone covers the field. The mechanic mask is
+// the authoritative one and is exactly the set the engine itself calls
+// "movement impairment and loss of control", but a fair number of 3.3.5
+// spells carry MECHANIC_NONE and express the CC purely through the aura
+// type, so those are matched by effect as well.
+bool IsCrowdControlAura(Aura const* aura)
+{
+    SpellInfo const* info = aura ? aura->GetSpellInfo() : nullptr;
+    if (!info || info->IsPositive())
+        return false;
+    if (info->GetAllEffectsMechanicMask() & IMMUNE_TO_MOVEMENT_IMPAIRMENT_AND_LOSS_CONTROL_MASK)
+        return true;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        AuraEffect const* eff = aura->GetEffect(i);
+        if (!eff)
+            continue;
+        switch (eff->GetAuraType())
+        {
+            case SPELL_AURA_MOD_STUN:
+            case SPELL_AURA_MOD_ROOT:
+            case SPELL_AURA_MOD_FEAR:
+            case SPELL_AURA_MOD_CONFUSE:
+            case SPELL_AURA_MOD_CHARM:
+            case SPELL_AURA_MOD_POSSESS:
+            case SPELL_AURA_MOD_PACIFY:
+            case SPELL_AURA_MOD_SILENCE:
+            case SPELL_AURA_MOD_PACIFY_SILENCE:
+                return true;
+            case SPELL_AURA_MOD_DECREASE_SPEED:
+                if (eff->GetAmount() < 0)
+                    return true;
+                break;
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
+// *CC Reduction (910172): 95% off the duration of every crowd control effect
+// that lands on the player. Done here rather than as a pile of
+// SPELL_AURA_MECHANIC_DURATION_MOD effects in spell_dbc because that aura is
+// one mechanic per effect and a spell only has three effects -- covering the
+// ~14 control mechanics that way is not possible at all.
+//
+// Only ever shortens: an aura that already resolved to less than 5% of its
+// base (diminishing returns did most of the work, or a resist shortened it)
+// is left alone rather than being lengthened back up.
+void ReduceCrowdControl(Unit* unit, Aura* aura)
+{
+    if (!unit || !aura || !unit->IsPlayer())
+        return;
+    if (!IsCrowdControlAura(aura))
+        return;
+    Player* player = unit->ToPlayer();
+    // Unlock on the way through: the first thing that ever crowd controls
+    // you is both the unlock condition and the first effect it applies to.
+    UnlockPerk(player, SPELL_CC_REDUCTION,
+        "|cff66ccff[Account Perks]|r *CC Reduction unlocked -- crowd control lasts 95% less on you.", false);
+    if (!HasPerk(player, SPELL_CC_REDUCTION))
+        return;
+
+    int32 const maxDuration = aura->GetMaxDuration();
+    if (maxDuration <= 0) // permanent (-1) or already instant -- nothing to cut
+        return;
+    // Floor at 1ms: 0 means "permanent" to Aura, so rounding a very short
+    // stun down to nothing would turn it into a forever-stun.
+    int32 const reduced = std::max<int32>(1, int32(float(maxDuration) * (1.0f - CC_REDUCTION_PCT)));
+    if (reduced >= maxDuration)
+        return;
+    aura->SetMaxDuration(reduced);
+    if (aura->GetDuration() > reduced)
+        aura->SetDuration(reduced);
 }
 
 // Performs a single chain-ambush hit: summons a short-lived clone at the
@@ -2113,6 +2200,7 @@ public:
     {
         UniformMount(unit, aura);
         NeutralizeStealthSpeed(unit, aura);
+        ReduceCrowdControl(unit, aura);
     }
 };
 
