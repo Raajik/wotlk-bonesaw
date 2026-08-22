@@ -169,12 +169,7 @@ CUSTOM_SPELLS = {
     # No leading asterisk (bug report #14): the "*" prefix marks perks the player
     # casts from the Account Perks panel. Kill Combo is a buff that happens TO
     # you, so it reads as a normal buff and is named like one.
-    910089: ("Kill Combo", "Kills stack this, up to 10.
-
-Kill XP increased by 20% per stack.
-Movement speed increased by 5% per stack.
-
-Refreshes to 10 minutes on every kill. Survives death and logging out.", 95),
+    910089: ("Kill Combo", "Kills stack this, up to 10. Kill XP increased by 20% per stack. Movement speed increased by 5% per stack. Refreshes to 10 minutes on every kill. Survives death and logging out.", 95),
     910090: ("*Quests - Finish", "Summon the questgivers for completed quests in your log for 60 sec. Turn in and take follow-ups from them. Unlocked by completing 1 quest.", 141),
     910091: ("*Attuned Armory", "Make a wearable copy of an item you have attuned. The attunement stays on the account.", 249),
     910092: ("*Solo Queue", "Queue for dungeons and raids by yourself. No group required.", 169),
