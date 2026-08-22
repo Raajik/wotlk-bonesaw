@@ -30,6 +30,7 @@
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "StringFormat.h"
 #include "TemporarySummon.h"
 #include "Trainer.h"
 #include "Unit.h"
@@ -278,6 +279,7 @@ struct LgAmenityConfig
     bool learnStable = true;
     bool learnBind = true;
     bool learnFlight = true;
+    bool autoTrain = true;
 
     void Load()
     {
@@ -288,10 +290,52 @@ struct LgAmenityConfig
         learnStable = sConfigMgr->GetOption<bool>("LivingGear.LearnStableSpell", true);
         learnBind = sConfigMgr->GetOption<bool>("LivingGear.LearnBindSpell", true);
         learnFlight = sConfigMgr->GetOption<bool>("LivingGear.LearnFlightSpell", true);
+        autoTrain = sConfigMgr->GetOption<bool>("LivingGear.AutoTrainClassSpells", true);
     }
 };
 
 LgAmenityConfig g_cfg;
+
+// Bug report #1, 2026-08-22: "Not auto-training class spells on level up."
+//
+// There was never any auto-training to break -- the module only ever offered a
+// class trainer WINDOW from anywhere (SPELL_TRAINER). This adds the thing the
+// report is actually asking for: every ability your own class trainer would
+// teach you is learned automatically, free, the moment you qualify.
+//
+// The trainer's own CanTeachSpell() decides what qualifies, so level gates,
+// prerequisite ranks and skill requirements are all judged exactly as they
+// would be at the NPC. Money is simply not consulted -- charging for something
+// handed over automatically would be a tax on levelling, not a decision.
+//
+// Runs on level up and again at login, the second so existing characters catch
+// up on everything they were owed before this shipped rather than having to
+// gain a level first.
+void AutoTrainClassSpells(Player* player)
+{
+    if (!g_cfg.autoTrain || !player || !player->GetSession())
+        return;
+    uint32 const entry = ClassTrainerEntry(player->getClass());
+    if (!entry)
+        return;
+    Trainer::Trainer const* data = sObjectMgr->GetTrainer(entry);
+    if (!data || !data->IsTrainerValidForPlayer(player))
+        return;
+
+    uint32 learned = 0;
+    for (Trainer::Spell const& trainerSpell : data->GetSpells())
+    {
+        if (!trainerSpell.SpellId || player->HasSpell(trainerSpell.SpellId))
+            continue;
+        if (!data->CanTeachSpell(player, &trainerSpell))
+            continue;
+        player->learnSpell(trainerSpell.SpellId);
+        ++learned;
+    }
+    if (learned)
+        Say(player, Acore::StringFormat(
+            "|cff66ccff[Living Gear]|r Learned {} new class ability(s).", learned).c_str());
+}
 
 void GrantAmenityPerks(Player* player)
 {
@@ -325,6 +369,7 @@ class AmenitiesPlayer : public PlayerScript
 public:
     AmenitiesPlayer() : PlayerScript("LivingGearAmenitiesPlayer", {
         PLAYERHOOK_ON_LOGIN,
+        PLAYERHOOK_ON_LEVEL_CHANGED,
         PLAYERHOOK_ON_SPELL_CAST,
         PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST
     }) { }
@@ -334,6 +379,12 @@ public:
         GrantAmenityPerks(player);
         ApplyQuestSpeedAura(player);
         CheckQuestSpeedPerk(player);
+        AutoTrainClassSpells(player);
+    }
+
+    void OnPlayerLevelChanged(Player* player, uint8 /*oldLevel*/) override
+    {
+        AutoTrainClassSpells(player);
     }
 
     void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override

@@ -427,10 +427,28 @@ void BuildQuestItemIndex()
     LOG_INFO("server.loading", "Living Gear vault: indexed {} quest-related item ids", g_questItemIds.size());
 }
 
-// `player` is only consulted if the index is empty (module loaded before
-// quests, or a bad startup) -- the old quest-log walk is kept purely as
-// that fallback so a failed index degrades to the previous behaviour
-// instead of to "nothing is a quest item".
+// 2026-08-22, bug reports #2 and #7: this used to answer "is this item wanted
+// by ANY quest in the game", which is 5147 item ids -- including Wool Cloth
+// (10 quests), Runecloth (30) and Star Ruby (2). Since IsReagentItem() excludes
+// quest items, that quietly barred a large slice of ordinary trade goods from
+// the reagent vault for every player permanently, whether or not they had ever
+// seen the quest. Both halves of the complaint -- autoloot not filing reagents,
+// and the Deposit All button appearing to do nothing -- were the same cause:
+// the items were being correctly identified as "not reagents".
+//
+// The question that actually matters is narrower: does THIS player need this
+// item for a quest they are on right now. Anything else belongs in the vault.
+//
+// g_questItemQuests makes that cheap -- it already maps item id to the quests
+// referencing it, so this is a handful of GetQuestStatus calls rather than a
+// walk over ~10k quest templates.
+//
+// QUEST_STATUS_COMPLETE counts as "still needed": the objectives are met but
+// the items must physically be in the player's bags at turn-in, so vaulting
+// them there would strand the quest just as surely.
+//
+// Without a player (no context to judge against) it still falls back to the
+// global index, which is the conservative answer.
 bool IsQuestItem(ItemTemplate const* proto, Player* player = nullptr)
 {
     if (!proto)
@@ -439,23 +457,22 @@ bool IsQuestItem(ItemTemplate const* proto, Player* player = nullptr)
         return true;
     if (proto->StartQuest)
         return true;
-    if (!g_questItemIds.empty())
-        return g_questItemIds.count(proto->ItemId) > 0;
-    if (!player)
-        return false;
-    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+
+    if (player)
     {
-        uint32 const questId = player->GetQuestSlotQuestId(slot);
-        if (!questId)
-            continue;
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        if (!quest)
-            continue;
-        for (uint32 reqItem : quest->RequiredItemId)
-            if (reqItem == proto->ItemId)
+        auto const known = g_questItemQuests.find(proto->ItemId);
+        if (known == g_questItemQuests.end())
+            return false;
+        for (uint32 questId : known->second)
+        {
+            QuestStatus const status = player->GetQuestStatus(questId);
+            if (status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE)
                 return true;
+        }
+        return false;
     }
-    return false;
+
+    return !g_questItemIds.empty() && g_questItemIds.count(proto->ItemId) > 0;
 }
 
 // Quest leftovers: an item is only worth deleting if it is quest-only gear
@@ -1476,6 +1493,28 @@ bool IsAutolootEnabled(Player* player)
 }
 
 // Called from a core patch in Spell::EffectPickPocket (SpellEffects.cpp).
+// Called from the loot-roll hook in LivingGear_Support.cpp (bug report #12,
+// quest items at 100% drop rate). Exported from here because this file already
+// owns g_questItemQuests, the item-id -> quests index -- answering this by
+// walking the player's 25 quest slots and their required-item arrays on every
+// single loot roll would be far more expensive than one hash lookup.
+//
+// "Needs" means an active, unfinished quest. A quest already marked complete is
+// deliberately excluded: its objectives are met, so forcing further copies to
+// drop would just be noise.
+bool LivingGear_PlayerNeedsItemForQuest(Player const* player, uint32 itemId)
+{
+    if (!player || !itemId)
+        return false;
+    auto const known = LivingGearVault::g_questItemQuests.find(itemId);
+    if (known == LivingGearVault::g_questItemQuests.end())
+        return false;
+    for (uint32 questId : known->second)
+        if (player->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+            return true;
+    return false;
+}
+
 bool LivingGear_TryAutolootPickpocket(Player* player, Unit* target)
 {
     return LivingGearVault::TryAutolootPickpocket(player, target);

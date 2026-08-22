@@ -47,6 +47,8 @@
 #include "QuestDef.h"
 #include "WorldSession.h"
 
+#include <limits>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -123,7 +125,6 @@ uint32 const NPC_SHADOW_CLONE = 910201;
 uint32 const SPELL_STEALTH = 1784;
 uint32 const SPELL_SHADOWSTEP = 36554;
 uint32 const SPELL_AMBUSH = 8676;
-uint32 const SPELL_VANISH = 1856;
 uint32 const SPELL_PICKPOCKET = 921;
 // Hemorrhage AoE (2026-08-21, replaces Jack in the Box): on cast, applies
 // Garrote + Pickpocket to every enemy within 10 yards, via BestOwned() to
@@ -156,7 +157,17 @@ int32 const COMBO_SPEED_PCT_PER_STACK = 5;
 // promptly the aura tracks a max-health/mana change.
 uint32 const COOK_REFRESH_MS = 3000;
 uint32 const COOK_BREAKS[] = { 75, 150, 225, 300, 375, 450 };
-float const AMBUSH_MULT = 6.0f;
+// Bug report #8: Garrote's bleed carries a 1000% damage multiplier, i.e. 11x
+// the tick it would otherwise do. Applied once, in ModifyPeriodicDamageAurasTick,
+// so every Garrote benefits -- hand-cast, or applied in bulk by Hemorrhage --
+// rather than only the copies one particular code path happens to create.
+float const GARROTE_BLEED_MULT = 11.0f;
+// Bug report #10: the Ambush that Hemorrhage spreads lands at +500%, i.e. 6x.
+float const HEMO_AMBUSH_MULT = 6.0f;
+// Bug report #9: Shadowstep pickpockets everything this far away on landing.
+float const SHADOWSTEP_PICKPOCKET_RADIUS = 20.0f;
+// Bug report #10: how far Hemorrhage spreads.
+float const HEMO_RADIUS = 10.0f;
 
 struct PerkCfg
 {
@@ -171,6 +182,7 @@ struct PerkCfg
     bool autoMount = true;
     uint32 dungeonPar = 1800;
     uint32 curatorTick = 60000;
+    bool dungeonScale = true;
     bool questScale = true;
     uint32 questFloorPct = 4;
     bool softenImmunity = true;
@@ -432,6 +444,26 @@ bool OpenWorld(Player* player)
     return !map->IsDungeon() && !map->IsBattlegroundOrArena();
 }
 
+// Bug report #6, 2026-08-22: "level scaling didn't work in dungeon, sent me to
+// deadmines at level 50+ and everything was still level 18/grey."
+//
+// Correct as written -- EffectiveCreatureLevel bailed on !OpenWorld(), so
+// scaling had never applied inside an instance at all. That was survivable
+// while the Dungeon Finder only offered content in your own bracket; once
+// every outlevelled dungeon became queueable (core-patch 0019) it turned into
+// the common case.
+//
+// Battlegrounds and arenas stay excluded. Rescaling players against each other
+// is a different problem with a different answer, and nothing here is designed
+// for it.
+bool ScalableDungeon(Player* player)
+{
+    if (!player || !player->GetMap())
+        return false;
+    Map* map = player->GetMap();
+    return map->IsDungeon() && !map->IsBattlegroundOrArena();
+}
+
 float ZoneRewardMult(Player* player)
 {
     if (!g_cfg.zoneEnable || !OpenWorld(player))
@@ -461,7 +493,10 @@ uint32 EffectiveCreatureLevel(Creature const* creature, Player* viewer)
 {
     if (!g_cfg.zoneEnable || !creature || !viewer || !creature->IsInWorld())
         return 0;
-    if (!OpenWorld(viewer))
+
+    bool const openWorld = OpenWorld(viewer);
+    bool const dungeon = !openWorld && g_cfg.dungeonScale && ScalableDungeon(viewer);
+    if (!openWorld && !dungeon)
         return 0;
     if (creature->IsPet() || creature->IsTotem() || creature->IsGuardian() || creature->IsSummon())
         return 0;
@@ -470,6 +505,13 @@ uint32 EffectiveCreatureLevel(Creature const* creature, Player* viewer)
             return 0;
     uint32 const viewerLevel = viewer->GetLevel();
     if (viewerLevel < g_cfg.zoneMinLevel)
+        return 0;
+    // Dungeons scale UP only, matching the Dungeon Finder rule: content you
+    // have outlevelled is brought up to you, content above you is left exactly
+    // as it is. Scaling a raid down to a level 20 who queued for it would be
+    // the opposite of what was asked for. Open world keeps its existing
+    // both-ways behaviour -- that is long-shipped and deliberate.
+    if (dungeon && creature->GetLevel() >= viewerLevel)
         return 0;
     uint32 effective = viewerLevel + 1;
     if (effective > 80)
@@ -963,102 +1005,14 @@ void ReduceCrowdControl(Unit* unit, Aura* aura)
         aura->SetDuration(reduced);
 }
 
-// Performs a single chain-ambush hit: summons a short-lived clone at the
-// target, has it Pickpocket (humanoids only, and BEFORE Ambush since Ambush
-// can kill the target outright), then Ambush, then Vanish, then despawn.
-// Each hit is scheduled as its own standalone m_Events callback (see
-// ChainAmbushImpl below) rather than run back-to-back in a tight loop --
-// doing all 5 summon+cast+despawn sequences synchronously in one call was
-// itself enough to trip Unit::_AddAura's "!m_cleanupDone" assert on the
-// player (2026-08-20), even after the whole chain was already deferred out
-// of the triggering Shadowstep cast's call stack.
-// Summons `entry` with its display ID already set to `displayId` before the
-// creature is ever added to the map (i.e. before any client can see it).
-// Unit::SummonCreature() creates+broadcasts the creature and returns it
-// already-visible with its default template model; calling SetDisplayId()
-// on the result afterward (the obvious approach) makes every nearby client
-// render a model-swap transition -- the "level up"-looking flash the clones
-// were showing on spawn. Mirrors Map::SummonCreature()'s own Create()/
-// AddToMap() sequence with the display override inserted between them.
-static TempSummon* SummonCloneWithDisplay(Player* player, uint32 entry, Position const& pos,
-    uint32 despawnMs, uint32 displayId)
-{
-    if (!player || !player->IsInWorld())
-        return nullptr;
-    Map* map = player->GetMap();
-    TempSummon* summon = new TempSummon(nullptr, player->GetGUID());
-    if (!summon->Create(map->GenerateLowGuid<HighGuid::Unit>(), map, player->GetPhaseMask(),
-        entry, 0, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), pos.GetOrientation()))
-    {
-        delete summon;
-        return nullptr;
-    }
-    summon->SetHomePosition(pos);
-    summon->InitStats(despawnMs);
-    summon->SetDisplayId(displayId);
-    if (!map->AddToMap(summon->ToCreature(), true)) // owner is always a player here
-    {
-        delete summon;
-        return nullptr;
-    }
-    summon->InitSummon();
-    return summon;
-}
-
-static void ChainAmbushHit(ObjectGuid playerGuid, ObjectGuid targetGuid, uint32 ambush, int32 dmg)
-{
-    Player* player = ObjectAccessor::FindPlayer(playerGuid);
-    if (!player || !player->IsInWorld())
-        return;
-    Unit* t = ObjectAccessor::GetUnit(*player, targetGuid);
-    if (!t || !t->IsInWorld() || !t->IsAlive())
-        return;
-    Position pos;
-    pos.Relocate(t->GetPositionX(), t->GetPositionY(), t->GetPositionZ(), t->GetOrientation());
-    TempSummon* clone = SummonCloneWithDisplay(player, NPC_SHADOW_CLONE, pos, 1500, LookAlikeDisplayId(player));
-    if (!clone)
-        return;
-    clone->SetOwnerGUID(player->GetGUID());
-    clone->SetFaction(player->GetFaction());
-    clone->SetLevel(player->GetLevel());
-    // Mirror the player's weapons onto the clone -- Ambush is a
-    // weapon-damage-based ability, so an unarmed clone deals ~0 real
-    // damage from its own swing no matter what bp0 override is passed to
-    // CastCustomSpell (that only replaces the flat-bonus effect).
-    if (Item* mh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
-        clone->SetVirtualItem(0, mh->GetEntry());
-    if (Item* oh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND))
-        clone->SetVirtualItem(1, oh->GetEntry());
-    if (Item* rh = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
-        clone->SetVirtualItem(2, rh->GetEntry());
-    // Shadowform (15473) was tried here as a cosmetic dark-tint overlay per
-    // request, but it's a full shapeshift/transform spell with its own
-    // prominent "swirl" visual on application -- almost certainly what was
-    // being seen and reported as a "level up"-looking flash on spawn.
-    // Removed rather than guessed-at further without a way to see it live.
-
-    if (t->GetCreatureType() == CREATURE_TYPE_HUMANOID)
-        clone->CastSpell(t, SPELL_PICKPOCKET, true);
-    clone->CastCustomSpell(t, ambush, &dmg, nullptr, nullptr, true,
-        nullptr, nullptr, player->GetGUID());
-    // Ambush is a weapon-damage-based ability -- CastCustomSpell's bp0
-    // override only replaces its flat bonus effect, not the weapon-damage
-    // component, and the clone has no weapon equipped, so the cast above
-    // plays the impact visual but deals ~0 real damage. Force the actual
-    // damage through directly so the chain hits for something real.
-    if (t->IsAlive())
-        Unit::DealDamage(clone, t, uint32(std::max(1, dmg)), nullptr, DIRECT_DAMAGE,
-            SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
-    // The clone (not the player) is the one actually swinging, so without
-    // this the target's threat table only ever sees a summon that vanishes
-    // a moment later -- it loses its target and tries to evade/reset even
-    // though the player is standing right next to it fighting the chain.
-    player->SetInCombatWith(t);
-    if (t->IsAlive())
-        t->GetThreatMgr().AddThreat(player, float(dmg), nullptr, true, true);
-    clone->CastSpell(clone, SPELL_VANISH, true);
-    clone->DespawnOrUnsummon(std::chrono::milliseconds(400));
-}
+// SummonCloneWithDisplay() and ChainAmbushHit() were removed 2026-08-22 with
+// the chain-Ambush they existed for (bug report #9 -- Shadowstep no longer
+// deals damage). Between them they summoned up to eight short-lived clones per
+// cast, mirrored the player's weapons onto each so a weapon-damage ability had
+// something to swing, forced the damage through by hand, and hand-fed the
+// threat table so targets did not evade a summon that vanished a moment later.
+// The Shadow Clone PET is unrelated and still very much alive further down --
+// it is a real SUMMON_PET, not one of these throwaway TempSummons.
 
 // 2026-08-21: the 6s cooldown override used to live inside ChainAmbushImpl,
 // which only runs when a chain-ambush target actually resolves -- if the
@@ -1102,70 +1056,57 @@ static void ApplyShadowstepCooldown(Player* player)
     }, std::chrono::milliseconds(300));
 }
 
-static void ChainAmbushImpl(Player* player, Unit* first)
+// Bug report #9, 2026-08-22: "change shadowstep to no longer do any kind of
+// damaging abilities, but instead pickpocket all enemies within 20 yards after
+// the teleport lands (keep the 6 second cooldown)."
+//
+// This replaces the chain-Ambush entirely. That machinery summoned up to eight
+// short-lived clones, mirrored the player's weapons onto each so Ambush had a
+// weapon to swing, forced the damage through by hand because CastCustomSpell's
+// bp override does not touch the weapon-damage component, and then hand-fed the
+// threat table so the target did not evade. All of it is gone -- Shadowstep is
+// now a mobility-and-larceny button, not a burst button.
+//
+// The 6 second cooldown is untouched: ApplyShadowstepCooldown() is called from
+// the cast hook independently of this, and always was.
+//
+// Humanoids only, because that is what Pickpocket can be used on at all. The
+// autoloot path handles the junkboxes this produces (core-patch 0010), and as
+// of the same day those file into the reagent vault rather than the bags, which
+// is what makes pickpocketing a crowd practical rather than a bag-filling
+// nuisance.
+static void ShadowstepPickpocketImpl(ObjectGuid playerGuid)
 {
-    if (!player || !first || GetClassPerk(player) != SPELL_SUBTLETY)
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!player || !player->IsInWorld() || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
-    // 2026-08-21: dropped the free Stealth grant here (called out as
-    // "cheaty" -- Shadowstep chaining into free Stealth every time was too
-    // strong). Cooldown override now applied unconditionally by
-    // ApplyShadowstepCooldown() regardless of whether this chain-ambush path
-    // runs -- see that function for why.
-    uint32 ambush = BestOwned(player, SPELL_AMBUSH);
-    if (!ambush)
-        ambush = SPELL_AMBUSH;
-    SpellInfo const* ambushInfo = sSpellMgr->GetSpellInfo(ambush);
-    int32 dmg = int32(player->GetLevel() * 12.0f * AMBUSH_MULT);
-    if (ambushInfo)
-        dmg = int32(float(std::max(1, ambushInfo->Effects[EFFECT_0].CalcValue(player))) * AMBUSH_MULT);
 
-    std::vector<ObjectGuid> targets;
-    targets.push_back(first->GetGUID());
     std::list<Unit*> around;
-    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, 40.0f);
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, SHADOWSTEP_PICKPOCKET_RADIUS);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
-    Cell::VisitObjects(player, searcher, 40.0f);
+    Cell::VisitObjects(player, searcher, SHADOWSTEP_PICKPOCKET_RADIUS);
     for (Unit* u : around)
-        if (u && u != first && u->IsAlive() && player->IsValidAttackTarget(u))
-            targets.push_back(u->GetGUID());
-    if (targets.empty())
-        return;
-
-    ObjectGuid playerGuid = player->GetGUID();
-    for (uint32 i = 0; i < 8; ++i) // was 5, bumped 2026-08-21
     {
-        ObjectGuid tg = targets[i % targets.size()];
-        player->m_Events.AddEventAtOffset([playerGuid, tg, ambush, dmg]()
-        {
-            ChainAmbushHit(playerGuid, tg, ambush, dmg);
-        }, std::chrono::milliseconds(200 * (i + 1)));
+        if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
+            continue;
+        if (u->GetCreatureType() != CREATURE_TYPE_HUMANOID)
+            continue;
+        player->CastSpell(u, SPELL_PICKPOCKET, true);
     }
 }
 
-// Public entry point: defers to the next world tick instead of running
-// ChainAmbushImpl() synchronously. OnPlayerSpellCast fires mid-way through
-// the triggering Spell::cast() call (before that spell's own effects have
-// finished applying), so casting more spells on the same player from in
-// here is a reentrant call into the aura/spell system on a unit that is
-// still "in progress" -- this is what caused the recurring
-// Unit::_AddAura assert "!m_cleanupDone" crashes (2026-08-20), even after
-// removing the earlier NearTeleportTo loop. Scheduling the real work via
-// m_Events lets the triggering Shadowstep cast finish and unwind first.
-void ChainAmbush(Player* player, Unit* first)
+// Deferred for the same reason every other cast in this file is: the spell-cast
+// hook fires part-way through Shadowstep's own Spell::cast(), and casting more
+// spells on a unit that is still "in progress" is the reentrant path into
+// Unit::_AddAura that caused the recurring assert crashes on 2026-08-20.
+void ShadowstepPickpocket(Player* player)
 {
-    if (!player || !first || GetClassPerk(player) != SPELL_SUBTLETY)
+    if (!player || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
-    ObjectGuid playerGuid = player->GetGUID();
-    ObjectGuid firstGuid = first->GetGUID();
-    player->m_Events.AddEventAtOffset([playerGuid, firstGuid]()
+    ObjectGuid const playerGuid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid]()
     {
-        Player* p = ObjectAccessor::FindPlayer(playerGuid);
-        if (!p || !p->IsInWorld())
-            return;
-        Unit* t = ObjectAccessor::GetUnit(*p, firstGuid);
-        if (!t || !t->IsInWorld())
-            return;
-        ChainAmbushImpl(p, t);
+        ShadowstepPickpocketImpl(playerGuid);
     }, std::chrono::milliseconds(1));
 }
 
@@ -1174,19 +1115,38 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
     Player* player = ObjectAccessor::FindPlayer(playerGuid);
     if (!player || !player->IsInWorld() || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
+    // Bug report #10, 2026-08-22: Hemorrhage applies a +500% Ambush and the
+    // Garrote bleed to everything within 10 yards. Previously it spread Garrote
+    // and Pickpocket; Pickpocket moved to Shadowstep (report #9) and Ambush
+    // takes its place here.
     uint32 garrote = BestOwned(player, SPELL_GARROTE);
     if (!garrote)
         garrote = SPELL_GARROTE;
+    uint32 ambush = BestOwned(player, SPELL_AMBUSH);
+    if (!ambush)
+        ambush = SPELL_AMBUSH;
+
+    // Cast from the PLAYER, not from a summoned clone. Ambush is weapon-damage
+    // based, and the old chain-Ambush code had to mirror the player's weapons
+    // onto each clone and then force the damage through by hand precisely
+    // because a clone has nothing to swing. The player is already holding the
+    // right weapons, so the engine's own damage calculation just works.
+    int32 dmg = int32(player->GetLevel() * 12.0f * HEMO_AMBUSH_MULT);
+    if (SpellInfo const* ambushInfo = sSpellMgr->GetSpellInfo(ambush))
+        dmg = int32(float(std::max(1, ambushInfo->Effects[EFFECT_0].CalcValue(player))) * HEMO_AMBUSH_MULT);
+
     std::list<Unit*> around;
-    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, 10.0f);
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, HEMO_RADIUS);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
-    Cell::VisitObjects(player, searcher, 10.0f);
+    Cell::VisitObjects(player, searcher, HEMO_RADIUS);
     for (Unit* u : around)
     {
         if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
             continue;
+        player->CastCustomSpell(u, ambush, &dmg, nullptr, nullptr, true);
+        // The bleed's 1000% multiplier is NOT applied here -- it lives in
+        // ModifyPeriodicDamageAurasTick so it covers every Garrote equally.
         player->CastSpell(u, garrote, true);
-        player->CastSpell(u, SPELL_PICKPOCKET, true);
     }
 }
 
@@ -2112,9 +2072,7 @@ public:
         if (info->Id == SPELL_SHADOWSTEP && GetClassPerk(player) == SPELL_SUBTLETY)
         {
             ApplyShadowstepCooldown(player);
-            Unit* t = spell->m_targets.GetUnitTarget();
-            if (t)
-                ChainAmbush(player, t);
+            ShadowstepPickpocket(player);
         }
         if (GetClassPerk(player) == SPELL_SUBTLETY
             && sSpellMgr->GetFirstSpellInChain(info->Id) == SPELL_HEMORRHAGE)
@@ -2264,9 +2222,34 @@ public:
     PerksUnit() : UnitScript("LivingGearPerksUnit", true, {
         UNITHOOK_ON_DAMAGE,
         UNITHOOK_ON_AURA_APPLY,
+        UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
         UNITHOOK_SHOULD_TRACK_VALUES_UPDATE_POS_BY_INDEX,
         UNITHOOK_ON_PATCH_VALUES_UPDATE
     }) { }
+
+    // Bug report #8, 2026-08-22: "add 1000% damage multiplier to garrote bleed
+    // effect." Done here rather than at the cast site so it holds for every
+    // Garrote a player applies, however it got there -- hand-cast on one target,
+    // or spread across a pack by Hemorrhage (report #10). Doing it by passing
+    // scaled base points instead would have meant remembering to scale at each
+    // call site, and would have double-applied the moment two of them met.
+    //
+    // GetFirstSpellInChain so every rank counts, not just rank 1.
+    //
+    // Player-applied only: a mob's own bleed is not a Rogue perk. The clamp is
+    // there because damage is a uint32 and 11x a large tick on a boss-level
+    // Rogue is not a number worth trusting to wrap quietly.
+    void ModifyPeriodicDamageAurasTick(Unit* /*target*/, Unit* attacker, uint32& damage,
+        SpellInfo const* spellInfo) override
+    {
+        if (!attacker || !spellInfo || !damage || !attacker->IsPlayer())
+            return;
+        if (sSpellMgr->GetFirstSpellInChain(spellInfo->Id) != SPELL_GARROTE)
+            return;
+        double const boosted = double(damage) * double(GARROTE_BLEED_MULT);
+        damage = boosted >= double(std::numeric_limits<uint32>::max())
+            ? std::numeric_limits<uint32>::max() : uint32(boosted);
+    }
 
     bool ShouldTrackValuesUpdatePosByIndex(Unit const* unit, uint8 /*updateType*/, uint16 index) override
     {
@@ -2497,6 +2480,7 @@ void LoadPerkConfig()
     g_cfg.zoneFloor = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.RewardFloor", 0.35f);
     g_cfg.zoneDecay = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.RewardGapDecay", 12.0f);
     g_cfg.zoneIncoming = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.IncomingPerLevel", 0.12f);
+    g_cfg.dungeonScale = sConfigMgr->GetOption<bool>("LivingGear.ZoneScale.Dungeons", true);
     g_cfg.softenImmunity = sConfigMgr->GetOption<bool>("LivingGear.SoftenCreatureImmunity", true);
     g_cfg.questScale = sConfigMgr->GetOption<bool>("LivingGear.QuestScale.Enable", true);
     g_cfg.questFloorPct = sConfigMgr->GetOption<uint32>("LivingGear.QuestScale.FloorPct", 4);

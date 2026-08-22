@@ -84,3 +84,31 @@ LivingGear.QuestScale.FloorPct = 4
 # most of the hit. Boss-script invulnerability (a real aura) and every player
 # immunity are unaffected. See core-patch 0017.
 LivingGear.SoftenCreatureImmunity = 1
+
+# Kill XP floor (bug report #11). Every kill is worth at least this percentage
+# of the current level's XP bar, so trash far below you still pays something.
+# Zone scaling still governs anything worth more than the floor. Quest XP has
+# its own separate floor above and is not affected by this.
+LivingGear.KillXpFloor.Enable = 1
+LivingGear.KillXpFloor.Pct = 1
+
+# Quest items always drop (bug report #12). Covers loot entries flagged as quest
+# drops, and ordinary items that are an objective of a quest the looting player
+# is currently on. Players not on the quest see normal drop rates.
+LivingGear.QuestDropAlways = 1
+
+# Zone scaling inside dungeons (bug report #6). Scales UP only: a dungeon you
+# have outlevelled is brought up to you, one above your level is left alone.
+# Battlegrounds and arenas are never scaled.
+LivingGear.ZoneScale.Dungeons = 1
+
+# Learn every class ability your trainer would teach, free, on level up
+# (bug report #1).
+LivingGear.AutoTrainClassSpells = 1
+
+# Wintergrasp siege damage scales up when the zone is underpopulated
+# (bug report #3). At or above FullRoster nothing changes; below it, damage is
+# multiplied by FullRoster/present, capped at MaxSiegeMult.
+LivingGear.Wintergrasp.SiegeScale = 1
+LivingGear.Wintergrasp.FullRoster = 20
+LivingGear.Wintergrasp.MaxSiegeMult = 10.0

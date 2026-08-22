@@ -22,12 +22,19 @@
 
 #include "Chat.h"
 #include "CommandScript.h"
+#include "Config.h"
 #include "Creature.h"
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
 #include "GameTime.h"
+#include "AllGameObjectScript.h"
+#include "AreaDefines.h"
+#include "Battlefield.h"
+#include "BattlefieldMgr.h"
+#include "GameObject.h"
 #include "Item.h"
 #include "Log.h"
+#include "LootMgr.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -40,12 +47,15 @@
 #include "World.h"
 #include "WorldSession.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <unordered_map>
 
 class Player;
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_PlayerNeedsItemForQuest(Player const* player, uint32 itemId); // LivingGear_Vault.cpp
 
 namespace LivingGearSupport
 {
@@ -58,6 +68,27 @@ uint32 const BUG_MIN_LENGTH = 5;
 
 // Quest Complete's cooldown. Persisted, so relogging does not reset it.
 uint32 const QUEST_COMPLETE_COOLDOWN = 600;
+
+// Bug report #12: quest items always drop. Bug report #11: every kill is worth
+// something. Both are config-gated so they can be turned off without a rebuild.
+bool g_questDropAlways = true;
+bool g_killXpFloorEnabled = true;
+// Percent of the CURRENT level's XP bar that any kill is worth at minimum.
+// Asked for as 2 (50 kills a level); set to 1 on the call that 100 kills a
+// level is still plenty, and that 2% would make grinding strictly faster than
+// questing at every level.
+uint32 g_killXpFloorPct = 1;
+
+// Bug report #3: Wintergrasp siege damage scales with how many people are
+// actually there. WG_FULL_ROSTER is the population the stock building health
+// is balanced around -- at or above it nothing changes at all. Below it,
+// damage is divided by the shortfall, capped at WG_MAX_SIEGE_MULT.
+//
+// 20 and 10 together give exactly what was asked for: "if there's only a couple
+// of players, make them do 10x normal damage" -- two players hit 20/2 = 10x.
+bool g_wgSiegeScale = true;
+uint32 g_wgFullRoster = 20;
+float g_wgMaxSiegeMult = 10.0f;
 
 std::unordered_map<uint32, uint32> g_lastBugAt;      // account id -> unix seconds
 std::unordered_map<uint32, uint32> g_questCooldown;  // character guid -> unix seconds
@@ -297,8 +328,178 @@ void SendQuestCompleteState(Player* player)
 }
 
 // ---------------------------------------------------------------------
+// Wintergrasp: join from anywhere
+// ---------------------------------------------------------------------
+
+// Bug report #4, 2026-08-22: "wintergrasp should be queuable via the blue
+// button on the battlegrounds queue tab (the built-in blizzard ui one)".
+//
+// The stock battlegrounds tab cannot list Wintergrasp. It is driven by
+// BattlemasterList.dbc, which has 13 rows in this client and no Wintergrasp
+// among them -- WG is a Battlefield, not a Battleground, and was never
+// queueable that way even on retail. Putting it in that tab would mean adding
+// a client DBC row AND building Battlefield queue plumbing that does not
+// exist. See the reply notes; that is a design job, not a fix.
+//
+// What this does instead reaches the same goal through Blizzard's own UI:
+// InvitePlayerToWar sends SMSG_BATTLEFIELD_MGR_ENTRY_INVITE, which is the
+// native battlefield invite popup with its Accept button -- the same dialog
+// players already see when standing in the zone as a battle begins. Now they
+// can raise it from anywhere in the world.
+void JoinWintergrasp(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    ChatHandler handler(player->GetSession());
+
+    Battlefield* wg = sBattlefieldMgr->GetBattlefieldByBattleId(BATTLEFIELD_BATTLEID_WG);
+    if (!wg)
+    {
+        handler.SendSysMessage("|cff66ccff[Wintergrasp]|r Wintergrasp is not running on this realm.");
+        return;
+    }
+    if (!wg->IsWarTime())
+    {
+        handler.SendSysMessage("|cff66ccff[Wintergrasp]|r The battle has not started yet. Try again when it does.");
+        return;
+    }
+    if (wg->IsPlayerInBattlefield(player->GetGUID()))
+    {
+        handler.SendSysMessage("|cff66ccff[Wintergrasp]|r You are already in the battle.");
+        return;
+    }
+    if (player->IsInCombat())
+    {
+        handler.SendSysMessage("|cff66ccff[Wintergrasp]|r Not while you are in combat.");
+        return;
+    }
+
+    wg->InvitePlayerToWar(player);
+    handler.SendSysMessage("|cff66ccff[Wintergrasp]|r Invite sent -- accept the popup to join the battle.");
+}
+
+// ---------------------------------------------------------------------
 // Scripts
 // ---------------------------------------------------------------------
+
+// Bug report #11: "make all mobs give N% current level xp per kill so you
+// always get something from them."
+//
+// This is a floor, not a replacement. Zone scaling already re-bases a kill onto
+// the level the player is actually shown (ScaledKillXP in LivingGear_Perks.cpp),
+// and anything worth more than the floor keeps its own value untouched. What
+// this fixes is the tail: trash far below the player, critters, and anything
+// the scaling declines to touch, all of which paid effectively nothing.
+//
+// Expressed against PLAYER_NEXT_LEVEL_XP so it stays meaningful at every level
+// -- a flat XP number would be a fortune at level 5 and a rounding error at 75.
+//
+// Deliberately NOT applied to quest XP: LivingGearPerks::OnPlayerQuestComputeXP
+// already has its own 4% floor, and stacking a second one here would pay the
+// kill floor on top of every turn-in.
+class SupportKillXp : public PlayerScript
+{
+public:
+    SupportKillXp() : PlayerScript("LivingGearSupportKillXp", {
+        PLAYERHOOK_ON_GIVE_EXP
+    }) { }
+
+    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 xpSource) override
+    {
+        if (!g_killXpFloorEnabled || !g_killXpFloorPct || !player)
+            return;
+        if (xpSource != XPSOURCE_KILL)
+            return;
+        if (player->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
+            return;
+        uint32 const forNextLevel = player->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+        uint32 const floor = uint32(uint64(forNextLevel) * g_killXpFloorPct / 100);
+        if (amount < floor)
+            amount = floor;
+    }
+};
+
+// Bug report #12: "make quest items have a 100% drop rate."
+//
+// LootStoreItem::Roll() short-circuits to true the moment chance >= 100, ahead
+// of the quality modifier and the drop-rate config, so setting it here is a
+// genuine guarantee rather than a very good chance.
+//
+// Two separate cases, and both matter:
+//   needs_quest      - the loot entry is flagged as a quest drop. The classic
+//                      "kill 30 of these for one drop" case.
+//   PlayerNeedsItem  - an ordinary item that happens to be a required objective
+//                      for a quest this player is on right now. Gather quests
+//                      asking for common trade goods live here, and they are the
+//                      ones that actually feel broken.
+// The second is per-player and checked against an index rather than a quest-log
+// walk, so a player not on the quest sees completely normal drop rates.
+class SupportLoot : public GlobalScript
+{
+public:
+    SupportLoot() : GlobalScript("LivingGearSupportLoot", {
+        GLOBALHOOK_ON_ITEM_ROLL
+    }) { }
+
+    bool OnItemRoll(Player const* player, LootStoreItem const* lootStoreItem, float& chance,
+        Loot& /*loot*/, LootStore const& /*store*/) override
+    {
+        if (!g_questDropAlways || !player || !lootStoreItem || chance >= 100.0f)
+            return true;
+        if (lootStoreItem->needs_quest || LivingGear_PlayerNeedsItemForQuest(player, lootStoreItem->itemid))
+            chance = 100.0f;
+        return true;
+    }
+};
+
+// Bug report #3, 2026-08-22: "make wintergrasp siege damage scale with the
+// number of players -- if there's only a couple of players, make them do 10x
+// normal damage."
+//
+// Wintergrasp's walls and towers are destructible GameObjects, so their damage
+// does not go through any of the Unit damage hooks -- it arrives here, at
+// GameObject::ModifyHealth. `change` is negative for damage and positive for
+// repair; only damage is touched, so repairing is unaffected.
+//
+// Scoped to the Wintergrasp area, and counts only players actually in that
+// area rather than everyone on the Northrend map, which would otherwise let
+// half of Dalaran suppress the multiplier without ever setting foot in the
+// battle.
+class SupportWintergrasp : public AllGameObjectScript
+{
+public:
+    SupportWintergrasp() : AllGameObjectScript("LivingGearSupportWintergrasp") { }
+
+    void OnGameObjectModifyHealth(GameObject* go, Unit* attackerOrHealer, int32& change,
+        SpellInfo const* /*spellInfo*/) override
+    {
+        if (!g_wgSiegeScale || !go || change >= 0 || !attackerOrHealer)
+            return;
+        if (go->GetAreaId() != AREA_WINTERGRASP && go->GetZoneId() != AREA_WINTERGRASP)
+            return;
+        Map* map = go->GetMap();
+        if (!map)
+            return;
+
+        uint32 present = 0;
+        for (auto const& pair : map->GetPlayers())
+            if (Player* p = pair.GetSource())
+                if (p->IsInWorld() && (p->GetZoneId() == AREA_WINTERGRASP || p->GetAreaId() == AREA_WINTERGRASP))
+                    ++present;
+
+        if (present >= g_wgFullRoster)
+            return;
+        float mult = float(g_wgFullRoster) / float(std::max<uint32>(present, 1));
+        if (mult > g_wgMaxSiegeMult)
+            mult = g_wgMaxSiegeMult;
+        if (mult <= 1.0f)
+            return;
+
+        double const scaled = double(change) * double(mult);
+        change = scaled <= double(std::numeric_limits<int32>::min())
+            ? std::numeric_limits<int32>::min() : int32(scaled);
+    }
+};
 
 class SupportPlayer : public PlayerScript
 {
@@ -332,6 +533,7 @@ public:
         static ChatCommandTable commandTable =
         {
             { "bug", HandleBug, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
+            { "wg",  HandleWintergrasp, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
         };
         return commandTable;
     }
@@ -342,6 +544,15 @@ public:
         if (!player)
             return false;
         RecordBugReport(player, std::string(description));
+        return true;
+    }
+
+    static bool HandleWintergrasp(ChatHandler* handler)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+        JoinWintergrasp(player);
         return true;
     }
 };
@@ -371,11 +582,35 @@ bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg)
         LivingGearSupport::SendQuestCompleteState(player);
         return true;
     }
+    if (msg == "WGJOIN")
+    {
+        LivingGearSupport::JoinWintergrasp(player);
+        return true;
+    }
     return false;
 }
 
 void AddSC_LivingGearSupport()
 {
+    LivingGearSupport::g_questDropAlways =
+        sConfigMgr->GetOption<bool>("LivingGear.QuestDropAlways", true);
+    LivingGearSupport::g_killXpFloorEnabled =
+        sConfigMgr->GetOption<bool>("LivingGear.KillXpFloor.Enable", true);
+    LivingGearSupport::g_killXpFloorPct =
+        sConfigMgr->GetOption<uint32>("LivingGear.KillXpFloor.Pct", 1);
+    if (LivingGearSupport::g_killXpFloorPct > 100)
+        LivingGearSupport::g_killXpFloorPct = 100;
+
+    LivingGearSupport::g_wgSiegeScale =
+        sConfigMgr->GetOption<bool>("LivingGear.Wintergrasp.SiegeScale", true);
+    LivingGearSupport::g_wgFullRoster =
+        std::max<uint32>(1, sConfigMgr->GetOption<uint32>("LivingGear.Wintergrasp.FullRoster", 20));
+    LivingGearSupport::g_wgMaxSiegeMult =
+        sConfigMgr->GetOption<float>("LivingGear.Wintergrasp.MaxSiegeMult", 10.0f);
+
     new LivingGearSupport::SupportPlayer();
+    new LivingGearSupport::SupportWintergrasp();
+    new LivingGearSupport::SupportKillXp();
+    new LivingGearSupport::SupportLoot();
     new LivingGearSupport::SupportCommands();
 }
