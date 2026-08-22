@@ -247,7 +247,11 @@ def main():
     else:
         parts = realm.split()
         addr = parts[0] if parts else "?"
-        m = re.search(r"^realmlist\s+(\S+)", live, re.M) if live else None
+        # The manifest line is the LOGIN address and may carry a :port (the
+        # tailnet login is served on 3725, not the default 3724). The realm row
+        # is the WORLD address with its own port column. Only the hosts are
+        # comparable.
+        m = re.search(r"^realmlist\s+([^\s:]+)", live, re.M) if live else None
         want = m.group(1) if m else None
         if want and addr != want:
             out.append("  realm address     %s  MISMATCH -- manifest sends players to %s" % (addr, want))
@@ -259,6 +263,29 @@ def main():
         else:
             out.append("  realm address     %s  OK (local clients get %s)"
                        % (addr, parts[1] if len(parts) > 1 else "?"))
+
+    # --- 7. is the world port even published? -----------------------------
+    # Docker Desktop's WSL2 relay drops a port publish SILENTLY when something
+    # else holds that port number -- `tailscale serve --tcp 8085` did exactly
+    # that on 2026-08-22, and nothing looked wrong until the container was next
+    # replaced, at which point the world server was unreachable for everyone
+    # with no error logged anywhere. `docker ps` showing "8085/tcp" instead of
+    # "127.0.0.1:8085->8085/tcp" is the only tell, so check it explicitly.
+    ports = run(["docker", "inspect", "ac-worldserver",
+                 "--format", "{{json .NetworkSettings.Ports}}"])
+    if ports is None:
+        out.append("  world port        container not inspectable, not checked")
+    else:
+        try:
+            bindings = (json.loads(ports) or {}).get("8085/tcp") or []
+        except ValueError:
+            bindings = []
+        if not bindings:
+            out.append("  world port        NOT PUBLISHED -- nobody can reach the world server")
+            problems.append("world port 8085 is not published; a port conflict silently dropped it")
+        else:
+            hosts = ",".join("%s:%s" % (b.get("HostIp") or "*", b.get("HostPort")) for b in bindings)
+            out.append("  world port        %s  OK" % hosts)
 
     out.append("")
     if problems:
