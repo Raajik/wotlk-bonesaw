@@ -20,6 +20,7 @@
 #include "Creature.h"
 #include "CreatureData.h"
 #include "DatabaseEnv.h"
+#include "DBCStores.h"
 #include "Group.h"
 #include "Item.h"
 #include "ItemTemplate.h"
@@ -48,6 +49,7 @@ class ItemTemplate;
 bool IsLivingGearEligibleItem(ItemTemplate const* proto); // LivingGear.cpp
 
 class Player;
+uint32 LivingGear_AccountLockpickSkill(Player* player); // LivingGear_Gather.cpp
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
@@ -282,8 +284,13 @@ struct VaultGrantScope
 // true, so anything pulling out of the vault has to do the store by hand
 // to learn how much actually landed -- otherwise the overflow is removed
 // from the vault and then simply vanishes. Returns the count stored.
-uint32 StoreFromVault(Player* player, uint32 itemEntry, uint32 count)
+// `stored` optionally hands back the item that was created, so a caller that
+// needs to do something to it (VaultWithdraw picking a lockbox open) does not
+// have to go hunting through the bags for it afterwards.
+uint32 StoreFromVault(Player* player, uint32 itemEntry, uint32 count, Item** stored = nullptr)
 {
+    if (stored)
+        *stored = nullptr;
     if (!player || !count)
         return 0;
     ItemPosCountVec dest;
@@ -297,7 +304,52 @@ uint32 StoreFromVault(Player* player, uint32 itemEntry, uint32 count)
     if (!item)
         return 0;
     player->SendNewItem(item, fits, true, false);
+    if (stored)
+        *stored = item;
     return fits;
+}
+
+// Applies the account's Lockpicking to a locked item on the spot: no cast, no
+// channel, no finding a Rogue. Returns true if the item came away unlocked.
+//
+// This is the withdraw-side half of routing junkboxes into the reagent vault.
+// Deliberately the same three things Spell::EffectOpenLock does on a
+// successful manual pick -- set ITEM_FIELD_FLAG_UNLOCKED, mark the item
+// changed so the unlock is saved, and take the skill-up roll -- so a box
+// opened this way is worth exactly as much skill as one opened by hand, no
+// more and no less.
+//
+// Skill is read account-wide, matching core-patch 0005: any character can
+// open what the account's best lockpicker could.
+bool InstantPickLock(Player* player, Item* item)
+{
+    if (!player || !item || !item->IsLocked())
+        return false;
+    ItemTemplate const* proto = item->GetTemplate();
+    if (!proto || !proto->LockID)
+        return false;
+    LockEntry const* lockInfo = sLockStore.LookupEntry(proto->LockID);
+    if (!lockInfo)
+        return false;
+
+    for (int j = 0; j < MAX_LOCK_CASE; ++j)
+    {
+        if (lockInfo->Type[j] != LOCK_KEY_SKILL)
+            continue;
+        if (SkillByLockType(LockType(lockInfo->Index[j])) != SKILL_LOCKPICKING)
+            continue;
+
+        uint32 const required = lockInfo->Skill[j];
+        if (LivingGear_AccountLockpickSkill(player) < required)
+            return false; // not skilled enough yet -- it stays locked, as it would in hand
+
+        item->SetFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_UNLOCKED);
+        item->SetState(ITEM_CHANGED, player);
+        if (uint32 const pure = player->GetPureSkillValue(SKILL_LOCKPICKING))
+            player->UpdateGatherSkill(SKILL_LOCKPICKING, pure, required);
+        return true;
+    }
+    return false;
 }
 
 // Called from a core patch in Spell::CheckCast (Spell.cpp), right before
@@ -676,8 +728,14 @@ bool RuleMatches(LgRule const& rule, ItemTemplate const* proto, uint32 accountId
 
 uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
 {
+    // 2026-08-22: locked containers file into the reagent vault instead of
+    // sitting in bags. Pickpocketing in particular produces junkboxes far
+    // faster than anyone opens them, and a Rogue working a crowd would fill
+    // their bags with boxes inside a couple of minutes. Taking one back out
+    // now picks its lock on the way (see InstantPickLock), so the vault is a
+    // holding pen rather than somewhere they go to be forgotten.
     if (IsLockbox(proto))
-        return ACT_BAG;
+        return ACT_REAGENT_VAULT;
     // 2026-08-21: quest vault dropped entirely per user request ("should no
     // longer even exist") -- it never actually worked (nothing ever
     // restored a vaulted item before a quest turn-in, so items just
@@ -804,8 +862,10 @@ void ApplyLootRule(Player* player, Item* item)
     if (!proto)
         return;
     uint8 action = ResolveLootAction(player, proto);
+    // Never vendor or discard something still locked -- the contents have not
+    // been seen yet. Vaulting it is the non-destructive choice.
     if (IsLockbox(proto) && (action == ACT_VENDOR || action == ACT_SKIP))
-        action = ACT_BAG;
+        action = ACT_REAGENT_VAULT;
     // The "not implemented yet, downgrade both to ACT_BAG" guard that used
     // to sit here outlived its reason: ApplyLootRuleAction grew real
     // ACT_DISENCHANT/ACT_LEARN handlers, but this line kept rewriting them
@@ -1083,7 +1143,8 @@ void VaultWithdraw(Player* player, uint8 kind, uint32 itemEntry)
     uint32 const taken = VaultRemove(accountId, ownerGuid, kind, itemEntry, want);
     if (!taken)
         return;
-    uint32 const given = StoreFromVault(player, itemEntry, taken);
+    Item* withdrawn = nullptr;
+    uint32 const given = StoreFromVault(player, itemEntry, taken, &withdrawn);
     if (given < taken)
         VaultAdd(accountId, ownerGuid, kind, itemEntry, taken - given);
     if (!given)
@@ -1091,6 +1152,9 @@ void VaultWithdraw(Player* player, uint8 kind, uint32 itemEntry)
         ChatHandler(player->GetSession()).SendSysMessage("[Vault] No room in your bags.");
         return;
     }
+    if (withdrawn && IsLockbox(proto) && InstantPickLock(player, withdrawn))
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "[Vault] Picked the lock on {}.", proto->Name1);
     SendLine(player, Acore::StringFormat("VLT|{}|{}|{}|{}", uint32(kind), itemEntry,
         VaultCount(accountId, ownerGuid, kind, itemEntry), proto->Name1));
 }

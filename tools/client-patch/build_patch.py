@@ -166,7 +166,7 @@ CUSTOM_SPELLS = {
     910086: ("*Warrior: Fury Haste", "Melee haste from the Fury class perk.", 38),
     910087: ("*Living Gear Speed", "Movement speed +40% for 30 seconds.", 516),
     910088: ("*Quests - Find", "Adds up to 5 available quests in your current zone, lowest level first. Unlocked by completing 50 quests.", 141),
-    910089: ("*Kill Combo", "Party kills stack this. Kill XP +3% and movement speed +1% per stack. Each stack lasts 3 minutes and falls off one at a time. Stacks up to 100 times.", 95),
+    910089: ("*Kill Combo", "Party kills stack this, up to 10. Kill XP +20% and movement speed +5% per stack. Refreshes for 10 minutes on every kill, and survives logging out.", 95),
     910090: ("*Quests - Finish", "Summon the questgivers for completed quests in your log for 60 sec. Turn in and take follow-ups from them. Unlocked by completing 1 quest.", 141),
     910091: ("*Attuned Armory", "Make a wearable copy of an item you have attuned. The attunement stays on the account.", 249),
     910092: ("*Solo Queue", "Queue for dungeons and raids by yourself. No group required.", 169),
@@ -200,6 +200,15 @@ CUSTOM_SPELLS = {
     910165: ("*Priest: Shadow", "Shadowfiend has no cooldown. Mind Flay deals quadruple damage.", 95),
     910166: ("*Death Knight: Blood", "Dancing Rune Weapon has no cooldown/runic cost. While active, melee hits heal you for 5% of the damage dealt.", 95),
     910167: ("*Death Knight: Frost", "Hungering Cold has no cooldown/runic cost. Frost Strike and Obliterate deal double damage.", 95),
+    # 910168-910172 were added server-side after this table was last touched
+    # and had no client entry at all, so they had no name, tooltip or icon in
+    # game. Added 2026-08-22 alongside the two below.
+    910168: ("*Pull Radius", "Toggle. Quadruples the distance at which enemies notice you.", 132),
+    910170: ("*Track Ore", "Toggle. Shows nearby mineral veins on the minimap.", 134),
+    910171: ("*Track Herbs", "Toggle. Shows nearby herbs on the minimap.", 133),
+    910172: ("*CC Reduction", "Passive. Stuns, roots, fears, snares and other crowd control last 95% less on you.", 253),
+    910173: ("*Shadow Dance", "Attack power increased by 10%. Granted by a Subtlety Rogue in your party.", 95),
+    910174: ("*Well Fed", "Your cooking keeps you going. Restores 1% of your health and mana per second for each cooking tier you have unlocked, at 75, 150, 225, 300, 375 and 450 skill.", 134),
 }
 
 # Copy SpellVisualID[2] from vanilla spells onto hidden sparkle/pulse dummies.
@@ -223,14 +232,26 @@ HOT_SPELLS = {
     910052: ("First Aid", "Heals the target over time.", 104),
 }
 
-# Timed buffs shown on the aura bar. DurationIndex 21 = 30 seconds, 3 = 60 seconds, 32 = 180 seconds.
+# Timed buffs shown on the aura bar.
 # Fields: duration, stacks, then (effect, aura, die_sides, base_points, target_a) per effect.
 # 6 = APPLY_AURA. Do not mark PASSIVE (0x40) or the client hides the icon.
-# 129/130 = run/mount speed. Server recasts Kill Combo with BP = stacks*1.
+# 129/130 = run/mount speed.
+#
+# DurationIndex values, read out of var/mmap-output/dbc/SpellDuration.dbc on
+# 2026-08-22 rather than assumed -- the previous comment here claimed 21 = 30
+# seconds and 32 = 180 seconds, and both were wrong:
+#   3  = 60000ms     6  = 600000ms (10 min)
+#   21 = -1 (permanent, module-managed)
+#   32 = 6000ms  <-- Kill Combo was pointed at this, so the client believed
+#                    the buff lasted six seconds.
 VISIBLE_AURAS = {
     910087: (21, 1, ((6, 129, 1, 39, 1), (6, 130, 1, 39, 1))),
-    910089: (32, 100, ((6, 129, 1, 0, 1), (6, 130, 1, 0, 1))),
+    910089: (6, 10, ((6, 129, 1, 0, 1), (6, 130, 1, 0, 1))),
     910098: (0, 0, ((6, 58, 1, 499, 1),)),
+    # +10% attack power, permanent while a Subtlety Rogue is in the party.
+    910173: (21, 0, ((6, 166, 0, 10, 1),)),
+    # MOD_REGEN / MOD_POWER_REGEN, base points set per cast by the server.
+    910174: (21, 0, ((6, 84, 0, 0, 1), (6, 85, 0, 0, 1))),
 }
 BANDAGE_TEMPLATE_ID = 746
 CHANNELED_ATTR = 0x4 | 0x40

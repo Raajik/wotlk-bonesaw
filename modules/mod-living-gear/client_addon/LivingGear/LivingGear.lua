@@ -2365,13 +2365,6 @@ function LG2.BuildLootPanel(f)
     ui.alToggle.label:SetJustifyH("CENTER")
     ui.alToggle.label:SetText("Autoloot: ON")
     ui.alToggle:SetScript("OnClick", function()
-        -- TEMP DEBUG 2026-08-21: user reports this button (and others on
-        -- the Autoloot tab) don't work, but three separate passes over the
-        -- server-side whisper-command wiring turned up nothing wrong. This
-        -- print needs no server round-trip at all, so it isolates whether
-        -- the click is even reaching this handler in the first place.
-        -- Remove once diagnosed.
-        print("|cffff8800[LG debug]|r Autoloot toggle clicked, current on=" .. tostring(db.autoloot.on))
         if tonumber(db.autoloot.on) == 1 then
             SendLine("ALSET|0")
         else
@@ -3920,37 +3913,10 @@ function LG2.HookJump()
 end
 LG2.HookJump()
 
-local comboHud
-function LG2.ShowCombo(stacks, seconds)
-    stacks = tonumber(stacks) or 0
-    seconds = tonumber(seconds) or 180
-    if not comboHud then
-        comboHud = CreateFrame("Frame", "LivingGearCombo", UIParent)
-        comboHud:SetFrameStrata("HIGH")
-        comboHud:SetSize(140, 24)
-        comboHud:SetPoint("TOP", UIParent, "TOP", 0, -36)
-        local bg = comboHud:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        Solid(bg, 0.07, 0.07, 0.07, 0.85)
-        comboHud.text = Font(comboHud, 14, 1, 0.82, 0.2)
-        comboHud.text:SetPoint("CENTER")
-        comboHud.text:SetJustifyH("CENTER")
-        comboHud:SetScript("OnUpdate", function(self)
-            if self.expire and GetTime() >= self.expire then
-                self:Hide()
-                self.expire = nil
-            end
-        end)
-    end
-    if stacks < 1 then
-        comboHud:Hide()
-        comboHud.expire = nil
-        return
-    end
-    comboHud.text:SetText("Combo x" .. stacks)
-    comboHud.expire = GetTime() + seconds
-    comboHud:Show()
-end
+-- Kill Combo's HUD frame lived here until 2026-08-22. The buff is a real
+-- non-passive aura now, so the stock buff bar draws the icon, the stack
+-- count and a working countdown -- a second copy floating over the screen
+-- was just noise. The server no longer sends COMBO lines at all.
 
 local dungeonHud
 local function FormatTimer(sec)
@@ -4015,32 +3981,9 @@ local function ShowDungeonTimer(mode, parSec, clearSec, tier, speedPct, pacePct)
     end
 end
 
-local zoneScaleHud
-function LG2.ShowZoneScale(eff, real, zone)
-    eff = tonumber(eff) or 0
-    real = tonumber(real) or 0
-    zone = tonumber(zone) or 0
-    if eff < 1 or real < 1 or eff >= real then
-        if zoneScaleHud then
-            zoneScaleHud:Hide()
-        end
-        return
-    end
-    if not zoneScaleHud then
-        zoneScaleHud = CreateFrame("Frame", "LivingGearZoneScale", UIParent)
-        zoneScaleHud:SetFrameStrata("HIGH")
-        zoneScaleHud:SetSize(220, 22)
-        zoneScaleHud:SetPoint("TOP", UIParent, "TOP", 0, -58)
-        local bg = zoneScaleHud:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        Solid(bg, 0.07, 0.07, 0.07, 0.85)
-        zoneScaleHud.text = Font(zoneScaleHud, 12, 0.75, 0.88, 1)
-        zoneScaleHud.text:SetPoint("CENTER")
-        zoneScaleHud.text:SetJustifyH("CENTER")
-    end
-    zoneScaleHud.text:SetText(string.format("Effective %d | Rewards %d (zone ~%d)", eff, real, zone))
-    zoneScaleHud:Show()
-end
+-- The "Effective 42 | Rewards 42 (zone ~20)" readout was removed 2026-08-22.
+-- It reported internal scaling bookkeeping that a player could not act on.
+-- The scaling itself is unchanged; only the display is gone.
 
 function LG2.HandleAddon(prefix, message)
     if prefix ~= PREFIX or not message then
@@ -4228,8 +4171,8 @@ function LG2.HandleAddon(prefix, message)
         end
         return
     end
-    if p[1] == "COMBO" then
-        LG2.ShowCombo(tonumber(p[2]) or 0, tonumber(p[4]) or 180)
+    if p[1] == "QDONECD" then
+        LG2.SetQuestCompleteCooldown(tonumber(p[2]) or 0)
         return
     end
     if p[1] == "DTIMER" then
@@ -4240,10 +4183,6 @@ function LG2.HandleAddon(prefix, message)
         elseif p[2] == "clear" then
             ShowDungeonTimer("clear", nil, p[3], p[4], p[5], p[6])
         end
-        return
-    end
-    if p[1] == "ZSCALE" then
-        LG2.ShowZoneScale(p[2], p[3], p[4])
         return
     end
     if p[1] == "SCALE" then
@@ -5062,6 +5001,107 @@ function LG2.DumpTip(tip)
     end)
 end
 
+-- ---------------------------------------------------------------------
+-- Complete Quest button on the quest log.
+--
+-- A repair tool for quests that have bugged out. Deliberately a button here
+-- rather than a spell: a spellbook entry for "fix my broken quest" reads as
+-- a game mechanic, and this is not one. The server owns the 10 minute
+-- cooldown -- everything below is display only, so a client that lies about
+-- the remaining time still gets refused.
+--
+-- 3.3.5 has no API that hands back the quest id directly, so it is pulled out
+-- of the quest link, which is of the form
+--   |cffffff00|Hquest:1234:15|h[Quest Name]|h|r
+-- ---------------------------------------------------------------------
+local questCompleteBtn
+local questCompleteReadyAt = 0
+
+local function SelectedQuestId()
+    local index = GetQuestLogSelection()
+    if not index or index < 1 then
+        return nil
+    end
+    local link = GetQuestLink(index)
+    if not link then
+        return nil
+    end
+    local id = string.match(link, "|Hquest:(%d+):")
+    return tonumber(id)
+end
+
+local function UpdateQuestCompleteBtn()
+    if not questCompleteBtn then
+        return
+    end
+    local left = questCompleteReadyAt - GetTime()
+    if left > 0 then
+        questCompleteBtn:Disable()
+        questCompleteBtn:SetText(string.format("Complete (%d:%02d)",
+            math.floor(left / 60), math.floor(left % 60)))
+        return
+    end
+    questCompleteBtn:SetText("Complete Quest")
+    -- A header row has no quest link; only enable on a real, selected quest.
+    if SelectedQuestId() then
+        questCompleteBtn:Enable()
+    else
+        questCompleteBtn:Disable()
+    end
+end
+
+function LG2.SetQuestCompleteCooldown(seconds)
+    seconds = tonumber(seconds) or 0
+    questCompleteReadyAt = seconds > 0 and (GetTime() + seconds) or 0
+    UpdateQuestCompleteBtn()
+end
+
+local function BuildQuestCompleteBtn()
+    if questCompleteBtn or not QuestLogFrame then
+        return
+    end
+    questCompleteBtn = CreateFrame("Button", "LivingGearQuestComplete", QuestLogFrame,
+        "UIPanelButtonTemplate")
+    questCompleteBtn:SetSize(130, 22)
+    -- Bottom left of the quest log, clear of Abandon/Share on the right.
+    questCompleteBtn:SetPoint("BOTTOMLEFT", QuestLogFrame, "BOTTOMLEFT", 22, 55)
+    questCompleteBtn:SetText("Complete Quest")
+    questCompleteBtn:SetScript("OnClick", function()
+        local id = SelectedQuestId()
+        if not id then
+            DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Quest]|r Select a quest in the log first.")
+            return
+        end
+        SendLine("QDONE|" .. id)
+    end)
+    questCompleteBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText("Complete Quest")
+        GameTooltip:AddLine("Force-completes the selected quest.", 1, 1, 1, true)
+        GameTooltip:AddLine("For quests that have bugged out and cannot be finished normally. 10 minute cooldown.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    questCompleteBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    questCompleteBtn:SetScript("OnUpdate", function(self, elapsed)
+        self.since = (self.since or 0) + elapsed
+        if self.since < 0.25 then
+            return
+        end
+        self.since = 0
+        UpdateQuestCompleteBtn()
+    end)
+    SendLine("QDONEREQ")
+    UpdateQuestCompleteBtn()
+end
+
+local questCompleteWatcher = CreateFrame("Frame")
+questCompleteWatcher:RegisterEvent("PLAYER_ENTERING_WORLD")
+questCompleteWatcher:RegisterEvent("QUEST_LOG_UPDATE")
+questCompleteWatcher:SetScript("OnEvent", function()
+    BuildQuestCompleteBtn()
+    UpdateQuestCompleteBtn()
+end)
+
 SLASH_LIVINGGEAR1 = "/lg"
 SLASH_LIVINGGEAR2 = "/livinggear"
 SlashCmdList["LIVINGGEAR"] = function(msg)
@@ -5071,4 +5111,20 @@ SlashCmdList["LIVINGGEAR"] = function(msg)
         return
     end
     Toggle()
+end
+
+-- Bug reports. /bugreport rather than /bug, because /bug is a stock WoW slash
+-- command that opens Blizzard's own report frame -- that frame files into a
+-- table nobody here reads, so overriding it would silently swallow reports.
+-- The server also accepts ".bug <text>" for anyone without the addon loaded.
+SLASH_LGBUG1 = "/bugreport"
+SLASH_LGBUG2 = "/lgbug"
+SlashCmdList["LGBUG"] = function(msg)
+    msg = string.gsub(msg or "", "^%s+", "")
+    if msg == "" then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Bug]|r Usage: /bugreport <what went wrong>")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Bug]|r Your location and current target are sent automatically.")
+        return
+    end
+    SendLine("BUG|" .. msg)
 end

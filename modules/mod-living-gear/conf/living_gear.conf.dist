@@ -69,3 +69,18 @@ LivingGear.DungeonTimer.DefaultParSec = 1800
 
 # Curator: Living Gear XP tick to 5 lowest stored pieces.
 LivingGear.CollectionPassive.TickMs = 60000
+
+# Quest XP scaling. Quest rewards are recomputed as though the quest had been
+# authored for the player's own level, so outlevelling a zone does not turn its
+# quest chains into scraps. FloorPct then guarantees a minimum payout as a
+# percentage of the current level's XP bar, which catches quests whose rescaled
+# value still reads as noise. Repeat turn-ins of a repeatable quest are always
+# left at zero and never get the floor.
+LivingGear.QuestScale.Enable = 1
+LivingGear.QuestScale.FloorPct = 4
+
+# Creature damage-school immunity from creature_template is downgraded to an
+# 80% resist, so "immune to Frost" mobs stop existing while still shrugging off
+# most of the hit. Boss-script invulnerability (a real aura) and every player
+# immunity are unaffected. See core-patch 0017.
+LivingGear.SoftenCreatureImmunity = 1

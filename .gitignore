@@ -142,3 +142,4 @@ tools/client-update/soap.env
 
 # build transcripts kept for a single session
 /build-*.txt
+/build-*.log

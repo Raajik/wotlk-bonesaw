@@ -43,6 +43,7 @@
 #include "TemporarySummon.h"
 #include "Unit.h"
 #include "Util.h"
+#include "World.h"
 #include "QuestDef.h"
 #include "WorldSession.h"
 
@@ -106,6 +107,14 @@ uint32 const SPELL_TRACK_HERB = 910171;
 // you, which for most characters is the first pull that goes wrong.
 uint32 const SPELL_CC_REDUCTION = 910172;
 float const CC_REDUCTION_PCT = 0.95f;
+// Shadow Dance's visible half (2026-08-22). SPELL_SHADOW_DANCE above stays
+// the account perk flag; this is the real aura carrying the +10% attack
+// power, cast on the Rogue and their party so it shows up in the buff bar
+// like any other raid buff instead of being an invisible stat modifier.
+uint32 const SPELL_SHADOW_DANCE_BUFF = 910173;
+// Cooking regen (2026-08-22): real aura feeding MOD_REGEN/MOD_POWER_REGEN,
+// base points set per-cast from the player's max health/mana. See TickCooking.
+uint32 const SPELL_COOK_REGEN = 910174;
 uint32 const NATIVE_FIND_MINERALS = 2580;
 uint32 const NATIVE_FIND_HERBS = 2383;
 uint32 const SPELL_SUBTLETY = 910037;
@@ -139,10 +148,14 @@ uint32 const SPELL_DEADLY_POISON = 2818;
 // stacks with everything else normally), single 10-min timer that refreshes
 // in full on every kill rather than each stack decaying independently.
 uint32 const COMBO_MAX = 10;
-uint32 const COMBO_MS = 600000;
+uint32 const COMBO_SECONDS = 600;
 float const COMBO_XP_PCT_PER_STACK = 0.20f;
 int32 const COMBO_SPEED_PCT_PER_STACK = 5;
-uint32 const COOK_MS = 1000;
+// How often to re-evaluate the cooking regen aura's base points. Not a
+// restore interval any more -- the engine does the restoring -- just how
+// promptly the aura tracks a max-health/mana change.
+uint32 const COOK_REFRESH_MS = 3000;
+uint32 const COOK_BREAKS[] = { 75, 150, 225, 300, 375, 450 };
 float const AMBUSH_MULT = 6.0f;
 
 struct PerkCfg
@@ -158,18 +171,28 @@ struct PerkCfg
     bool autoMount = true;
     uint32 dungeonPar = 1800;
     uint32 curatorTick = 60000;
+    bool questScale = true;
+    uint32 questFloorPct = 4;
+    bool softenImmunity = true;
 };
 
 PerkCfg g_cfg;
 
+// expiresAt is wall-clock unix seconds, NOT getMSTime() -- the whole point
+// of this struct now is that it round-trips through the `lg_combo` table
+// across a logout, and a millisecond counter measured from worldserver start
+// means nothing after a restart.
 struct ComboState
 {
     uint32 stacks = 0;
-    uint32 expiresAt = 0; // whole buff expires together; a new kill refreshes this to now + COMBO_MS
+    uint32 expiresAt = 0; // unix seconds; whole buff expires together, every kill refreshes it to now + COMBO_SECONDS
 };
 
 std::unordered_map<uint32, ComboState> g_combo;
 std::unordered_map<uint32, ComboState> g_groupCombo;
+// Stack count last actually cast on each player, so RecastCombo can leave a
+// correct aura alone instead of resetting its visible timer every second.
+std::unordered_map<uint32, uint32> g_comboShown;
 std::unordered_map<uint32, bool> g_autoMountOn;
 std::unordered_map<uint32, bool> g_soloQueue;
 std::unordered_map<uint32, bool> g_chatOn;
@@ -178,6 +201,9 @@ std::unordered_map<uint32, ObjectGuid> g_cloneGuid;
 std::unordered_map<uint32, uint32> g_dungeonStart;
 std::unordered_map<uint32, bool> g_dungeonDone;
 std::unordered_map<uint32, uint32> g_cookAcc;
+// hp-per-5 in the high 32 bits, mana-per-5 in the low: the last amounts
+// actually cast, so an unchanged tier doesn't re-flash the buff icon.
+std::unordered_map<uint32, uint64> g_cookAmount;
 std::unordered_map<uint32, uint32> g_curatorAcc;
 std::unordered_map<uint32, uint32> g_comboTick;
 // Shadow Dance's +10% attack power half -- keyed by player GUID (not
@@ -266,15 +292,6 @@ void LoadPerks(uint32 accountId)
             set.insert((*result)[0].Get<uint32>());
         while (result->NextRow());
     }
-}
-
-// Gate for the various TEMP DEBUG chat prints scattered through this file
-// (Shadow Dance, Hemorrhage, Cooking) -- only the account actively
-// debugging should see them, not every player on the server (e.g. a
-// second real player sharing this realm).
-bool IsDebugRecipient(Player* player)
-{
-    return player && player->GetSession() && player->GetSession()->GetSecurity() > SEC_PLAYER;
 }
 
 bool HasPerk(Player* player, uint32 spellId)
@@ -576,21 +593,11 @@ void GrantScaledGreyKillXP(Player* killer, Creature* killed)
         killer->GiveXP(xp, killed);
 }
 
-void NotifyZoneScale(Player* player)
-{
-    if (!player || !g_cfg.zoneEnable || !OpenWorld(player))
-        return;
-    uint32 const real = player->GetLevel();
-    uint32 const z = ZoneLevel(player);
-    uint32 eff = std::min(real, z + g_cfg.zoneBuffer);
-    SendLine(player, Acore::StringFormat("ZSCALE|{}|{}|{}", eff, real, z));
-}
-
 uint32 ComboCount(Player* player)
 {
     if (!player)
         return 0;
-    uint32 now = getMSTime();
+    uint32 now = uint32(GameTime::GetGameTime().count());
     ComboState* st = nullptr;
     if (player->GetGroup())
         st = &g_groupCombo[player->GetGroup()->GetGUID().GetCounter()];
@@ -601,17 +608,32 @@ uint32 ComboCount(Player* player)
     return st->stacks;
 }
 
+// 2026-08-22: Kill Combo used to be a hidden (SPELL_ATTR0_PASSIVE) aura
+// blindly recast every single second, with a hand-drawn HUD frame in the
+// addon standing in for the buff icon and counting the timer down itself.
+// The spell is no longer passive and now carries a real 10 minute duration,
+// so the client draws it in the buff bar with a working timer -- but that
+// only works if we STOP recasting it every second, since each recast resets
+// the displayed duration to full. Hence g_comboShown: recast only when the
+// stack count actually changes or the aura has gone missing, and otherwise
+// leave the engine to tick the timer down on its own.
 void RecastCombo(Player* player)
 {
     if (!player || !HasPerk(player, SPELL_COMBO) || !sSpellMgr->GetSpellInfo(SPELL_COMBO))
         return;
-    uint32 stacks = ComboCount(player);
+    uint32 const guid = player->GetGUID().GetCounter();
+    uint32 const stacks = ComboCount(player);
     if (!stacks)
     {
         player->RemoveAurasDueToSpell(SPELL_COMBO);
-        SendLine(player, "COMBO|0|0|0");
+        g_comboShown.erase(guid);
         return;
     }
+    Aura* aura = player->GetAura(SPELL_COMBO);
+    auto const shown = g_comboShown.find(guid);
+    if (aura && shown != g_comboShown.end() && shown->second == stacks)
+        return;
+
     // bp0 is just a display/marker value (effect 1, dummy) -- the real xp
     // bonus is read from ComboCount() directly in OnPlayerGiveXP, not from
     // the aura. bp1 (effect 2, native MOD_INCREASE_SPEED) is what actually
@@ -619,14 +641,40 @@ void RecastCombo(Player* player)
     int32 xpMarker = int32(stacks);
     int32 speedPct = int32(stacks) * COMBO_SPEED_PCT_PER_STACK;
     player->CastCustomSpell(player, SPELL_COMBO, &xpMarker, &speedPct, nullptr, true);
-    SendLine(player, Acore::StringFormat("COMBO|{}|{}|{}", stacks, COMBO_MAX, COMBO_MS / 1000));
+    g_comboShown[guid] = stacks;
+
+    if (Aura* cast = player->GetAura(SPELL_COMBO))
+    {
+        // Real aura stacks, so the buff icon carries the "x7" the old HUD
+        // used to print. This has to come before the speed amount is put
+        // back: Aura::SetStackAmount recalculates every effect's amount from
+        // the spell's own base points, which throws away the custom value
+        // CastCustomSpell just passed in and would silently drop the move
+        // speed bonus to zero.
+        cast->SetStackAmount(uint8(stacks));
+        if (AuraEffect* speed = cast->GetEffect(EFFECT_1))
+            speed->ChangeAmount(speedPct);
+
+        // Show the time actually left rather than a fresh 10 minutes. Matters
+        // at login, where the buff is usually part spent already.
+        uint32 const now = uint32(GameTime::GetGameTime().count());
+        ComboState const& st = player->GetGroup()
+            ? g_groupCombo[player->GetGroup()->GetGUID().GetCounter()]
+            : g_combo[guid];
+        if (st.expiresAt > now)
+        {
+            int32 const remaining = int32(st.expiresAt - now) * IN_MILLISECONDS;
+            cast->SetMaxDuration(int32(COMBO_SECONDS) * IN_MILLISECONDS);
+            cast->SetDuration(remaining);
+        }
+    }
 }
 
 void AddCombo(Player* player)
 {
     if (!player || !HasPerk(player, SPELL_COMBO))
         return;
-    uint32 now = getMSTime();
+    uint32 now = uint32(GameTime::GetGameTime().count());
     ComboState* st = nullptr;
     if (Group* group = player->GetGroup())
         st = &g_groupCombo[group->GetGUID().GetCounter()];
@@ -636,7 +684,7 @@ void AddCombo(Player* player)
         st->stacks = 0; // previous buff had already fully expired -- start fresh
     if (st->stacks < COMBO_MAX)
         ++st->stacks;
-    st->expiresAt = now + COMBO_MS; // every kill refreshes the whole timer, not just adds a new independently-decaying stack
+    st->expiresAt = now + COMBO_SECONDS; // every kill refreshes the whole timer, not just adds a new independently-decaying stack
     if (Group* group = player->GetGroup())
     {
         for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
@@ -645,6 +693,53 @@ void AddCombo(Player* player)
     }
     else
         RecastCombo(player);
+}
+
+// Kill Combo runs for 10 minutes, which is long enough that logging out or
+// taking a zone-change loading screen inside the window used to be a silent
+// full loss -- OnPlayerLogout dropped g_combo outright. Zoning is already
+// safe (the map change keeps the same session and the aura rides along), so
+// this only has to cover the logout/login boundary. Wall-clock expiry is
+// stored rather than a remaining duration, so time spent offline still
+// counts against the window and a 10 minute buff cannot be parked overnight.
+void SaveCombo(Player* player)
+{
+    if (!player)
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    ComboState const& st = g_combo[guid];
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    if (!st.stacks || st.expiresAt <= now)
+    {
+        CharacterDatabase.Execute("DELETE FROM `lg_combo` WHERE `guid` = {}", guid);
+        return;
+    }
+    CharacterDatabase.Execute(
+        "REPLACE INTO `lg_combo` (`guid`, `stacks`, `expires`) VALUES ({}, {}, {})",
+        guid, st.stacks, st.expiresAt);
+}
+
+void LoadCombo(Player* player)
+{
+    if (!player)
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT `stacks`, `expires` FROM `lg_combo` WHERE `guid` = {}", guid);
+    if (!result)
+        return;
+    Field* fields = result->Fetch();
+    uint32 const stacks = fields[0].Get<uint32>();
+    uint32 const expires = fields[1].Get<uint32>();
+    if (!stacks || expires <= now)
+    {
+        CharacterDatabase.Execute("DELETE FROM `lg_combo` WHERE `guid` = {}", guid);
+        return;
+    }
+    ComboState& st = g_combo[guid];
+    st.stacks = std::min(stacks, COMBO_MAX);
+    st.expiresAt = expires;
 }
 
 uint32 RandomPoison(Player* player)
@@ -1078,15 +1173,7 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
 {
     Player* player = ObjectAccessor::FindPlayer(playerGuid);
     if (!player || !player->IsInWorld() || GetClassPerk(player) != SPELL_SUBTLETY)
-    {
-        // TEMP DEBUG 2026-08-21: Hemorrhage AoE reported not working; see
-        // ShouldHaveShadowDanceBuff for context. Remove once confirmed.
-        if (IsDebugRecipient(player))
-            ChatHandler(player->GetSession()).PSendSysMessage(
-                "|cffff8800[Hemo debug]|r bail in Impl: inWorld={} GetClassPerk={}",
-                player->IsInWorld(), GetClassPerk(player));
         return;
-    }
     uint32 garrote = BestOwned(player, SPELL_GARROTE);
     if (!garrote)
         garrote = SPELL_GARROTE;
@@ -1094,19 +1181,13 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
     Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, 10.0f);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
     Cell::VisitObjects(player, searcher, 10.0f);
-    uint32 hitCount = 0;
     for (Unit* u : around)
     {
         if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
             continue;
         player->CastSpell(u, garrote, true);
         player->CastSpell(u, SPELL_PICKPOCKET, true);
-        ++hitCount;
     }
-    if (IsDebugRecipient(player))
-        ChatHandler(player->GetSession()).PSendSysMessage(
-            "|cffff8800[Hemo debug]|r Impl ran: garrote={} nearby={} hit={}",
-            garrote, around.size(), hitCount);
 }
 
 // Deferred the same way ChainAmbush is -- OnPlayerSpellCast fires mid-way
@@ -1135,24 +1216,6 @@ bool ShouldHaveShadowDanceBuff(Player* player)
 {
     if (!player || !player->IsAlive())
         return false;
-    // TEMP DEBUG 2026-08-21: Shadow Dance reported not activating despite
-    // DB confirming both GetClassPerk (lg_char_class_perk) and HasPerk
-    // (lg_account_perk) should be true for the test account -- code audit
-    // found nothing wrong statically, so report the live values actually
-    // seen here. Remove once confirmed working.
-    static uint32 s_debugTick = 0;
-    uint32 const now = getMSTime();
-    bool const dbg = IsDebugRecipient(player)
-        && (!s_debugTick || getMSTimeDiff(s_debugTick, now) >= 3000);
-    if (dbg)
-    {
-        s_debugTick = now;
-        uint32 const cp = GetClassPerk(player);
-        bool const hp = HasPerk(player, SPELL_SHADOW_DANCE);
-        ChatHandler(player->GetSession()).PSendSysMessage(
-            "|cffff8800[SD debug]|r self: GetClassPerk={} (SPELL_SUBTLETY={}) HasPerk(SHADOW_DANCE)={}",
-            cp, SPELL_SUBTLETY, hp);
-    }
     if (GetClassPerk(player) == SPELL_SUBTLETY && HasPerk(player, SPELL_SHADOW_DANCE))
         return true;
     Group* group = player->GetGroup();
@@ -1171,36 +1234,30 @@ bool ShouldHaveShadowDanceBuff(Player* player)
     return false;
 }
 
+// 2026-08-22: this used to call Player::ApplyStatPctModifier directly. The
+// stat change was real, but a raw modifier has no icon, no tooltip and no
+// timer -- from the player's chair an invisible +10% is indistinguishable
+// from a perk that never turned on, which is exactly how it kept getting
+// reported ("no buff, nothing in the spellbook"). SPELL_SHADOW_DANCE_BUFF
+// is a real aura carrying MOD_ATTACK_POWER_PCT, so the engine applies the
+// stat AND the client draws it in the buff bar. g_shadowDanceBuffOn is kept
+// as the edge detector so refreshing every tick doesn't re-flash the icon.
 void ApplyShadowDanceBuff(Player* player, bool apply)
 {
     if (!player)
         return;
     uint32 const guid = player->GetGUID().GetCounter();
-    // TEMP DEBUG 2026-08-21: gating condition confirmed true every tick,
-    // but "no buff" still reported -- this is the one untested step past
-    // that. It's also a raw stat modifier with no aura icon by design, so
-    // even a successful apply has zero visible feedback -- print AP before/
-    // after so there's an unambiguous signal either way.
     bool const wasOn = g_shadowDanceBuffOn[guid];
-    static uint32 s_applyDebugTick = 0;
-    uint32 const applyNow = getMSTime();
-    bool const applyDbg = IsDebugRecipient(player)
-        && (!s_applyDebugTick || getMSTimeDiff(s_applyDebugTick, applyNow) >= 3000);
-    if (applyDbg)
-    {
-        s_applyDebugTick = applyNow;
-        ChatHandler(player->GetSession()).PSendSysMessage(
-            "|cffff8800[SD debug]|r ApplyShadowDanceBuff: apply={} wasOn={} AP_before={}",
-            apply, wasOn, player->GetTotalAttackPowerValue(BASE_ATTACK));
-    }
-    if (wasOn == apply)
+    if (wasOn == apply && (!apply || player->HasAura(SPELL_SHADOW_DANCE_BUFF)))
         return;
     g_shadowDanceBuffOn[guid] = apply;
-    player->ApplyStatPctModifier(UNIT_MOD_ATTACK_POWER, TOTAL_PCT, apply ? 10.0f : -10.0f);
-    if (IsDebugRecipient(player))
-        ChatHandler(player->GetSession()).PSendSysMessage(
-            "|cffff8800[SD debug]|r ApplyShadowDanceBuff: AP_after={}",
-            player->GetTotalAttackPowerValue(BASE_ATTACK));
+    if (apply)
+    {
+        if (sSpellMgr->GetSpellInfo(SPELL_SHADOW_DANCE_BUFF))
+            player->CastSpell(player, SPELL_SHADOW_DANCE_BUFF, true);
+    }
+    else
+        player->RemoveAurasDueToSpell(SPELL_SHADOW_DANCE_BUFF);
 }
 
 void TickShadowDanceBuff(Player* player)
@@ -1221,12 +1278,7 @@ bool BypassStealthRequirement(Unit* caster)
     Player* player = caster->ToPlayer();
     if (!player)
         return false;
-    bool const result = GetClassPerk(player) == SPELL_SUBTLETY && HasPerk(player, SPELL_SHADOW_DANCE);
-    // TEMP DEBUG 2026-08-21: see ShouldHaveShadowDanceBuff for context.
-    if (IsDebugRecipient(player))
-        ChatHandler(player->GetSession()).PSendSysMessage(
-            "|cffff8800[SD debug]|r stealth-bypass check: result={}", result);
-    return result;
+    return GetClassPerk(player) == SPELL_SUBTLETY && HasPerk(player, SPELL_SHADOW_DANCE);
 }
 
 // Rebuilt 2026-08-20/21: was a bare TempSummon + ScriptedAI ("not a real
@@ -1286,59 +1338,67 @@ void SummonClone(Player* player)
     g_cloneGuid[player->GetGUID().GetCounter()] = pet->GetGUID();
 }
 
+// Which cooking tier this account has earned: 1% of max health and mana per
+// second per tier, at 75/150/225/300/375/450 skill. Returns 0 for "no tier".
+uint32 CookingTier(Player* player)
+{
+    if (!player)
+        return 0;
+    uint32 const skill = AccountMaxSkill(player, SKILL_COOKING);
+    for (uint32 i = 6; i-- > 0; )
+        if (skill >= COOK_BREAKS[i] && HasPerk(player, SPELL_COOK[i]))
+            return i + 1;
+    return 0;
+}
+
+// 2026-08-22: reworked from a hand-rolled ModifyHealth/ModifyPower tick to a
+// real aura feeding the engine's own regeneration. The old version restored
+// the right amount but was invisible -- no icon, no tooltip, nothing to
+// check -- so "is cooking regen even on?" was unanswerable without the debug
+// prints this replaces.
+//
+// SPELL_AURA_MOD_REGEN and SPELL_AURA_MOD_POWER_REGEN are the two aura types
+// Player::RegenerateHealth/Regenerate already read for natural regen, and
+// both are denominated per 5 seconds -- hence the x5 below to express a
+// per-second percentage. Letting the engine own it also means the health
+// half correctly stops in combat on its own (RegenerateHealth only adds
+// MOD_REGEN when !IsInCombat()), which the old manual combat bail was
+// approximating by hand.
+//
+// Base points depend on max health/mana, which move with gear and level, so
+// the aura is recast whenever the computed amounts drift or the aura has
+// gone missing -- not blindly every tick, which would re-flash the icon.
 void TickCooking(Player* player, uint32 diff)
 {
     if (!player)
         return;
-    // TEMP DEBUG 2026-08-21: cooking regen reported not working.
-    static uint32 s_debugTick = 0;
-    uint32 const dbgNow = getMSTime();
-    bool const dbg = IsDebugRecipient(player)
-        && (!s_debugTick || getMSTimeDiff(s_debugTick, dbgNow) >= 3000);
-    if (dbg)
-        s_debugTick = dbgNow;
-    if (player->IsInCombat())
+    uint32 const guid = player->GetGUID().GetCounter();
+    g_cookAcc[guid] += diff;
+    if (g_cookAcc[guid] < COOK_REFRESH_MS)
+        return;
+    g_cookAcc[guid] = 0;
+
+    uint32 const tier = CookingTier(player);
+    if (!tier)
     {
-        if (dbg) ChatHandler(player->GetSession()).PSendSysMessage("|cffff8800[Cook debug]|r bail: in combat");
+        if (player->HasAura(SPELL_COOK_REGEN))
+            player->RemoveAurasDueToSpell(SPELL_COOK_REGEN);
+        g_cookAmount.erase(guid);
         return;
     }
-    uint32 acc = player->GetGUID().GetCounter();
-    g_cookAcc[acc] += diff;
-    if (g_cookAcc[acc] < COOK_MS)
+    if (!sSpellMgr->GetSpellInfo(SPELL_COOK_REGEN))
         return;
-    g_cookAcc[acc] = 0;
-    uint32 skill = AccountMaxSkill(player, SKILL_COOKING);
-    int pct = 0;
-    if (skill >= 450 && HasPerk(player, SPELL_COOK[5]))
-        pct = 6;
-    else if (skill >= 375 && HasPerk(player, SPELL_COOK[4]))
-        pct = 5;
-    else if (skill >= 300 && HasPerk(player, SPELL_COOK[3]))
-        pct = 4;
-    else if (skill >= 225 && HasPerk(player, SPELL_COOK[2]))
-        pct = 3;
-    else if (skill >= 150 && HasPerk(player, SPELL_COOK[1]))
-        pct = 2;
-    else if (skill >= 75 && HasPerk(player, SPELL_COOK[0]))
-        pct = 1;
-    if (IsDebugRecipient(player))
-        ChatHandler(player->GetSession()).PSendSysMessage(
-            "|cffff8800[Cook debug]|r tick: skill={} pct={} HasPerk[0..5]={},{},{},{},{},{}",
-            skill, pct,
-            HasPerk(player, SPELL_COOK[0]), HasPerk(player, SPELL_COOK[1]), HasPerk(player, SPELL_COOK[2]),
-            HasPerk(player, SPELL_COOK[3]), HasPerk(player, SPELL_COOK[4]), HasPerk(player, SPELL_COOK[5]));
-    if (!pct)
+
+    int32 const hpPer5 = int32(player->CountPctFromMaxHealth(tier)) * 5;
+    int32 const manaPer5 = int32(CalculatePct(player->GetMaxPower(POWER_MANA), tier)) * 5;
+    uint64 const want = (uint64(uint32(hpPer5)) << 32) | uint32(manaPer5);
+    auto const cached = g_cookAmount.find(guid);
+    if (cached != g_cookAmount.end() && cached->second == want && player->HasAura(SPELL_COOK_REGEN))
         return;
-    uint32 hp = player->CountPctFromMaxHealth(pct);
-    if (player->GetHealth() < player->GetMaxHealth())
-        player->ModifyHealth(int32(hp));
-    uint32 maxMana = player->GetMaxPower(POWER_MANA);
-    if (maxMana)
-    {
-        int32 mana = int32(CalculatePct(maxMana, pct));
-        if (player->GetPower(POWER_MANA) < int32(maxMana))
-            player->ModifyPower(POWER_MANA, mana);
-    }
+    g_cookAmount[guid] = want;
+    int32 hp = hpPer5;
+    int32 mana = manaPer5;
+    player->CastCustomSpell(player, SPELL_COOK_REGEN, &hp, &mana, nullptr, true);
 }
 
 void CatchUpProfession(Player* player)
@@ -1370,9 +1430,8 @@ void CatchUpProfession(Player* player)
         if (craft >= need[i])
             UnlockPerk(player, SPELL_CRAFT[i], nullptr);
     uint32 cook = AccountMaxSkill(player, SKILL_COOKING);
-    uint32 cookNeed[] = { 75, 150, 225, 300, 375, 450 };
     for (uint32 i = 0; i < 6; ++i)
-        if (cook >= cookNeed[i])
+        if (cook >= COOK_BREAKS[i])
             UnlockPerk(player, SPELL_COOK[i], nullptr);
     uint32 maxLv = AccountMaxLevel(player);
     if (maxLv >= 10)
@@ -1776,7 +1835,6 @@ void SendPerkSync(Player* player)
         if (!ids.empty())
             SendLine(player, "PKALL|" + ids);
     }
-    NotifyZoneScale(player);
     SendLine(player, Acore::StringFormat("JMP|{}|0", g_jumpMode[acc]));
     SendLine(player, Acore::StringFormat("AM|{}", g_autoMountOn[acc] ? 1 : 0));
     SendLine(player, Acore::StringFormat("PULL|{}", g_pullRadiusOn[acc] ? 1 : 0));
@@ -1792,7 +1850,6 @@ public:
         PLAYERHOOK_ON_LOGIN,
         PLAYERHOOK_ON_LOGOUT,
         PLAYERHOOK_ON_UPDATE,
-        PLAYERHOOK_ON_UPDATE_ZONE,
         PLAYERHOOK_ON_MAP_CHANGED,
         PLAYERHOOK_ON_CREATURE_KILL,
         PLAYERHOOK_ON_CREATURE_KILLED_BY_PET,
@@ -1801,6 +1858,7 @@ public:
         PLAYERHOOK_ON_LEARN_SPELL,
         PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT,
         PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL,
+        PLAYERHOOK_ON_QUEST_COMPUTE_EXP,
         PLAYERHOOK_ON_AFTER_SPEC_SLOT_CHANGED
     }) { }
 
@@ -1838,6 +1896,7 @@ public:
         if (HasPerk(player, SPELL_SWIM))
             player->CastSpell(player, SPELL_SWIM, true);
         GrantSubtletyPerks(player);
+        LoadCombo(player);
         RecastCombo(player);
     }
 
@@ -1846,8 +1905,12 @@ public:
         if (!player)
             return;
         uint32 g = player->GetGUID().GetCounter();
+        SaveCombo(player);
         g_combo.erase(g);
+        g_comboShown.erase(g);
         g_comboTick.erase(g);
+        g_cookAcc.erase(g);
+        g_cookAmount.erase(g);
         g_pullRadiusTick.erase(g);
         g_trackOreTick.erase(g);
         g_trackHerbTick.erase(g);
@@ -1917,16 +1980,10 @@ public:
         }
     }
 
-    void OnPlayerUpdateZone(Player* player, uint32 /*newZone*/, uint32 /*newArea*/) override
-    {
-        NotifyZoneScale(player);
-    }
-
     void OnPlayerMapChanged(Player* player) override
     {
         if (!player || !player->GetMap())
             return;
-        NotifyZoneScale(player);
         if (player->GetMap()->IsDungeon())
         {
             uint32 inst = player->GetMap()->GetInstanceId();
@@ -1988,6 +2045,59 @@ public:
         amount = uint32(float(amount) * mult);
         if (!amount)
             amount = 1;
+    }
+
+    // Zone scaling already re-bases KILL xp onto the level the player is
+    // actually shown (ScaledKillXP). Quest XP had no equivalent, so the
+    // moment you outlevelled a zone its quests paid in scraps -- the mobs
+    // beside them stayed worth killing while the quest chain running through
+    // them did not. Two-part fix, matching what was agreed:
+    //
+    //   1. Rescale: recompute the reward as though the quest had been
+    //      authored for this player's level. Applied as a RATIO against the
+    //      engine's own number rather than as a replacement, so the quest
+    //      rate config, SPELL_AURA_MOD_XP_QUEST_PCT and everything else
+    //      CalculateQuestRewardXP folded in survive untouched.
+    //   2. Floor: never pay less than QUEST_XP_FLOOR_PCT of the current
+    //      level's bar, which catches quests whose rescaled value still
+    //      reads as noise.
+    //
+    // Deliberately does NOT fire for a repeat turn-in. The engine zeroes
+    // those on purpose (rewarded && !DF && !daily/weekly/monthly, see
+    // Player::RewardQuest) and a floor applied there would turn any
+    // repeatable quest into an infinite XP tap.
+    void OnPlayerQuestComputeXP(Player* player, Quest const* quest, uint32& xpValue) override
+    {
+        if (!player || !quest || !g_cfg.questScale)
+            return;
+        if (player->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
+            return;
+        bool const repeatTurnIn = player->IsQuestRewarded(quest->GetQuestId())
+            && !quest->IsDFQuest()
+            && !(quest->IsDaily() || quest->IsWeekly() || quest->IsMonthly());
+        if (repeatTurnIn)
+            return;
+
+        uint8 const level = uint8(player->GetLevel());
+        // What the quest is worth at its own level vs. at the player's. The
+        // second is just the QuestXP row for the player's level: XPValue's
+        // diffFactor saturates at 10 when quest level == player level, and
+        // the /10 cancels it out.
+        uint32 const rawAtQuestLevel = quest->XPValue(level);
+        QuestXPEntry const* xpEntry = sQuestXPStore.LookupEntry(level);
+        // QuestXPEntry::Exp is a fixed 10-wide array and RewardXPDifficulty
+        // comes straight out of quest_template, so bound it rather than
+        // trusting the data -- the core indexes this unchecked, but a bad row
+        // reading off the end of a DBC record is not a bug worth inheriting.
+        uint32 const difficulty = quest->GetXPId();
+        uint32 const rawAtPlayerLevel = (xpEntry && difficulty < 10) ? xpEntry->Exp[difficulty] : 0;
+        if (rawAtPlayerLevel > rawAtQuestLevel && rawAtQuestLevel > 0)
+            xpValue = uint32(uint64(xpValue) * rawAtPlayerLevel / rawAtQuestLevel);
+
+        uint32 const forNextLevel = player->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+        uint32 const floor = uint32(uint64(forNextLevel) * g_cfg.questFloorPct / 100);
+        if (xpValue < floor)
+            xpValue = floor;
     }
 
     void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override
@@ -2387,6 +2497,11 @@ void LoadPerkConfig()
     g_cfg.zoneFloor = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.RewardFloor", 0.35f);
     g_cfg.zoneDecay = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.RewardGapDecay", 12.0f);
     g_cfg.zoneIncoming = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.IncomingPerLevel", 0.12f);
+    g_cfg.softenImmunity = sConfigMgr->GetOption<bool>("LivingGear.SoftenCreatureImmunity", true);
+    g_cfg.questScale = sConfigMgr->GetOption<bool>("LivingGear.QuestScale.Enable", true);
+    g_cfg.questFloorPct = sConfigMgr->GetOption<uint32>("LivingGear.QuestScale.FloorPct", 4);
+    if (g_cfg.questFloorPct > 100)
+        g_cfg.questFloorPct = 100;
     g_cfg.instantMount = sConfigMgr->GetOption<bool>("LivingGear.InstantMount", true);
     g_cfg.uniformMount = sConfigMgr->GetOption<bool>("LivingGear.UniformMountSpeed", true);
     g_cfg.autoMount = sConfigMgr->GetOption<bool>("LivingGear.AutoMount", true);
@@ -2429,6 +2544,17 @@ public:
 void LivingGear_GrantSubtletyPerks(Player* player)
 {
     LivingGearPerks::PerksPlayer::GrantSubtletyPerks(player);
+}
+
+// Config gate for the creature-immunity core patch in Unit.cpp. A creature
+// that would be outright immune to a damage school takes a flat 80% resist
+// instead, so "this mob cannot be hurt by Frost at all" stops existing while
+// the mob still shrugs off most of the hit. Player immunities (Divine
+// Shield, Ice Block, Anti-Magic Shell) are untouched -- the core patch
+// checks IsCreature() before ever asking this.
+bool LivingGear_SoftenCreatureImmunity()
+{
+    return LivingGearPerks::g_cfg.softenImmunity;
 }
 
 // Called from a core patch in Spell::CheckCast (Spell.cpp).

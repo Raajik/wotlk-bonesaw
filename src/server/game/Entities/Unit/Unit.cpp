@@ -2367,6 +2367,13 @@ void Unit::CalcAbsorbResist(DamageInfo& dmgInfo, bool Splited)
         if (i > 8)
             i = 8;
 
+        // Bonesaw: a creature whose template says it is flat-out immune to
+        // this school resists 80% instead. Without this it would take FULL
+        // damage, since the immunity checks upstream now deliberately report
+        // "not immune" in order to get the hit this far.
+        if (victim->LivingGearSoftenedSchoolImmunity(schoolMask))
+            i = 8;
+
         float damageResisted = float(damage * i / 10);
 
         if (damageResisted) // if equal to 0, checking these is pointless
@@ -9849,6 +9856,47 @@ int32 Unit::SpellBaseHealingBonusDone(SpellSchoolMask schoolMask)
     return AdvertisedBenefit;
 }
 
+// Living Gear core-patch: config gate, LivingGear_Perks.cpp.
+bool LivingGear_SoftenCreatureImmunity();
+
+// Living Gear core-patch: "mobs that are outright immune to a damage school
+// should not exist -- they should just resist most of it instead."
+//
+// Scoped deliberately to immunity that came from creature_template. Creature::
+// LoadTemplateImmunities registers those under a sentinel spell id (uint32
+// max) precisely so template-sourced entries can be told apart from ones an
+// aura put there, and that distinction is what keeps this safe: a boss whose
+// script makes it invulnerable for a phase does so with a real spell, so its
+// immunity is left completely alone. Player immunities never reach here at
+// all (IsCreature() below).
+//
+// An aura-sourced immunity covering the same school also wins -- a template
+// Fire-immune mob that additionally gains a real Fire-immunity aura is still
+// genuinely immune for as long as that aura is up.
+bool Unit::LivingGearSoftenedSchoolImmunity(SpellSchoolMask schoolMask) const
+{
+    static uint32 constexpr templateSpellId = std::numeric_limits<uint32>::max();
+
+    if (schoolMask == SPELL_SCHOOL_MASK_NONE || !IsCreature())
+        return false;
+    if (!LivingGear_SoftenCreatureImmunity())
+        return false;
+
+    uint32 templateMask = 0;
+    uint32 auraMask = 0;
+    for (uint32 op : { uint32(IMMUNITY_SCHOOL), uint32(IMMUNITY_DAMAGE) })
+        for (auto const& [immunitySchoolMask, immunityAuraId] : m_spellImmune[op])
+        {
+            if (immunityAuraId == templateSpellId)
+                templateMask |= immunitySchoolMask;
+            else
+                auraMask |= immunitySchoolMask;
+        }
+
+    return Unit::IsImmuneMaskFully(SpellSchoolMask(templateMask), schoolMask)
+        && !Unit::IsImmuneMaskFully(SpellSchoolMask(auraMask), schoolMask);
+}
+
 uint32 Unit::GetDamageImmunityMask() const
 {
     uint32 mask = 0;
@@ -9901,6 +9949,12 @@ bool Unit::IsImmunedToDamage(SpellSchoolMask schoolMask) const
     if (schoolMask == SPELL_SCHOOL_MASK_NONE)
         return false;
 
+    // Bonesaw: creature_template immunity becomes an 80% resist, applied in
+    // CalcAbsorbResist. Reporting "not immune" here is what lets the damage
+    // reach that code path at all.
+    if (LivingGearSoftenedSchoolImmunity(schoolMask))
+        return false;
+
     // If m_immuneToSchool type contains all requested schools, IMMUNE damage.
     SpellImmuneContainer const& schoolList = m_spellImmune[IMMUNITY_SCHOOL];
     for (auto const& itr : schoolList)
@@ -9925,6 +9979,10 @@ bool Unit::IsImmunedToDamage(Unit const* caster, SpellInfo const* spellInfo) con
 
     SpellSchoolMask schoolMask = SpellSchoolMask(spellInfo->GetSchoolMask());
     if (schoolMask == SPELL_SCHOOL_MASK_NONE)
+        return false;
+
+    // Bonesaw: see LivingGearSoftenedSchoolImmunity.
+    if (LivingGearSoftenedSchoolImmunity(schoolMask))
         return false;
 
     auto hasImmunity = [&](SpellImmuneContainer const& container)
@@ -9960,6 +10018,10 @@ bool Unit::IsImmunedToDamage(Unit const* caster, SpellInfo const* spellInfo) con
 bool Unit::IsImmunedToSchool(SpellSchoolMask schoolMask) const
 {
     if (schoolMask == SPELL_SCHOOL_MASK_NONE)
+        return false;
+
+    // Bonesaw: see LivingGearSoftenedSchoolImmunity.
+    if (LivingGearSoftenedSchoolImmunity(schoolMask))
         return false;
 
     // Check IMMUNITY_SCHOOL: returns true if ALL schools in the mask are covered by at least one immunity

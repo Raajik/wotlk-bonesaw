@@ -54,6 +54,7 @@ bool LivingGear_HandleVaultCommand(Player* player, std::string const& msg); // L
 bool LivingGear_HandlePerksCommand(Player* player, std::string const& msg); // LivingGear_Perks.cpp
 bool LivingGear_HandleClassPerksCommand(Player* player, std::string const& msg); // LivingGear_ClassPerks.cpp
 bool LivingGear_HandleNextCommand(Player* player, std::string const& msg); // LivingGear_Next.cpp
+bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg); // LivingGear_Support.cpp
 
 // Login-time state pushes, reused to answer a client REQ. See SendAddonSync.
 void LivingGear_SendPerksSync(Player* player); // LivingGear_Perks.cpp
@@ -1262,6 +1263,8 @@ bool DispatchAddonCommand(Player* player, std::string const& raw)
     if (::LivingGear_HandleClassPerksCommand(player, msg))
         return true;
     if (::LivingGear_HandleNextCommand(player, msg))
+        return true;
+    if (::LivingGear_HandleSupportCommand(player, msg))
         return true;
 
     // Every "this button does nothing" report against this module has

@@ -423,7 +423,8 @@ public:
         PLAYERHOOK_ON_PVP_KILL,
         PLAYERHOOK_ON_GIVE_REPUTATION,
         PLAYERHOOK_ON_REPUTATION_RANK_CHANGE,
-        PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL
+        PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL,
+        PLAYERHOOK_ON_UPDATE_GATHERING_SKILL
     }) { }
 
     void OnPlayerLogin(Player* player) override
@@ -484,6 +485,28 @@ public:
             return;
         NoteExaltedFaction(player->GetSession()->GetAccountId(), factionID);
         CheckReputationPerks(player);
+    }
+
+    // Lockpicking is a profession in every way that matters here -- it is
+    // trained, it grinds 1-400, and a Rogue works it exactly the way a
+    // Blacksmith works Blacksmithing -- but it is not a crafting skill, so
+    // it comes up UpdateGatherSkill() instead of UpdateCraftSkill() and the
+    // Trade perks below never saw it. A Rogue with all six tiers earned was
+    // still picking up single points at a time.
+    //
+    // Only the gain is boosted. Lockpicking deliberately stays out of
+    // TRADE_SKILLS, so it cannot unlock the Trade tiers by itself -- a
+    // Rogue who has never touched a profession still gets 1 point a pick.
+    void OnPlayerUpdateGatheringSkill(Player* player, uint32 skillId, uint32 /*currentLevel*/,
+        uint32 /*gray*/, uint32 /*green*/, uint32 /*yellow*/, uint32& gain) override
+    {
+        if (!player || !gain || skillId != SKILL_LOCKPICKING)
+            return;
+        float const mult = TradePerkMultiplier(player);
+        if (mult <= 1.0f)
+            return;
+        uint32 const boosted = uint32(float(gain) * mult + 0.5f);
+        gain = boosted < 1 ? 1 : boosted;
     }
 
     void OnPlayerUpdateCraftingSkill(Player* player, SkillLineAbilityEntry const* skill,

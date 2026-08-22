@@ -502,10 +502,27 @@ namespace lfg
                 lockData = LFG_LOCKSTATUS_RAID_LOCKED;
             else if (dungeon->difficulty > DUNGEON_DIFFICULTY_NORMAL && (!mapEntry || !mapEntry->IsRaid()) && sInstanceSaveMgr->PlayerIsPermBoundToInstance(player->GetGUID(), dungeon->map, Difficulty(dungeon->difficulty)))
                 lockData = LFG_LOCKSTATUS_RAID_LOCKED;
+            // Bonesaw: scale UP, not down.
+            //
+            // TOO_LOW_LEVEL is kept exactly as it was: a dungeon above your
+            // level is still listed (a locked dungeon is shown greyed out
+            // with its reason, not hidden) but cannot be queued for. Nothing
+            // scales content down to a player who is under it.
+            //
+            // TOO_HIGH_LEVEL is removed. Outlevelling a dungeon is not a
+            // reason to lock it -- zone scaling already re-bases open-world
+            // creatures and their rewards onto the player's own level, and
+            // the same reasoning applies to a dungeon a group deliberately
+            // chose to walk into. This is also what keeps a small queue
+            // usable: without it, every level bracket slices the handful of
+            // people online into pieces that never fill.
+            //
+            // Every other lock reason is untouched -- expansion, disabled
+            // dungeons, raid/instance binds, seasonal, the Death Knight
+            // starting quest, and all the item/quest/achievement/gear-score
+            // access requirements below still apply exactly as before.
             else if ((dungeon->minlevel > level && !sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE)) || (sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE) && ar && ar->levelMin > 0 && ar->levelMin > level))
                 lockData = LFG_LOCKSTATUS_TOO_LOW_LEVEL;
-            else if ((dungeon->maxlevel < level && !sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE)) || (sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE) && ar && ar->levelMax > 0 && ar->levelMax < level))
-                lockData = LFG_LOCKSTATUS_TOO_HIGH_LEVEL;
             else if (dungeon->seasonal && !IsSeasonActive(dungeon->id))
                 lockData = LFG_LOCKSTATUS_NOT_IN_SEASON;
             else if (player->IsClass(CLASS_DEATH_KNIGHT) && !player->IsGameMaster() &&!(player->IsQuestRewarded(13188) || player->IsQuestRewarded(13189)))
@@ -1902,16 +1919,18 @@ namespace lfg
                 if (player->GetGroup() != grp) // pussywizard: could not add because group was full
                     continue;
 
-                // Add the cooldown spell if queued for a random dungeon
-                // xinef: add aura
-                if ((randomDungeon || selectedRandomLfgDungeon(player->GetGUID())) && !player->HasAura(LFG_SPELL_DUNGEON_COOLDOWN))
+                // Bonesaw: the 15 minute Deserter-style cooldown for having
+                // COMPLETED a random dungeon is not applied. On a server this
+                // size the cooldown does nothing but stop the handful of
+                // people online from running another dungeon together, which
+                // is the opposite of what the finder is for. randomDungeon is
+                // still tracked because the teleport bookkeeping below reads
+                // it. The separate 150 second penalty for DECLINING a
+                // proposal is deliberately left in place -- that one exists to
+                // stop a player repeatedly collapsing other people's groups.
+                if (randomDungeon || selectedRandomLfgDungeon(player->GetGUID()))
                 {
                     randomDungeon = true;
-                    // if player is debugging, don't add dungeon cooldown
-                    if (!m_Testing)
-                    {
-                        player->AddAura(LFG_SPELL_DUNGEON_COOLDOWN, player);
-                    }
                 }
 
                 if (player->GetMapId() == uint32(dungeon->map))
@@ -3031,8 +3050,14 @@ namespace lfg
         for (lfg::LFGDungeonContainer::const_iterator itr = LfgDungeonStore.begin(); itr != LfgDungeonStore.end(); ++itr)
         {
             lfg::LFGDungeonData const& dungeon = itr->second;
+            // Bonesaw: only the UPPER bound is dropped, so every tier of
+            // Random Dungeon the player has outlevelled stays on offer while
+            // tiers above them still do not appear. Same rule as the
+            // individual dungeons in InitializeLockedDungeons(): scale up,
+            // never down. Expansion is still enforced either way -- an
+            // account without the expansion genuinely cannot enter those maps.
             if ((dungeon.type == lfg::LFG_TYPE_RANDOM || (dungeon.seasonal && sLFGMgr->IsSeasonActive(dungeon.id)))
-                    && dungeon.expansion <= expansion && dungeon.minlevel <= level && level <= dungeon.maxlevel)
+                    && dungeon.expansion <= expansion && dungeon.minlevel <= level)
                 randomDungeons.insert(dungeon.Entry());
         }
         return randomDungeons;

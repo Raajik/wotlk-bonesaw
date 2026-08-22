@@ -1,0 +1,32 @@
+Stop applying the 15 minute cooldown for completing a random dungeon.
+Touches: src/server/game/DungeonFinding/LFGMgr.cpp, LFGMgr::TeleportPlayer path
+
+Why: player request. LFG_SPELL_DUNGEON_COOLDOWN (71328) exists to pace a
+retail-sized population off the random-dungeon reward. On a realm with a
+handful of concurrent players it only stops those players from immediately
+running something else together, which is the opposite of what the finder
+is for here.
+
+Only the completion cooldown goes. The 150 second penalty applied further
+down for DECLINING or timing out on a proposal is deliberately kept -- that
+one is not about pacing rewards, it exists so one player cannot repeatedly
+collapse other people's groups at no cost.
+
+The `randomDungeon` flag is still set, because the teleport bookkeeping
+below it reads the flag. The join-time HasAura(LFG_SPELL_DUNGEON_COOLDOWN)
+checks are left alone; with the completion cooldown never applied they now
+only ever gate someone serving the decline penalty, which is correct.
+
+--- a/src/server/game/DungeonFinding/LFGMgr.cpp
++++ b/src/server/game/DungeonFinding/LFGMgr.cpp
+@@ teleport loop, "Add the cooldown spell if queued for a random dungeon"
+-                if ((randomDungeon || selectedRandomLfgDungeon(player->GetGUID())) && !player->HasAura(LFG_SPELL_DUNGEON_COOLDOWN))
++                if (randomDungeon || selectedRandomLfgDungeon(player->GetGUID()))
+                 {
+                     randomDungeon = true;
+-                    // if player is debugging, don't add dungeon cooldown
+-                    if (!m_Testing)
+-                    {
+-                        player->AddAura(LFG_SPELL_DUNGEON_COOLDOWN, player);
+-                    }
+                 }
