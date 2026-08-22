@@ -109,6 +109,37 @@ like your tree's exact line numbers.
   Empty by default, so stock behaviour is unchanged without it. Skip it if
   one address reaches your server from everywhere.
 
+- **0013-lfg-proposal-role-narrow.core-patch** -- `LFGHandler.cpp`,
+  `WorldSession::SendLfgUpdateProposal()`. Narrows every proposal member's
+  role mask to exactly one role bit before it goes on the wire. The 3.3.5
+  client hard-errors ("Unknown role: UNKNOWN") on any mask it can't resolve
+  to one role icon -- both an empty mask and one that still has several role
+  bits set. Supersedes patch 0003, which only fixed one of the producers;
+  fixing it at the packet means no queue/bot path can throw Lua errors in a
+  player's client. Recommended for anyone running mod-playerbots or anything
+  else that forms incomplete LFG groups.
+
+- **0015-zulfarrak-bly-auto-gossip.core-patch** -- `zulfarrak.cpp`,
+  `npc_sergeant_blyAI::sGossipHello()`. Talking to Sergeant Bly once the
+  pyramid event is done starts the Bly's Band fight directly instead of
+  offering a one-option gossip menu first. Needed because playerbots never
+  select a gossip option, so a bot-filled group could not trigger the
+  encounter (or its loot) at all. Skip it if every group on your realm is
+  led by a real player.
+
+- **0016-playerbot-lfg-fill-roles.core-patch** -- `mod-playerbots`'s
+  `RandomPlayerbotMgr.cpp`/`.h`. Makes LFG bot fill produce a group that can
+  actually clear a dungeon. Two halves: the fill picks bots by the role the
+  group still needs (1 tank / 1 healer for a 5-man, 2 tanks and a healer per
+  5 bodies for a raid) and records the role each bot really plays rather than
+  a flat DAMAGE; and the periodic queue-fill pass makes those roles exist in
+  the first place, respeccing or retargeting idle bots and logging extra ones
+  in over the configured cap when nothing online can cover a tank or healer.
+  Applies on top of 0003, which it supersedes -- same function, same lines.
+  Recommended for anyone running mod-playerbots with LFG fill on; skip it and
+  a bot-filled group is four random idle bots with no guaranteed tank or
+  healer.
+
 Per-viewer mob level scaling (previously patch 0008, `Object.cpp`) no
 longer needs a core patch at all -- `Object::BuildValuesUpdate()` turned
 out to be dead code for creatures/players (`Unit` has its own override

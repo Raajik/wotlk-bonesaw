@@ -1,0 +1,418 @@
+Pick LFG fill bots by the role the group is still missing, record the role they
+actually play instead of a flat DAMAGE, and make the missing roles exist.
+Touches: modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp and .h --
+FillLfgRaidGroup(), EnsureQueueFillBots(), plus new EnsureLfgRoleBots(),
+RetargetBotToBand() and LoginExtraBotsForRole()
+Applies on top of 0003-playerbot-lfg-role.core-patch (same function, same lines).
+
+Why: FillLfgRaidGroup() selected bots on team, level range and idle flag and
+nothing else, so a bot-filled dungeon group was whichever four idle bots the
+map iterated first. No tank, no healer, no guarantee of either -- whether the
+run was viable came down to the luck of their specs. Patch 0003 then stamped
+every one of them PLAYER_ROLE_DAMAGE, which was only ever about giving the
+proposal packet something the client could render.
+
+This fills to a shape instead. Each pass asks for the role the group still
+needs -- 1 tank and 1 healer for a 5-man, 2 tanks and a healer per 5 bodies for
+a raid fill -- and takes the first idle bot that plays it, counting the real
+players already in the group so a player who queued as tank isn't handed a
+second one. If no idle bot can fill the role, it falls back to any eligible bot
+rather than leaving the group a body short.
+
+The role each bot actually plays now goes onto its group member slot
+(Group::AddMember's roles argument, which drives the party-frame role icon) as
+well as into LFG's player data, so nothing downstream sees a bot whose recorded
+role is a lie. Role detection is PlayerbotAI::IsTank/IsHeal, which reads a bot's
+own active strategy and falls back to spec and class -- the same path real party
+members resolve through, since they have no bot AI to ask.
+
+Shaping the fill is only half of it, because it can only pick from bots that
+already exist. The second half makes them exist. EnsureQueueFillBots() already
+ran a periodic pass that retargeted idle bots into the level band real players
+were queueing for; it now also makes sure that band actually contains a tank and
+a healer for the faction in question, trying three things in order of cost:
+
+  1. Respec an idle bot that is already at the right level and whose class can
+     play the role (talents first, then gear -- InitEquipment picks for whatever
+     spec the bot has when it runs).
+  2. Retarget an idle bot of a capable class into the level band, then respec it.
+  3. Log extra bots in, deliberately bypassing AddRandomBots()' bot_count cap: a
+     queue short a tank is short a tank whether or not the realm is at its
+     configured bot count. They are ordinary random bots once in world, so the
+     usual in-world timer logs them out again and the population settles itself.
+
+Spec templates are matched by keyword against the playerbots.conf
+AiPlayerbot.PremadeSpecName.* names ("prot pve", "bear pve", "resto pve" ...)
+and the result is then verified against the bot's real role, so a renamed or
+reordered template costs a retry rather than producing a wrong bot.
+
+The role pass runs after the existing retargeting so bots pulled into the band
+on this same tick are candidates, and only for LFG brackets -- battlegrounds
+don't care which role turns up.
+
+--- a/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
++++ b/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+@@ (above IsIdleFillBot)
++// The role a player would actually fill in a dungeon: the bot's own active
++// strategy where it has one, spec and class otherwise -- which is also what real
++// party members resolve through, since they have no bot AI to ask.
++static uint8 LfgFillRoleOf(Player* player)
++{
++    if (PlayerbotAI::IsTank(player))
++        return lfg::PLAYER_ROLE_TANK;
++
++    if (PlayerbotAI::IsHeal(player))
++        return lfg::PLAYER_ROLE_HEALER;
++
++    return lfg::PLAYER_ROLE_DAMAGE;
++}
++
+ static bool IsIdleFillBot(Player* bot)
+ {
+@@ RandomPlayerbotMgr::FillLfgRaidGroup(Group* group, uint32 maxPlayers, uint8 minLevel, uint8 maxLevel)
+     TeamId const team = leader->GetTeamId();
+-    uint32 added = 0;
++
++    // What the group still needs, so the fill doesn't hand a player four random
++    // idle bots and no tank or healer. 5-man is the LFG 1/1/3; a raid fill gets
++    // two tanks and a healer per five bodies, roughly the shape 10s and 25s run.
++    uint32 const tanksWanted = maxPlayers <= MAXGROUPSIZE ? 1 : 2;
++    uint32 const healersWanted = maxPlayers <= MAXGROUPSIZE ? 1 : std::max<uint32>(2, maxPlayers / 5);
++
++    uint32 tanks = 0;
++    uint32 healers = 0;
++    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
++    {
++        if (Player* member = itr->GetSource())
++        {
++            uint8 const role = LfgFillRoleOf(member);
++            if (role == lfg::PLAYER_ROLE_TANK)
++                ++tanks;
++            else if (role == lfg::PLAYER_ROLE_HEALER)
++                ++healers;
++        }
++    }
++
++    uint32 added = 0;
+     while (group->GetMembersCount() < maxPlayers)
+     {
++        uint8 const wanted = tanks < tanksWanted      ? lfg::PLAYER_ROLE_TANK
++                             : healers < healersWanted ? lfg::PLAYER_ROLE_HEALER
++                                                       : lfg::PLAYER_ROLE_DAMAGE;
++
+         Player* bot = nullptr;
++        Player* fallback = nullptr;
+         for (auto const& pair : playerBots)
+         {
+             Player* candidate = pair.second;
+             if (!IsRandomBot(candidate) || !IsIdleFillBot(candidate))
+                 continue;
+             if (candidate->GetTeamId() != team)
+                 continue;
+             uint32 const level = candidate->GetLevel();
+             if (level < minLevel || level > maxLevel)
+                 continue;
+             if (group->IsMember(candidate->GetGUID()))
+                 continue;
+-            bot = candidate;
+-            break;
++
++            if (LfgFillRoleOf(candidate) == wanted)
++            {
++                bot = candidate;
++                break;
++            }
++
++            if (!fallback)
++                fallback = candidate;
+         }
++
++        // Nobody idle can fill the role we wanted -- a full group of the wrong
++        // shape still beats leaving the player short a body
++        if (!bot)
++            bot = fallback;
+         if (!bot)
+             break;
+@@ (member insertion, replacing 0003's flat DAMAGE role)
+-        if (!group->AddMember(bot))
+-            break;
+-        // Bots added this way skip the normal LFG queue/role-check flow
+-        // entirely, so their LFG role stays PLAYER_ROLE_NONE. [...]
+-        // A flat DAMAGE role here is just for that packet/icon --
+-        // it doesn't affect the bot's actual combat AI role.
+-        sLFGMgr->SetRoles(bot->GetGUID(), lfg::PLAYER_ROLE_DAMAGE);
++        // Bots added this way skip the normal LFG queue/role-check flow entirely,
++        // so nothing else ever gives them an LFG role. Record the one they will
++        // actually play, both on the group member slot (the party-frame role
++        // icon) and in LFG's own player data -- a roleless member used to reach
++        // the client as PLAYER_ROLE_NONE and throw Lua errors there.
++        uint8 const role = LfgFillRoleOf(bot);
++        if (!group->AddMember(bot, role))
++            break;
++        sLFGMgr->SetRoles(bot->GetGUID(), role);
++
++        if (role == lfg::PLAYER_ROLE_TANK)
++            ++tanks;
++        else if (role == lfg::PLAYER_ROLE_HEALER)
++            ++healers;
++
+         ++added;
+     }
+
+     if (added)
+-        LOG_INFO("playerbots", "Filled LFG raid group with {} bots ({}/{})", added, group->GetMembersCount(), maxPlayers);
++        LOG_INFO("playerbots", "Filled LFG raid group with {} bots ({}/{}, {} tanks, {} healers)", added,
++                 group->GetMembersCount(), maxPlayers, tanks, healers);
+
+--- a/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.h
++++ b/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.h
+@@ (near EnsureQueueFillBots)
+     void EnsureQueueFillBots();
++    // Make sure a tank and a healer exist for LFG demand in a level band, by
++    // respec, by retarget, or by logging extra bots in over the configured cap
++    void EnsureLfgRoleBots(TeamId team, uint32 minLevel, uint32 maxLevel);
++    bool RetargetBotToBand(Player* bot, uint32 minLevel, uint32 maxLevel);
++    uint32 LoginExtraBotsForRole(TeamId team, uint8 role, uint32 count);
+     void FillLfgRaidGroup(Group* group, uint32 maxPlayers, uint8 minLevel, uint8 maxLevel);
+
+--- a/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
++++ b/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+@@ (above IsIdleFillBot, after LfgFillRoleOf)
++// Classes with the talents to fill a role at all, so we never try to convert a
++// bot that could never play it.
++static bool ClassCanFillRole(uint8 cls, uint8 role)
++{
++    if (role == lfg::PLAYER_ROLE_TANK)
++        return cls == CLASS_WARRIOR || cls == CLASS_PALADIN || cls == CLASS_DRUID || cls == CLASS_DEATH_KNIGHT;
++
++    return cls == CLASS_PALADIN || cls == CLASS_PRIEST || cls == CLASS_DRUID || cls == CLASS_SHAMAN;
++}
++
++// Premade spec templates are named in playerbots.conf ("prot pve", "bear pve",
++// "resto pve" ...), so match them by keyword rather than by index. Whatever this
++// picks is verified against the bot's real role afterwards, so a renamed or
++// reordered template costs a retry rather than producing a wrong bot.
++static bool SpecNameFitsRole(std::string const& name, uint8 role)
++{
++    auto has = [&name](char const* word) { return name.find(word) != std::string::npos; };
++
++    if (role == lfg::PLAYER_ROLE_TANK)
++        return has("prot") || has("blood") || has("bear");
++
++    return has("holy") || has("disc") || has("resto");
++}
++
++// Respec an idle bot into a role the queue is short of. Talents first and gear
++// second, because InitEquipment picks for whatever spec the bot has when it runs.
++static bool RespecBotForRole(Player* bot, uint8 role)
++{
++    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
++    if (!botAI)
++        return false;
++
++    uint32 const cls = bot->getClass();
++    for (int specNo = 0; specNo < MAX_SPECNO; ++specNo)
++    {
++        std::string const& name = sPlayerbotAIConfig.premadeSpecName[cls][specNo];
++        if (name.empty())
++            break;
++        // PvE templates only -- a PvP build makes a worse dungeon tank
++        if (name.find("pvp") != std::string::npos || !SpecNameFitsRole(name, role))
++            continue;
++
++        PlayerbotFactory::InitTalentsBySpecNo(bot, specNo, true);
++
++        PlayerbotFactory factory(bot, bot->GetLevel());
++        factory.InitEquipment(false);
++        botAI->Reset(true);
++
++        if (LfgFillRoleOf(bot) == role)
++        {
++            LOG_INFO("playerbots", "Respecced bot {} to '{}' to cover an LFG role", bot->GetName(), name);
++            return true;
++        }
++    }
++
++    return false;
++}
++
+ static bool IsIdleFillBot(Player* bot)
+ {
+@@ RandomPlayerbotMgr::EnsureQueueFillBots() -- bracket bookkeeping
+     std::vector<BracketNeed> needs;
++
++    // LFG brackets only: battlegrounds don't care which role turns up
++    struct RoleBracket
++    {
++        TeamId team;
++        uint32 minLevel;
++        uint32 maxLevel;
++    };
++    std::vector<RoleBracket> lfgBrackets;
+
+@@ RandomPlayerbotMgr::EnsureQueueFillBots() -- addLfgNeed lambda
+             needs.push_back(need);
++            lfgBrackets.push_back({team, minLevel, maxLevel});
+         };
+
+@@ RandomPlayerbotMgr::EnsureQueueFillBots() -- end of the retarget loop
+         retargetList(idleAlliance, need.allianceNeed);
+         retargetList(idleHorde, need.hordeNeed);
+     }
++
++    // Bodies are not enough on their own -- five dps is a wipe. Do this after the
++    // retargeting above so bots just pulled into the band count as candidates.
++    for (RoleBracket const& bracket : lfgBrackets)
++        EnsureLfgRoleBots(bracket.team, bracket.minLevel, bracket.maxLevel);
+ }
++
++void RandomPlayerbotMgr::EnsureLfgRoleBots(TeamId team, uint32 minLevel, uint32 maxLevel)
++{
++    // One of each is what a 5-man needs; everything past that is dps, which is
++    // what the ordinary fill produces anyway.
++    uint8 const roles[2] = {lfg::PLAYER_ROLE_TANK, lfg::PLAYER_ROLE_HEALER};
++
++    for (uint8 role : roles)
++    {
++        std::vector<Player*> convertible;   // idle, right level, could play the role
++        std::vector<Player*> retargetable;  // idle, wrong level, could play the role
++        bool covered = false;
++
++        for (auto const& pair : playerBots)
++        {
++            Player* bot = pair.second;
++            if (!IsRandomBot(bot) || !IsIdleFillBot(bot) || bot->GetTeamId() != team)
++                continue;
++
++            uint32 const level = bot->GetLevel();
++            bool const inBand = level >= minLevel && level <= maxLevel;
++            if (inBand && LfgFillRoleOf(bot) == role)
++            {
++                covered = true;
++                break;
++            }
++
++            if (ClassCanFillRole(bot->getClass(), role))
++                (inBand ? convertible : retargetable).push_back(bot);
++        }
++
++        if (covered)
++            continue;
++
++        // Cheapest first: an idle bot already at the right level only needs a respec
++        for (Player* bot : convertible)
++        {
++            if (RespecBotForRole(bot, role))
++            {
++                covered = true;
++                break;
++            }
++        }
++
++        // Then: pull an idle bot into the level band and respec that
++        for (Player* bot : retargetable)
++        {
++            if (covered)
++                break;
++            if (RetargetBotToBand(bot, minLevel, maxLevel) && RespecBotForRole(bot, role))
++                covered = true;
++        }
++
++        // Still nothing: log more in and convert them on a later pass, once they
++        // are actually in world
++        if (!covered && !LoginExtraBotsForRole(team, role, 2))
++            LOG_INFO("playerbots", "No bot available to cover the LFG {} shortage for levels {}-{}",
++                     role == lfg::PLAYER_ROLE_TANK ? "tank" : "healer", minLevel, maxLevel);
++    }
++}
++
++bool RandomPlayerbotMgr::RetargetBotToBand(Player* bot, uint32 minLevel, uint32 maxLevel)
++{
++    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
++    if (!botAI)
++        return false;
++
++    uint32 level = urand(minLevel, maxLevel);
++    if (bot->getClass() == CLASS_DEATH_KNIGHT)
++    {
++        uint32 const dkMin = sWorld->getIntConfig(CONFIG_START_HEROIC_PLAYER_LEVEL);
++        if (level < dkMin)
++        {
++            if (maxLevel < dkMin)
++                return false;
++            level = urand(dkMin, maxLevel);
++        }
++    }
++
++    SetValue(bot, "level", level);
++    PlayerbotFactory factory(bot, level);
++    factory.Randomize(false);
++    botAI->Reset(true);
++    if (bot->GetGroup())
++        botAI->LeaveOrDisbandGroup();
++
++    return true;
++}
++
++uint32 RandomPlayerbotMgr::LoginExtraBotsForRole(TeamId team, uint8 role, uint32 count)
++{
++    if (!count || rndBotTypeAccounts.empty())
++        return 0;
++
++    std::vector<uint32> accounts = rndBotTypeAccounts;
++    std::shuffle(accounts.begin(), accounts.end(),
++                 std::mt19937(std::chrono::steady_clock::now().time_since_epoch().count()));
++
++    uint32 queued = 0;
++    for (uint32 accountId : accounts)
++    {
++        if (queued >= count)
++            break;
++
++        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARS_BY_ACCOUNT_ID);
++        stmt->SetData(0, accountId);
++        PreparedQueryResult result = CharacterDatabase.Query(stmt);
++        if (!result)
++            continue;
++
++        do
++        {
++            Field* fields = result->Fetch();
++            uint32 const guid = fields[0].Get<uint32>();
++            uint8 const rClass = fields[1].Get<uint8>();
++            uint8 const rRace = fields[2].Get<uint8>();
++
++            if (!ClassCanFillRole(rClass, role))
++                continue;
++            if ((IsAlliance(rRace) ? TEAM_ALLIANCE : TEAM_HORDE) != team)
++                continue;
++            if (sPlayerbotAIConfig.disableDeathKnightLogin && rClass == CLASS_DEATH_KNIGHT)
++                continue;
++            if (GetEventValue(guid, "add") || GetEventValue(guid, "logout") || GetPlayerBot(guid) ||
++                std::find(currentBots.begin(), currentBots.end(), guid) != currentBots.end())
++                continue;
++
++            // The login recipe AddRandomBots() uses, deliberately without its
++            // bot_count ceiling: a queue short a tank is short a tank whether or
++            // not we are at the configured cap. These are ordinary random bots
++            // once in world, so the usual in-world timer logs them back out and
++            // the population settles itself.
++            uint32 const addTime = sPlayerbotAIConfig.enablePeriodicOnlineOffline
++                                       ? urand(sPlayerbotAIConfig.minRandomBotInWorldTime,
++                                               sPlayerbotAIConfig.maxRandomBotInWorldTime)
++                                       : sPlayerbotAIConfig.permanentlyInWorldTime;
++            SetEventValue(guid, "add", 1, addTime);
++            SetEventValue(guid, "logout", 0, 0);
++            currentBots.push_back(guid);
++
++            if (++queued >= count)
++                break;
++        } while (result->NextRow());
++    }
++
++    if (queued)
++        LOG_INFO("playerbots", "Logging in {} extra bot(s) over the cap for an LFG {} shortage", queued,
++                 role == lfg::PLAYER_ROLE_TANK ? "tank" : "healer");
++
++    return queued;
++}
