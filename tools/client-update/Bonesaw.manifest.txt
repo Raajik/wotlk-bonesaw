@@ -1,5 +1,5 @@
 BONESAW 1
-version 0.1.55
+version 0.1.56
 realmlist 100.65.58.17:3725
-file 228380336b90c223ca95243e0a6eb1ec40ad46f7bb616aebc6671527f09000d1 6802944 Bonesaw.exe
-url https://github.com/Raajik/wotlk-bonesaw/releases/download/v0.1.55/Bonesaw.exe
+file d3d4a55ddda9509768e31de4026d46e205f96efdf26e6cc92e9231ab8ef298e6 6802944 Bonesaw.exe
+url https://github.com/Raajik/wotlk-bonesaw/releases/download/v0.1.56/Bonesaw.exe
