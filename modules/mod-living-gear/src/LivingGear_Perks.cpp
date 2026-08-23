@@ -181,7 +181,17 @@ float const HEMO_AMBUSH_MULT = 6.0f;
 // Bug report #9: Shadowstep pickpockets everything this far away on landing.
 float const SHADOWSTEP_PICKPOCKET_RADIUS = 20.0f;
 // Bug report #10: how far Hemorrhage spreads.
-float const HEMO_RADIUS = 10.0f;
+// Bug report #41: "Hemorrhage's extra effects need to apply to all enemies
+// within 15 yards (up from 10)". Matches the Assassination detonator and the
+// Combat flurry spread, so all three rogue specs now reach the same distance.
+float const HEMO_RADIUS = 15.0f;
+
+// Report #44: "Garrote and Rupture damage should both be increased by 2000%".
+// 2000% more is twenty-one times the base.
+uint32 const SUBTLETY_BLEED_MULT = 21;
+uint32 const SPELL_RUPTURE_R1 = 1943;    // Spell.dbc, 12 ranks
+uint32 const SPELL_SLICE_AND_DICE_R1 = 5171;
+uint32 const SPELL_EVISCERATE_R1 = 2098;
 
 struct PerkCfg
 {
@@ -509,6 +519,12 @@ uint32 LookAlikeDisplayId(Player* player)
     return player->GetDisplayId();
 }
 
+// Highest rank owned, falling back to the rank a perk granted -- the rule from
+// report #38: a perk casts what the player has actually learned, and a granted
+// spell starts at rank 1 until they train better.
+uint32 BestOwnedOr(Player* player, uint32 firstId);
+bool IsRankOf(SpellInfo const* info, uint32 firstId);
+
 uint32 BestOwned(Player* player, uint32 firstId)
 {
     if (!player)
@@ -518,6 +534,20 @@ uint32 BestOwned(Player* player, uint32 firstId)
         if (player->HasSpell(info->Id))
             best = info->Id;
     return best;
+}
+
+uint32 BestOwnedOr(Player* player, uint32 firstId)
+{
+    uint32 const owned = BestOwned(player, firstId);
+    return owned ? owned : firstId;
+}
+
+bool IsRankOf(SpellInfo const* info, uint32 firstId)
+{
+    if (!info)
+        return false;
+    uint32 const first = sSpellMgr->GetFirstSpellInChain(firstId);
+    return first && sSpellMgr->GetFirstSpellInChain(info->Id) == first;
 }
 
 uint32 AccountMaxLevel(Player* player)
@@ -1258,13 +1288,103 @@ static void ShadowstepPickpocketImpl(ObjectGuid playerGuid)
     Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, SHADOWSTEP_PICKPOCKET_RADIUS);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
     Cell::VisitObjects(player, searcher, SHADOWSTEP_PICKPOCKET_RADIUS);
+    // Bug report #42: "Shadowstep aoe pickpocket doesn't appear to work ...
+    // i'm not getting loot from any of them." Everything checks out on
+    // inspection -- Muckfuppet has Subtlety selected, autoloot is on for the
+    // account, and every humanoid in Hellfire Ramparts has a pickpocket loot
+    // table -- so count what actually happens instead of guessing again.
+    uint32 seen = 0, humanoid = 0, cast = 0;
     for (Unit* u : around)
     {
+        ++seen;
         if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
             continue;
         if (u->GetCreatureType() != CREATURE_TYPE_HUMANOID)
             continue;
+        ++humanoid;
         player->CastSpell(u, SPELL_PICKPOCKET, true);
+        ++cast;
+    }
+    LOG_INFO("module.livinggear",
+        "shadowstep pickpocket: {} unit(s) in {} yards, {} humanoid, {} pickpocketed",
+        seen, uint32(SHADOWSTEP_PICKPOCKET_RADIUS), humanoid, cast);
+}
+
+// Report #43, a new Subtlety effect: "Eviscerate applies a 5 point Slice and
+// Dice and Rupture to all enemies within 15 yards."
+//
+// Slice and Dice is a self-buff and Rupture is the bleed, so the finisher
+// blankets the pull with the bleed and leaves the rogue swinging faster. Cast
+// at the combo-point value the finisher was actually spent at where the engine
+// allows it; the spread copies land at full value via CastSpell.
+static void EviscerateSpreadImpl(ObjectGuid playerGuid)
+{
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!LivingGear_SafeToCastOn(player) || GetClassPerk(player) != SPELL_SUBTLETY)
+        return;
+
+    uint32 const rupture = BestOwnedOr(player, SPELL_RUPTURE_R1);
+    uint32 const snd = BestOwnedOr(player, SPELL_SLICE_AND_DICE_R1);
+
+    // Slice and Dice is on the rogue, not the pull.
+    if (snd)
+        player->CastSpell(player, snd, true);
+
+    std::list<Unit*> around;
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, HEMO_RADIUS);
+    Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
+    Cell::VisitObjects(player, searcher, HEMO_RADIUS);
+    for (Unit* u : around)
+    {
+        if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
+            continue;
+        if (rupture)
+            player->CastSpell(u, rupture, true);
+    }
+}
+
+void EviscerateSpread(Player* player)
+{
+    if (!player || GetClassPerk(player) != SPELL_SUBTLETY)
+        return;
+    ObjectGuid const playerGuid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid]()
+    {
+        EviscerateSpreadImpl(playerGuid);
+    }, std::chrono::milliseconds(1));
+}
+
+// Report #44: Garrote and Rupture hit for twenty-one times as much, and tick
+// faster with haste WITHOUT the duration shrinking.
+//
+// The second half is the fiddly one. SPELL_ATTR5_SPELL_HASTE_AFFECTS_PERIODIC
+// is WotLK's built-in answer and it does shorten the duration, which is
+// explicitly not what was asked for. AuraEffect has no amplitude setter, but it
+// does expose SetPeriodicTimer -- so after each tick we pull the next one
+// forward. Duration is never touched, so the bleed simply gets more ticks.
+void ApplySubtletyBleed(Unit* target, Unit* attacker, uint32& damage, SpellInfo const* info)
+{
+    if (!target || !attacker || !damage || !info)
+        return;
+    if (!IsRankOf(info, SPELL_GARROTE) && !IsRankOf(info, SPELL_RUPTURE_R1))
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_SUBTLETY)
+        return;
+
+    damage *= SUBTLETY_BLEED_MULT;
+
+    float const haste = player->GetRatingBonusValue(CR_HASTE_MELEE);
+    if (haste <= 0.0f)
+        return;
+    if (AuraEffect* eff = target->GetAuraEffect(info->Id, EFFECT_0, player->GetGUID()))
+    {
+        int32 const amplitude = eff->GetAmplitude();
+        if (amplitude > 0)
+        {
+            int32 const faster = int32(float(amplitude) / (1.0f + haste / 100.0f));
+            eff->SetPeriodicTimer(std::max(200, faster));
+        }
     }
 }
 
@@ -1309,6 +1429,7 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
         dmg = int32(float(std::max(1, ambushInfo->Effects[EFFECT_0].CalcValue(player))) * HEMO_AMBUSH_MULT);
 
     LivingGear_DiagBump(player, "hemo.impl");
+    Unit* const original = player->GetVictim();
     std::list<Unit*> around;
     Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, HEMO_RADIUS);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
@@ -1349,6 +1470,16 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
         if (garroteResult != SPELL_CAST_OK)
             LOG_INFO("module.livinggear", "hemo: garrote {} on {} failed, result {}",
                 garrote, u->GetName(), uint32(garroteResult));
+
+        // Report #41: "...and also apply Hemorrhage itself to all enemies."
+        // Skip the original target, which already has it from the cast that
+        // triggered this spread.
+        if (u != original)
+        {
+            uint32 const hemo = BestOwnedOr(player, SPELL_HEMORRHAGE);
+            if (hemo)
+                player->CastSpell(u, hemo, spreadFlags);
+        }
     }
 }
 
@@ -2371,6 +2502,8 @@ public:
         {
             LivingGear_DiagBump(player, "hemo.hook");
             ApplyHemorrhageAoE(player);
+        if (IsRankOf(info, SPELL_EVISCERATE_R1))
+            EviscerateSpread(player);
         }
         // Shadow Clone pet dropped 2026-08-21 -- the SUMMON_PET rework
         // (real pet frame, stance buttons) didn't play the way the user
@@ -2530,8 +2663,32 @@ public:
             || info->IsAbilityOfSkillType(SKILL_JEWELCRAFTING)
             || info->IsAbilityOfSkillType(SKILL_INSCRIPTION)
             || info->IsAbilityOfSkillType(SKILL_COOKING);
-        if (craft)
-            spell->SetCastTime(int32(float(spell->GetCastTime()) * std::pow(0.80f, float(ranks))));
+        // Bug report #30: "Crafting speed perks are not applying to
+        // Blacksmithing or Leatherworking." Both skills ARE in the list above
+        // and both have hundreds of entries in SkillLineAbility.dbc, so
+        // IsAbilityOfSkillType should match. Rather than guess at why it does
+        // not, say what actually happened on the next craft.
+        if (!craft)
+        {
+            static std::unordered_set<uint32> warned;
+            if (info->IsAbilityOfSkillType(SKILL_BLACKSMITHING)
+                || info->IsAbilityOfSkillType(SKILL_LEATHERWORKING)
+                || warned.size() < 20)
+                if (warned.insert(info->Id).second)
+                    LOG_INFO("module.livinggear",
+                        "craft speed: spell {} ({}) did not match any crafting skill line, "
+                        "no boost applied ({} rank(s) owned)", info->Id, info->SpellName[0], ranks);
+            return;
+        }
+        int32 const before = spell->GetCastTime();
+        spell->SetCastTime(int32(float(before) * std::pow(0.80f, float(ranks))));
+        {
+            static std::unordered_set<uint32> seen;
+            if (seen.insert(info->Id).second)
+                LOG_INFO("module.livinggear",
+                    "craft speed: spell {} cast time {} -> {} with {} rank(s)",
+                    info->Id, before, spell->GetCastTime(), ranks);
+        }
     }
 };
 
@@ -2584,11 +2741,20 @@ public:
     // Player-applied only: a mob's own bleed is not a Rogue perk. The clamp is
     // there because damage is a uint32 and 11x a large tick on a boss-level
     // Rogue is not a number worth trusting to wrap quietly.
-    void ModifyPeriodicDamageAurasTick(Unit* /*target*/, Unit* attacker, uint32& damage,
+    void ModifyPeriodicDamageAurasTick(Unit* target, Unit* attacker, uint32& damage,
         SpellInfo const* spellInfo) override
     {
         if (!attacker || !spellInfo || !damage || !attacker->IsPlayer())
             return;
+        // Report #44 gives Subtlety its own, larger multiplier on BOTH Garrote
+        // and Rupture, and makes them tick faster with haste. It replaces the
+        // generic Garrote boost rather than stacking with it -- 11x on top of
+        // 21x is 231x, which is not what anyone asked for.
+        if (GetClassPerk(attacker->ToPlayer()) == SPELL_SUBTLETY)
+        {
+            ApplySubtletyBleed(target, attacker, damage, spellInfo);
+            return;
+        }
         if (sSpellMgr->GetFirstSpellInChain(spellInfo->Id) != SPELL_GARROTE)
             return;
         double const boosted = double(damage) * double(GARROTE_BLEED_MULT);

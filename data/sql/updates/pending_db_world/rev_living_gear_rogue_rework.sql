@@ -26,3 +26,14 @@ UPDATE `spell_dbc` SET `Description_Lang_enUS` =
 UPDATE `spell_dbc` SET `Description_Lang_enUS` =
   'Learn Adrenaline Rush as a free toggle with no cooldown. While it is up your abilities cost no energy, Blade Flurry strikes everything within 15 yards, and Killing Spree has no cooldown. Blade Flurry is always on.'
   WHERE `ID` = 910036;
+
+-- Subtlety, per reports #41, #43 and #44: the spread reaches 15 yards to match
+-- the other two rogue specs, Hemorrhage now applies itself as well as the
+-- Ambush and Garrote it already spread, Eviscerate blankets the pull with
+-- Rupture and puts Slice and Dice on the rogue, and Garrote and Rupture hit for
+-- twenty-one times as much while ticking faster with haste. Duration is
+-- deliberately untouched by the haste part -- SPELL_ATTR5_SPELL_HASTE_AFFECTS_
+-- PERIODIC would have shortened it, which is the opposite of what was asked.
+UPDATE `spell_dbc` SET `Description_Lang_enUS` =
+  'Learn Hemorrhage and Shadowstep. Shadowstep (6 sec cooldown) pickpockets every humanoid within 20 yards where you land. Hemorrhage spreads itself, a boosted Ambush and the Garrote bleed to everything within 15 yards. Eviscerate applies Slice and Dice to you and Rupture to everything within 15 yards. Garrote and Rupture deal +2000% damage and tick faster with haste. Learn Shadow Dance.'
+  WHERE `ID` = 910037;

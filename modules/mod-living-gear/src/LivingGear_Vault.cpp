@@ -509,9 +509,23 @@ bool IsQuestItem(ItemTemplate const* proto, Player* player = nullptr)
 {
     if (!proto)
         return false;
-    if (proto->Class == ITEM_CLASS_QUEST || proto->Bonding == BIND_QUEST_ITEM)
-        return true;
+    // An item that hands out a quest is always kept: banking it would hide the
+    // quest itself.
     if (proto->StartQuest)
+        return true;
+
+    // Bug report #35, 2026-08-23: Dark Iron Residue, Dark Iron Scraps, Core of
+    // Elements and Savage Frond should file into the reagent bank. All four are
+    // ITEM_CLASS_QUEST, and this used to answer "yes, quest item" for that
+    // class unconditionally -- before ever asking whether the player has the
+    // quest. They are turn-ins for REPEATABLE quests (9129, 9132, 9137 all
+    // carry SpecialFlags 1), so they accumulate indefinitely and spend most of
+    // their life as inventory clutter.
+    //
+    // With a player to ask, the active-quest check below is the honest answer
+    // for quest-class items too. Without one -- the rule-engine's static
+    // queries -- keep the conservative class test.
+    if (!player && (proto->Class == ITEM_CLASS_QUEST || proto->Bonding == BIND_QUEST_ITEM))
         return true;
 
     if (player)
@@ -835,6 +849,14 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
     // below can quietly eat one.
     if (IsQuestItem(proto, player))
         return ACT_BAG;
+    // Report #35: a quest-class item the player has no active quest for is
+    // something they are stockpiling for a repeatable turn-in, so file it.
+    // IsQuestItem above already returned ACT_BAG for anything a live quest
+    // wants, so this cannot swallow an item that is currently needed -- and
+    // unlike the retired quest vault, the reagent panel shows it and hands it
+    // back on demand.
+    if (proto->Class == ITEM_CLASS_QUEST || proto->Bonding == BIND_QUEST_ITEM)
+        return ACT_REAGENT_VAULT;
     // 2026-08-22: locked containers file into the reagent vault instead of
     // sitting in bags. Pickpocketing in particular produces junkboxes far
     // faster than anyone opens them, and a Rogue working a crowd would fill
@@ -1152,6 +1174,17 @@ void AutolootCreatureKill(Player* player, Creature* creature)
     if (Group* group = creature->GetLootRecipientGroup())
     {
         if (player->GetGroup() != group)
+            return;
+        // Bug report #32, 2026-08-23: "bots autoloot is bypassing the group
+        // loot rolling." Correct, and it was not bot-specific -- grabbing every
+        // slot the moment a corpse becomes lootable skips the roll for anyone
+        // with autoloot on. It just shows up as bots because they are the ones
+        // reaching the corpse first.
+        //
+        // Under any method that rolls, the engine hands the item out after the
+        // roll resolves; taking it here is what steals it. Free-for-all is the
+        // one method with nothing to wait for, so autoloot stays on there.
+        if (group->GetLootMethod() != FREE_FOR_ALL)
             return;
     }
     else if (creature->GetLootRecipient() != player)
