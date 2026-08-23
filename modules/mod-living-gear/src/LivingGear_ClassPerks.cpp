@@ -51,6 +51,7 @@
 #include "SharedDefines.h"
 #include "Spell.h"
 #include "SpellAuras.h"
+#include "SpellAuraEffects.h"
 #include "SpellDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -229,11 +230,17 @@ uint32 const SPELL_HUNGERING_COLD = 49203;
 // ---------------------------------------------------------------------
 // Penance, Wild Growth and Explosive Shot already had constants above;
 // my independent lookups matched them, which is a useful cross-check.
+uint32 const SPELL_ENVENOM_R1 = 32645;          // Spell.dbc, 8 ranks
+uint32 const SPELL_ADRENALINE_RUSH_R1 = 13750;  // Spell.dbc, 4 ranks
+uint32 const ROGUE_DETONATE_RANGE = 15.0f;
 uint32 const SPELL_CRUSADER_STRIKE_G = 35395;   // report #37's own link
 uint32 const SPELL_CONSECRATION_R1 = 26573;     // spell_ranks, 8 ranks
 uint32 const SPELL_HOLY_SHOCK_R1 = 20473;       // spell_paladin.cpp
 uint32 const SPELL_DIVINE_STORM_G = 53385;      // spell_paladin.cpp
-uint32 const SPELL_HEMORRHAGE_G = 17347;        // report #40/#41's own link
+uint32 const SPELL_HEMORRHAGE_G = 16511;        // RANK 1 -- verified in Spell.dbc.
+// Report #40 linked 17347, which is a later rank; granting that to a level 1
+// rogue would hand over something unusable. Take rank ids from the DBC, not
+// from a player's link.
 uint32 const SPELL_SHADOWSTEP_G = 36554;        // report #42's own link
 
 struct ClassPerkGrant
@@ -252,7 +259,9 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     { SPELL_PALADIN_RETRIBUTION, { SPELL_CRUSADER_STRIKE_G, SPELL_DIVINE_STORM_G, 0 } },
     { SPELL_WARRIOR_ARMS,        { SPELL_BLADESTORM, 0, 0 } },
     { SPELL_WARRIOR_PROTECTION,  { SPELL_SHOCKWAVE, 0, 0 } },
-    { SPELL_ROGUE_COMBAT,        { SPELL_BLADE_FLURRY, SPELL_KILLING_SPREE, 0 } },
+    { SPELL_ROGUE_ASSASSINATION, { SPELL_ENVENOM_R1, 0, 0 } },
+    { SPELL_ROGUE_COMBAT,        { SPELL_BLADE_FLURRY, SPELL_KILLING_SPREE,
+                                   SPELL_ADRENALINE_RUSH_R1 } },
     { SPELL_ROGUE_SUBTLETY,      { SPELL_HEMORRHAGE_G, SPELL_SHADOWSTEP_G, 0 } },
     { SPELL_MAGE_ARCANE,         { SPELL_ARCANE_POWER, SPELL_MIRROR_IMAGE, 0 } },
     { SPELL_MAGE_FIRE,           { SPELL_LIVING_BOMB, 0, 0 } },
@@ -476,6 +485,24 @@ uint32 BestOwned(Player* player, uint32 firstId)
         if (player->HasSpell(info->Id))
             best = info->Id;
     return best;
+}
+
+// The rank a perk should actually cast.
+//
+// Report #38: "the automatic living bomb from the mage fire spec only casts
+// rank 1, it should scale with level up to rank 3 at 80." Hardcoding the rank-1
+// constant is the bug, and it was in five places.
+//
+// The rule, per the user: always use the highest rank the player has genuinely
+// LEARNED. A perk that granted the spell hands over rank 1, and that is what
+// gets cast until the player trains something better -- at which point the
+// perk starts using it automatically. BestOwned answers exactly that; this
+// just supplies the granted rank as the floor for the case where the perk gave
+// it and nothing is trained yet.
+uint32 BestOwnedOrFirst(Player* player, uint32 firstId)
+{
+    uint32 const owned = BestOwned(player, firstId);
+    return owned ? owned : firstId;
 }
 
 bool RankOf(SpellInfo const* info, uint32 firstId)
@@ -1053,7 +1080,7 @@ void TryMageFireOnCast(Player* player, Spell* spell)
     if (!target || target == player || !player->IsValidAttackTarget(target))
         return;
     if (!target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
-        player->CastSpell(target, SPELL_LIVING_BOMB, true);
+        player->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true);
     ApplyMageCombustion(player);
 }
 
@@ -1138,7 +1165,7 @@ void TryMageFireDetonate(Player* player, Spell* spell)
         ForEachHostileNear(player, target, CLASS_PERK_RANGE, [player](Unit* next)
         {
             if (!next->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
-                player->CastSpell(next, SPELL_LIVING_BOMB, true);
+                player->CastSpell(next, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true);
         });
     }
 
@@ -1167,7 +1194,7 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
     ForEachHostileInRange(player, CLASS_PERK_RANGE, [player](Unit* target)
     {
         if (!target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
-            player->CastSpell(target, SPELL_LIVING_BOMB, true);
+            player->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true);
     });
     g_reentryGuard.erase(guid);
 }
@@ -1340,6 +1367,75 @@ void TickMageFrostIceLance(Player* player, MageState& st, uint32 diff)
 }
 
 // -------------------------------------------------------------------------
+// Rogue: Assassination (910035) -- Envenom is a detonator.
+//
+// The old perk was "poisons deal +300%, DoTs spread within 10 yards", which is
+// two passive numbers and no moment. Subtlety works because Shadowstep is a
+// button that visibly does something; this gives Assassination the same shape
+// without losing the poison damage it already had.
+//
+// Envenom now consumes every damage-over-time the rogue owns, on the target
+// and on everything within 15 yards: each one's entire remaining duration is
+// dealt at once as instant damage, and then it is put back at full duration.
+// So the play is to build bleeds and poisons wide, then cash them all in.
+// -------------------------------------------------------------------------
+void TryRogueAssassinationDetonate(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_ROGUE_ASSASSINATION)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_ENVENOM_R1))
+        return;
+
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+
+    ObjectGuid const owner = player->GetGUID();
+    ForEachHostileInRange(player, ROGUE_DETONATE_RANGE, [player, owner](Unit* target)
+    {
+        // Collect first: dealing damage can kill the target and invalidate the
+        // aura list mid-walk, which is the same discipline the Hemorrhage
+        // spread and the Fire detonator needed.
+        struct Pending { uint32 spellId; int32 damage; SpellSchoolMask school; };
+        std::vector<Pending> pending;
+
+        for (AuraEffect* eff : target->GetAuraEffectsByType(SPELL_AURA_PERIODIC_DAMAGE))
+        {
+            Aura* aura = eff->GetBase();
+            if (!aura || aura->GetCasterGUID() != owner)
+                continue;
+            int32 const period = eff->GetAmplitude();
+            if (period <= 0)
+                continue;
+            int32 const left = aura->GetDuration();
+            if (left <= 0)
+                continue;
+            int32 const ticks = left / period;
+            if (ticks <= 0)
+                continue;
+            pending.push_back({ aura->GetId(), eff->GetAmount() * ticks,
+                                aura->GetSpellInfo()->GetSchoolMask() });
+        }
+
+        for (Pending const& p : pending)
+        {
+            if (!target->IsAlive())
+                break;
+            SpellInfo const* dotInfo = sSpellMgr->GetSpellInfo(p.spellId);
+            Unit::DealDamage(player, target, uint32(std::max(0, p.damage)), nullptr,
+                SPELL_DIRECT_DAMAGE, p.school, dotInfo, false);
+            // Put it back at full duration rather than leaving the target
+            // clean -- the fantasy is a detonation, not a dispel.
+            if (Aura* again = target->GetAura(p.spellId, owner))
+                again->RefreshDuration();
+        }
+    });
+
+    g_reentryGuard.erase(guid);
+}
+
+// -------------------------------------------------------------------------
 // Rogue: Combat (910036)
 // "Blade Flurry is always active. Energy regeneration increased by 50%.
 // Combo builders have a 30% chance to cast free Killing Spree."
@@ -1383,6 +1479,89 @@ bool IsComboPointBuilder(SpellInfo const* info)
         if (info->Effects[i].Effect == SPELL_EFFECT_ADD_COMBO_POINTS)
             return true;
     return false;
+}
+
+// Rogue: Combat (910036) -- Adrenaline Rush is a free permanent toggle.
+//
+// The old perk was three passive numbers. This is the toggle shape that is
+// already proven four times over in this module (Arms' Bladestorm, Feral's
+// Berserk, Arcane Power, Enhancement's Feral Spirit): the power cost is
+// refunded and the cooldown cleared on cast, and the aura's lifetime is
+// observed from the update loop rather than touched during its own
+// application -- which is what keeps it out of Unit::_AddAura.
+//
+// While it is up: abilities cost no energy, Blade Flurry reaches everything
+// within 15 yards instead of one extra target, and Killing Spree is free of
+// its cooldown.
+void TryRogueCombatAdrenalineRush(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_ROGUE_COMBAT)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_ADRENALINE_RUSH_R1))
+        return;
+    if (int32 const cost = spell->GetPowerCost())
+        player->ModifyPower(POWER_ENERGY, cost);
+    player->RemoveSpellCooldown(info->Id, true);
+    if (uint32 const cat = info->GetCategory())
+        player->RemoveCategoryCooldown(cat);
+}
+
+bool RogueCombatRushUp(Player* player)
+{
+    if (!player || GetClassPerk(player) != SPELL_ROGUE_COMBAT)
+        return false;
+    for (uint32 id = SPELL_ADRENALINE_RUSH_R1; id; id = sSpellMgr->GetNextSpellInChain(id))
+        if (player->HasAura(id))
+            return true;
+    return false;
+}
+
+void TickRogueCombatAdrenalineRush(Player* player)
+{
+    if (!player || !player->IsAlive() || GetClassPerk(player) != SPELL_ROGUE_COMBAT)
+        return;
+    for (uint32 id = SPELL_ADRENALINE_RUSH_R1; id; id = sSpellMgr->GetNextSpellInChain(id))
+        if (Aura* aura = player->GetAura(id))
+            if (aura->GetDuration() >= 0 && aura->GetDuration() < 5000)
+                aura->SetDuration(aura->GetMaxDuration() > 0 ? aura->GetMaxDuration() : 15000);
+}
+
+// The "costs no energy" half. Refunding after the fact is how the other
+// toggles do it, and it avoids fighting Spell::CheckPower before the cast is
+// allowed at all.
+void RefundRogueCombatEnergy(Player* player, Spell* spell)
+{
+    if (!spell || !RogueCombatRushUp(player))
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || info->PowerType != POWER_ENERGY)
+        return;
+    if (int32 const cost = spell->GetPowerCost())
+        player->ModifyPower(POWER_ENERGY, cost);
+}
+
+// The "Blade Flurry reaches 15 yards" half: while the rush is up, every melee
+// swing echoes onto everything else in range.
+void TryRogueCombatFlurrySpread(Unit* attacker, uint32 damage)
+{
+    Player* player = attacker ? attacker->ToPlayer() : nullptr;
+    if (!player || !damage || !RogueCombatRushUp(player))
+        return;
+    if (!player->HasAura(SPELL_BLADE_FLURRY))
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+    Unit* current = player->GetVictim();
+    ForEachHostileInRange(player, ROGUE_DETONATE_RANGE, [player, current, damage](Unit* target)
+    {
+        if (target == current)
+            return;
+        Unit::DealDamage(player, target, damage, nullptr, DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+    });
+    g_reentryGuard.erase(guid);
 }
 
 void TryRogueCombatKillingSpree(Player* player, Spell* spell)
@@ -2226,7 +2405,7 @@ void TryShamanRestOnCast(Player* player, Spell* spell)
     {
         if (spread >= SHAMAN_RIPTIDE_SPREAD_COUNT || ally == target || ally->HasAura(SPELL_RIPTIDE, player->GetGUID()))
             return;
-        player->CastSpell(ally, SPELL_RIPTIDE, true);
+        player->CastSpell(ally, BestOwnedOrFirst(player, SPELL_RIPTIDE), true);
         ++spread;
     });
 }
@@ -2540,7 +2719,7 @@ void TryPriestHolyOnCast(Player* player, Spell* spell)
     {
         if (spread >= PRIEST_GS_SPREAD_COUNT || ally == target || ally->HasAura(SPELL_GUARDIAN_SPIRIT, player->GetGUID()))
             return;
-        player->CastSpell(ally, SPELL_GUARDIAN_SPIRIT, true);
+        player->CastSpell(ally, BestOwnedOrFirst(player, SPELL_GUARDIAN_SPIRIT), true);
         ++spread;
     });
 }
@@ -2892,6 +3071,10 @@ public:
             TickMageFrostBlizzardDamage(player, g_mage[player->GetGUID().GetCounter()], diff);
             TickMageFrostIceLance(player, g_mage[player->GetGUID().GetCounter()], diff);
         }
+        else if (selected == SPELL_ROGUE_COMBAT)
+        {
+            TickRogueCombatAdrenalineRush(player);
+        }
         else if (selected == SPELL_WARRIOR_ARMS)
         {
             TickWarriorArmsBladestorm(player, g_bladestormTick[player->GetGUID().GetCounter()], diff);
@@ -2942,6 +3125,9 @@ public:
         TryWarriorArmsOnCast(player, spell);
         TryWarriorProtOnCast(player, spell);
         TryRogueCombatKillingSpree(player, spell);
+        TryRogueCombatAdrenalineRush(player, spell);
+        RefundRogueCombatEnergy(player, spell);
+        TryRogueAssassinationDetonate(player, spell);
         TryHunterMMOnCast(player, spell);
         TryShamanElementalOnCast(player, spell);
         TryDkUnholyOnCast(player, spell);
@@ -3037,6 +3223,7 @@ public:
         }
         ApplyShamanEnhWolfMeleeDamage(attacker, damage);
         ApplyWarlockDemoPetDamage(attacker, damage);
+        TryRogueCombatFlurrySpread(attacker, damage);
     }
 
     void ModifyPeriodicDamageAurasTick(Unit* target, Unit* attacker, uint32& damage, SpellInfo const* spellInfo) override

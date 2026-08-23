@@ -376,8 +376,8 @@ local CLASS_PERKS = {
         { id = 910034, name = "Frost", how = "Blizzard is instant, no cooldown, and lingers like Death and Decay, damaging everything inside it every 1 sec. Frost damage quadrupled. Ice Lance hits nearby enemies every 2 sec." },
     },
     ROGUE = {
-        { id = 910035, name = "Assassination", how = "Poisons deal +300% damage. DoTs spread within 10 yards." },
-        { id = 910036, name = "Combat", how = "Blade Flurry always on. +50% energy regen. 30% free Killing Spree on builders." },
+        { id = 910035, name = "Assassination", how = "Learn Envenom. Poisons deal +300% damage. Envenom detonates every poison and bleed you own on all enemies within 15 yards, dealing their whole remaining duration at once, then puts them back at full." },
+        { id = 910036, name = "Combat", how = "Learn Adrenaline Rush as a free toggle with no cooldown. While it is up your abilities cost no energy, Blade Flurry strikes everything within 15 yards, and Killing Spree has no cooldown. Blade Flurry is always on." },
         { id = 910037, name = "Subtlety", how = "Shadowstep (6 sec cooldown) pickpockets every humanoid within 20 yards where you land. Hemorrhage spreads a boosted Ambush and Garrote bleed to everything within 10 yards. Learn Shadow Dance.",
           subPerks = { { id = 910102, name = "Shadow Dance", how = "Permanent. Openers usable without stealth. +10% attack power to your party/raid." } } },
     },
