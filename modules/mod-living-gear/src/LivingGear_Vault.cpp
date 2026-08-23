@@ -889,6 +889,17 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
     //
     // An explicit rule still wins: ResolveLootAction only calls this when no
     // rule matched, so anyone who wants to keep their food just says so.
+    // Bug report #31, 2026-08-23: "my conjured food is getting auto deleted."
+    //
+    // Conjured food is ITEM_CLASS_CONSUMABLE / FOOD, so it fell into the rule
+    // below and was destroyed -- and since conjured items have no sell value,
+    // the player did not even get coin for it. A mage conjuring a stack watched
+    // it evaporate. Same shape as #21 (cooked quest food auto-vendored), which
+    // is why the guard goes here, above the rule, rather than inside it.
+    //
+    // The core already asks this exact question for its own purposes.
+    if (proto->IsConjuredConsumable())
+        return ACT_BAG;
     if (proto->Class == ITEM_CLASS_CONSUMABLE
         && (proto->SubClass == ITEM_SUBCLASS_FOOD
             || proto->SubClass == ITEM_SUBCLASS_SCROLL

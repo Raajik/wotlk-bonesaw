@@ -208,6 +208,71 @@ uint32 const SPELL_MIND_FLAY_R1 = 15407;
 // Death Knight
 uint32 const SPELL_DANCING_RUNE_WEAPON = 49028;
 uint32 const SPELL_HUNGERING_COLD = 49203;
+
+// ---------------------------------------------------------------------
+// What each spec hands you when you pick it.
+//
+// Bug reports #33, #36, #37, #39, #40 are one hole: picking a spec did not
+// teach the abilities that spec is entirely about. Three specs out of thirty
+// granted anything; one revoked anything. #36 states the rule the system was
+// missing -- "should be given even at level 1 so they can be used while
+// levelling" -- so these are handed over regardless of level, at the best rank
+// the character qualifies for.
+//
+// Rank-1 ids only. The core already knows every chain (spell_ranks), so
+// BestRankForLevel walks it; hardcoding per-rank ids is how Living Bomb ended
+// up stuck at rank 1 in report #38.
+//
+// Every id here was verified: from AzerothCore's own script constants, from
+// the spell_ranks table, or from the spell links players pasted into their
+// reports. None were recalled from memory.
+// ---------------------------------------------------------------------
+// Penance, Wild Growth and Explosive Shot already had constants above;
+// my independent lookups matched them, which is a useful cross-check.
+uint32 const SPELL_CRUSADER_STRIKE_G = 35395;   // report #37's own link
+uint32 const SPELL_CONSECRATION_R1 = 26573;     // spell_ranks, 8 ranks
+uint32 const SPELL_HOLY_SHOCK_R1 = 20473;       // spell_paladin.cpp
+uint32 const SPELL_DIVINE_STORM_G = 53385;      // spell_paladin.cpp
+uint32 const SPELL_HEMORRHAGE_G = 17347;        // report #40/#41's own link
+uint32 const SPELL_SHADOWSTEP_G = 36554;        // report #42's own link
+
+struct ClassPerkGrant
+{
+    uint32 perk;
+    uint32 spells[3];   // rank-1 ids, 0-terminated
+};
+
+// A spec with no entry grants nothing, which is correct for the ones that only
+// amplify abilities the class already has (Fury's Titan's Grip stacks, the
+// Warlock DoT spread). Specs whose description says "Learn X" MUST appear here.
+ClassPerkGrant const CLASS_PERK_GRANTS[] =
+{
+    { SPELL_PALADIN_HOLY,        { SPELL_CONSECRATION_R1, SPELL_HOLY_SHOCK_R1, 0 } },
+    { SPELL_PALADIN_PROTECTION,  { SPELL_AVENGERS_SHIELD, SPELL_DEVOTION_AURA, 0 } },
+    { SPELL_PALADIN_RETRIBUTION, { SPELL_CRUSADER_STRIKE_G, SPELL_DIVINE_STORM_G, 0 } },
+    { SPELL_WARRIOR_ARMS,        { SPELL_BLADESTORM, 0, 0 } },
+    { SPELL_WARRIOR_PROTECTION,  { SPELL_SHOCKWAVE, 0, 0 } },
+    { SPELL_ROGUE_COMBAT,        { SPELL_BLADE_FLURRY, SPELL_KILLING_SPREE, 0 } },
+    { SPELL_ROGUE_SUBTLETY,      { SPELL_HEMORRHAGE_G, SPELL_SHADOWSTEP_G, 0 } },
+    { SPELL_MAGE_ARCANE,         { SPELL_ARCANE_POWER, SPELL_MIRROR_IMAGE, 0 } },
+    { SPELL_MAGE_FIRE,           { SPELL_LIVING_BOMB, 0, 0 } },
+    { SPELL_HUNTER_MARKSMANSHIP, { SPELL_CHIMERA_SHOT, 0, 0 } },
+    { SPELL_HUNTER_BEAST_MASTERY,{ SPELL_BESTIAL_WRATH, 0, 0 } },
+    { SPELL_HUNTER_SURVIVAL,     { SPELL_EXPLOSIVE_SHOT_R1, 0, 0 } },
+    { SPELL_SHAMAN_ELEMENTAL,    { SPELL_THUNDERSTORM, 0, 0 } },
+    { SPELL_SHAMAN_ENHANCEMENT,  { SPELL_FERAL_SPIRIT, SPELL_STORMSTRIKE, 0 } },
+    { SPELL_SHAMAN_RESTORATION,  { SPELL_RIPTIDE, 0, 0 } },
+    { SPELL_DK_UNHOLY,           { SPELL_SUMMON_GARGOYLE, SPELL_ARMY_OF_THE_DEAD, 0 } },
+    { SPELL_DK_BLOOD,            { SPELL_DANCING_RUNE_WEAPON, 0, 0 } },
+    { SPELL_DK_FROST,            { SPELL_HUNGERING_COLD, 0, 0 } },
+    { SPELL_WARLOCK_DEMONOLOGY,  { SPELL_METAMORPHOSIS, 0, 0 } },
+    { SPELL_DRUID_BALANCE,       { SPELL_STARFALL, 0, 0 } },
+    { SPELL_DRUID_FERAL,         { SPELL_BERSERK_DRUID, 0, 0 } },
+    { SPELL_DRUID_RESTORATION,   { SPELL_WILD_GROWTH_R1, 0, 0 } },
+    { SPELL_PRIEST_DISCIPLINE,   { SPELL_PENANCE_R1, 0, 0 } },
+    { SPELL_PRIEST_HOLY,         { SPELL_GUARDIAN_SPIRIT, 0, 0 } },
+    { SPELL_PRIEST_SHADOW,       { SPELL_SHADOWFIEND, 0, 0 } },
+};
 uint32 const SPELL_FROST_STRIKE_R1 = 49143;
 uint32 const SPELL_OBLITERATE_R1 = 49020;
 
@@ -308,6 +373,7 @@ std::unordered_map<uint32, std::unordered_set<uint32>> g_perks; // account id ->
 
 bool g_schemaReady = false;
 bool g_hasClassPerkTable = false;
+bool g_hasClassGrantTable = false;
 
 void DetectSchema()
 {
@@ -318,6 +384,12 @@ void DetectSchema()
         "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
         "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_char_class_perk'"))
         g_hasClassPerkTable = (*tables)[0].Get<uint64>() > 0;
+    // Probed the same defensive way, so a missing migration degrades to
+    // "grants are not remembered across a restart" instead of aborting.
+    if (QueryResult tables = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_char_class_grant'"))
+        g_hasClassGrantTable = (*tables)[0].Get<uint64>() > 0;
 }
 
 // -------------------------------------------------------------------------
@@ -606,6 +678,121 @@ uint32 GetClassPerk(Player* player)
     return it != g_classPerk.end() ? it->second : 0;
 }
 
+uint32 const* GrantsFor(uint32 perk)
+{
+    for (ClassPerkGrant const& g : CLASS_PERK_GRANTS)
+        if (g.perk == perk)
+            return g.spells;
+    return nullptr;
+}
+
+// Highest rank of a chain the character qualifies for, or rank 1 if they
+// qualify for nothing yet -- report #36 wants these usable while levelling, so
+// a level 1 character still gets something castable rather than nothing.
+//
+// Walking the chain is also the fix for the shape of report #38 (Living Bomb
+// stuck at rank 1 because the id was hardcoded).
+uint32 BestRankForLevel(uint32 firstRank, uint8 level)
+{
+    uint32 best = firstRank;
+    uint32 id = firstRank;
+    while (id)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+        if (!info)
+            break;
+        if (info->SpellLevel && info->SpellLevel > level)
+            break;
+        best = id;
+        id = sSpellMgr->GetNextSpellInChain(id);
+    }
+    return best;
+}
+
+// Spells this character was given BY a class perk, so switching specs can take
+// back exactly those and nothing else.
+//
+// Report #37: "Crusader Strike was taught on login, but does not go away when
+// switching to another class perk". The naive fix -- remove everything the old
+// spec grants -- is wrong, because some of those are trainable anyway. A
+// paladin can train Consecration; removing it because they tried Holy and moved
+// on would take something they earned. So we only ever hand back what we
+// handed out.
+std::unordered_map<uint32, std::unordered_set<uint32>> g_classGrantLog;
+
+void LoadClassGrants(uint32 guid)
+{
+    if (!g_hasClassGrantTable || g_classGrantLog.count(guid))
+        return;
+    auto& set = g_classGrantLog[guid];
+    if (QueryResult r = CharacterDatabase.Query(
+        "SELECT `spell_id` FROM `lg_char_class_grant` WHERE `guid` = {}", guid))
+        do { set.insert((*r)[0].Get<uint32>()); } while (r->NextRow());
+}
+
+void NoteGranted(Player* player, uint32 spellId)
+{
+    uint32 const guid = player->GetGUID().GetCounter();
+    LoadClassGrants(guid);
+    if (!g_classGrantLog[guid].insert(spellId).second || !g_hasClassGrantTable)
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT IGNORE INTO `lg_char_class_grant` (`guid`, `spell_id`) VALUES ({}, {})",
+        guid, spellId);
+}
+
+void ForgetGranted(Player* player, uint32 spellId)
+{
+    uint32 const guid = player->GetGUID().GetCounter();
+    g_classGrantLog[guid].erase(spellId);
+    if (g_hasClassGrantTable)
+        CharacterDatabase.DirectExecute(
+            "DELETE FROM `lg_char_class_grant` WHERE `guid` = {} AND `spell_id` = {}",
+            guid, spellId);
+}
+
+// Hand over the new spec's abilities and take back the old spec's, skipping
+// anything both share so a switch never flickers a spell the player keeps.
+void ApplyClassPerkSpells(Player* player, uint32 prevPerk, uint32 newPerk)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    LoadClassGrants(guid);
+    uint8 const level = player->GetLevel();
+
+    uint32 const* incoming = GrantsFor(newPerk);
+    std::unordered_set<uint32> keep;
+    if (incoming)
+        for (uint8 i = 0; i < 3 && incoming[i]; ++i)
+            keep.insert(BestRankForLevel(incoming[i], level));
+
+    if (uint32 const* outgoing = GrantsFor(prevPerk))
+    {
+        for (uint8 i = 0; i < 3 && outgoing[i]; ++i)
+        {
+            // Every rank, because the character may have levelled since.
+            for (uint32 id = outgoing[i]; id; id = sSpellMgr->GetNextSpellInChain(id))
+            {
+                if (keep.count(id) || !g_classGrantLog[guid].count(id))
+                    continue;
+                if (player->HasSpell(id))
+                    player->removeSpell(id, SPEC_MASK_ALL, false);
+                ForgetGranted(player, id);
+            }
+        }
+    }
+
+    for (uint32 id : keep)
+    {
+        if (!sSpellMgr->GetSpellInfo(id))
+            continue;
+        if (!player->HasSpell(id))
+            player->learnSpell(id);
+        NoteGranted(player, id);
+    }
+}
+
 bool CanSelectClassPerk(Player* player, uint32 spellId)
 {
     if (!player || !HasPerk(player, spellId))
@@ -728,6 +915,11 @@ void SelectClassPerk(Player* player, uint32 spellId)
             GrantMageFrostBlizzard(p);
         if (spellId == SPELL_ROGUE_SUBTLETY)
             LivingGear_GrantSubtletyPerks(p);
+        // Reports #33, #36, #37, #39, #40. Everything above this line is the
+        // old ad-hoc approach -- three specs out of thirty, hand-written. This
+        // covers all of them from one table, and takes the previous spec's
+        // spells back.
+        ApplyClassPerkSpells(p, prev, spellId);
         GrantAndBroadcastClassPerks(p); // sends CPKALL, which the client actually handles
     }, std::chrono::milliseconds(1));
     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
@@ -2635,6 +2827,11 @@ public:
         DetectSchema();
         LoadClassPerk(player->GetGUID().GetCounter());
         GrantAndBroadcastClassPerks(player);
+        // A character that picked a spec before this existed, or levelled past
+        // a rank breakpoint since, gets topped up here. Passing the same perk
+        // as both arguments means nothing is revoked.
+        if (uint32 const selected = GetClassPerk(player))
+            ApplyClassPerkSpells(player, selected, selected);
         ApplyRogueCombatBladeFlurry(player);
         GrantMageFrostBlizzard(player);
     }
