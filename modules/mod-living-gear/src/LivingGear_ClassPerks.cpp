@@ -419,6 +419,35 @@ bool HasAuraRankOf(Unit* unit, uint32 firstId)
     return false;
 }
 
+// Can this unit safely RECEIVE an aura from us right now?
+//
+// LivingGear_SafeToCastOn answers that for the caster. Nothing answered it for
+// the target, and that is the hole the fourth _AddAura crash went through:
+// Muckfuppet asserted on !m_cleanupDone while logging out, and the caster was
+// somebody else entirely. Player::CleanupsBeforeDelete sets m_cleanupDone at
+// WorldSession.cpp:873, but RemoveFromWorld does not run until the next line,
+// so in that window the target still reports IsInWorld() and IsAlive() and is
+// a perfectly plausible thing to buff. Only the session's PlayerLogout() flag
+// tells the truth, and none of these iterators were asking.
+//
+// The spread perks make this easy to hit: TickDruidRejuvSpread sweeps 60 yards
+// for injured allies, so any bot resto druid standing in Stormwind can reach
+// a player who is halfway through logging out.
+//
+// Checked here, in the two iterators every perk goes through, rather than at
+// each of the dozen call sites -- same reasoning as the single addon-command
+// dispatcher.
+inline bool SafeAuraTarget(Unit* unit)
+{
+    if (!unit || !unit->IsInWorld() || !unit->IsAlive())
+        return false;
+    if (unit->IsDuringRemoveFromWorld())
+        return false;
+    if (Player* target = unit->ToPlayer())
+        return LivingGear_SafeToCastOn(target);
+    return true;
+}
+
 template <typename Fn>
 void ForEachHostileNear(Player* player, WorldObject* center, float range, Fn&& fn)
 {
@@ -429,7 +458,7 @@ void ForEachHostileNear(Player* player, WorldObject* center, float range, Fn&& f
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, targets, check);
     Cell::VisitObjects(center, searcher, range);
     for (Unit* target : targets)
-        if (target && target->IsAlive())
+        if (SafeAuraTarget(target))
             fn(target);
 }
 
@@ -452,7 +481,7 @@ void ForEachInjuredAllyNear(Player* player, WorldObject* center, float range, Fn
     Acore::UnitListSearcher<Acore::AnyFriendlyNotSelfUnitInObjectRangeCheck> searcher(player, targets, check);
     Cell::VisitObjects(center, searcher, range);
     for (Unit* target : targets)
-        if (target && target->IsAlive() && target->GetHealthPct() < ALLY_SPREAD_INJURED_PCT)
+        if (SafeAuraTarget(target) && target->GetHealthPct() < ALLY_SPREAD_INJURED_PCT)
             fn(target);
 }
 
