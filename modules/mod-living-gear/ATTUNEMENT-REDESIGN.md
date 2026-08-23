@@ -2,6 +2,33 @@
 
 Decided 2026-08-23. Not built yet — this is the spec.
 
+## The power fantasy this serves
+
+**Soloing every dungeon and raid.** Rough at the start, snowballing to
+"I can solo anything" over days-to-weeks of play.
+
+This is the design intent, not a side effect, and it is written at the top
+because everything below only makes sense in its light. In particular: the
+runaway growth further down is the *goal*. Anyone reading this later and
+reaching for a nerf because attuned stats dwarf equipped stats should stop and
+check this section first — that is the system working.
+
+What the shape needs to be:
+
+- **Rough start.** Early attunement is worth little, so the first dungeons are
+  played honestly.
+- **Accelerating middle.** Each milestone raises the rate on *everything already
+  banked*, so clearing content retroactively multiplies the whole collection.
+  That is the snowball, and it is why milestone pacing — not the 5% — is the
+  main tuning dial.
+- **Plateau at "solo anything."** Not unbounded for its own sake; unbounded
+  until the fantasy is delivered.
+
+Soloing a 25-man boss means roughly 10–25x a normal player's throughput and
+survivability. Item leveling to ilvl 284 supplies about 2x of that on its own,
+so attunement has to carry the rest — which is the arithmetic that justifies
+both the uncapped rate and the milestone multiplier.
+
 ## What exists today
 
 Verified against the live database, not recalled:
@@ -118,16 +145,29 @@ strictly worse than the armory round-trip it was meant to avoid. The existing
 `ATTUNE|` command becomes a bulk "attune eligible items in my bags" action.
 `lg_account_meta.auto_attune_on` / `auto_attune_off` are retired.
 
-### No cap, deliberately — and what to watch
+### Uncapped, because the snowball is the product
 
 Flat 5% scales with *your* gear quality: 200 attuned epics is 10 epics' worth of
-free stats before milestones multiply it. At a 25% rate that is 50 epics' worth.
-This ships uncapped on purpose, to get real data rather than guess a ceiling.
+stats before milestones multiply it. At a 25% rate that is 50 epics' worth.
 
-**Revisit when any account passes roughly 300 attuned entries, or when attuned
-stats exceed equipped stats.** Both are one query. Clawing stats back later is
-noticed by players, so the trigger for looking is written down here rather than
-left to memory.
+That is not a bug to be capped. See the top of this document — the point is to
+reach "solo any raid", and 10–25x throughput is what that costs. An earlier
+draft of this spec proposed a guardrail here; it was wrong for this game and the
+correction is recorded so the same instinct does not resurface as a nerf.
+
+**Milestones are the accelerator.** Each one raises the rate on everything
+already banked, so a player who collected broadly and then cleared all heroics
+gets an across-the-board jump rather than a trickle. Collect wide early, then
+each clear retroactively multiplies the lot. Tune pacing there first.
+
+What to actually watch, and it is a *schedule* question rather than a danger one:
+
+- **Too slow** if a dedicated player cannot solo heroic 5-mans within a week.
+- **Too fast** if raids fall before the player has seen most of the content —
+  the snowball should arrive at the end of the journey, not replace it.
+
+Both are answerable with one query against `lg_absorb` plus a look at what that
+account has actually cleared.
 
 ---
 
