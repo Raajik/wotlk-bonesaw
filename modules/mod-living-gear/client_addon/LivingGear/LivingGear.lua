@@ -1427,11 +1427,10 @@ end
 -- recipe list, each with up to eight reagents, so the scan version would be
 -- hundreds of thousands of table walks per redraw and would visibly hang the
 -- profession window.
-local vaultMapCache, vaultMapGen = nil, -1
-local function VaultMap()
+function LG2.VaultMap()
     local gen = LG2._vaultGen or 0
-    if vaultMapCache and vaultMapGen == gen then
-        return vaultMapCache
+    if LG2._vaultMap and LG2._vaultMapGen == gen then
+        return LG2._vaultMap
     end
     local m = {}
     for i = 1, #db.vault do
@@ -1441,7 +1440,7 @@ local function VaultMap()
             m[id] = (m[id] or 0) + (tonumber(it.count) or 0)
         end
     end
-    vaultMapCache, vaultMapGen = m, gen
+    LG2._vaultMap, LG2._vaultMapGen = m, gen
     return m
 end
 
@@ -1450,7 +1449,7 @@ local function VaultCountOf(entry)
     if not want then
         return 0
     end
-    return VaultMap()[want] or 0
+    return LG2.VaultMap()[want] or 0
 end
 
 function LG2.ItemIdFromArg(item)
@@ -4960,18 +4959,17 @@ end
 -- to "point the profession window at the reagent bank": the window is told
 -- about the bank, instead of the bank being shovelled into the window ten
 -- crafts at a time and left there.
-local craftAvailCache, craftAvailGen = {}, -1
-local function CraftableWithVault(index, numReagents, reagentInfo)
+function LG2.CraftableWithVault(index, numReagents, reagentInfo)
     if not index or not numReagents or numReagents < 1 then
         return nil
     end
     -- Bag contents move without the vault changing, so the cache is keyed on
     -- both. LG2._bagGen is bumped from BAG_UPDATE.
     local gen = (LG2._vaultGen or 0) * 1048576 + (LG2._bagGen or 0)
-    if gen ~= craftAvailGen then
-        craftAvailCache, craftAvailGen = {}, gen
+    if gen ~= LG2._craftAvailGen or not LG2._craftAvail then
+        LG2._craftAvail, LG2._craftAvailGen = {}, gen
     end
-    local hit = craftAvailCache[index]
+    local hit = LG2._craftAvail[index]
     if hit ~= nil then
         return hit
     end
@@ -4991,19 +4989,19 @@ local function CraftableWithVault(index, numReagents, reagentInfo)
             end
         end
     end
-    craftAvailCache[index] = best or false
+    LG2._craftAvail[index] = best or false
     return best
 end
 
-local origTradeSkillInfo = GetTradeSkillInfo
-if origTradeSkillInfo then
+LG2._origTradeSkillInfo = GetTradeSkillInfo
+if LG2._origTradeSkillInfo then
     GetTradeSkillInfo = function(index)
         local name, skillType, numAvailable, isExpanded, altVerb, numSkillUps =
-            origTradeSkillInfo(index)
+            LG2._origTradeSkillInfo(index)
         -- Headers have no reagents; asking about them returns nothing useful
         -- and would poison the cache.
         if name and skillType ~= "header" and GetTradeSkillNumReagents then
-            local ok, n = pcall(CraftableWithVault, index,
+            local ok, n = pcall(LG2.CraftableWithVault, index,
                 GetTradeSkillNumReagents(index), GetTradeSkillReagentInfo)
             if ok and n and n > (numAvailable or 0) then
                 numAvailable = n
@@ -5013,13 +5011,13 @@ if origTradeSkillInfo then
     end
 end
 
-local origCraftInfo = GetCraftInfo
-if origCraftInfo then
+LG2._origCraftInfo = GetCraftInfo
+if LG2._origCraftInfo then
     GetCraftInfo = function(index)
         local name, subName, craftType, numAvailable, isExpanded, cost, level =
-            origCraftInfo(index)
+            LG2._origCraftInfo(index)
         if name and craftType ~= "header" and GetCraftNumReagents then
-            local ok, n = pcall(CraftableWithVault, index,
+            local ok, n = pcall(LG2.CraftableWithVault, index,
                 GetCraftNumReagents(index), GetCraftReagentInfo)
             if ok and n and n > (numAvailable or 0) then
                 numAvailable = n
@@ -5165,10 +5163,8 @@ end
 -- fires on a failed craft rather than on every selection, and asks for one
 -- craft's worth rather than ten, so worst case a single recipe's materials
 -- briefly pass through the bag instead of a standing pile.
-local craftWatch = nil
-
-local function CraftFallback()
-    craftWatch = nil
+function LG2.CraftFallback()
+    LG2._craftWatch = nil
     pcall(LG2.SendCraftPrep, true)
 end
 
@@ -5181,7 +5177,7 @@ local function HookCraftPrep()
     -- never reaches the server (UNIT_SPELLCAST_SENT clears this), stage the
     -- reagents so the retry has them in the bag.
     local function armWatch()
-        craftWatch = GetTime() + 0.5
+        LG2._craftWatch = GetTime() + 0.5
     end
     if type(DoTradeSkill) == "function" then
         hooksecurefunc("DoTradeSkill", armWatch)
@@ -5192,21 +5188,21 @@ local function HookCraftPrep()
 end
 
 function LG2.NoteCraftCastSent()
-    craftWatch = nil
+    LG2._craftWatch = nil
 end
 
 function LG2.NoteCraftError()
     -- Any error message arriving right after Create was pressed is worth one
     -- staging attempt. Deliberately not matched against a specific string:
     -- those are locale-dependent and this only costs a redundant top-up.
-    if craftWatch then
-        CraftFallback()
+    if LG2._craftWatch then
+        LG2.CraftFallback()
     end
 end
 
 function LG2.TickCraftWatch()
-    if craftWatch and GetTime() >= craftWatch then
-        CraftFallback()
+    if LG2._craftWatch and GetTime() >= LG2._craftWatch then
+        LG2.CraftFallback()
     end
 end
 
