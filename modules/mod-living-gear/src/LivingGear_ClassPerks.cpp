@@ -645,15 +645,37 @@ void SelectClassPerk(Player* player, uint32 spellId)
         CharacterDatabase.DirectExecute(
             "REPLACE INTO `lg_char_class_perk` (`guid`, `spell_id`) VALUES ({}, {})",
             guid, spellId);
-    if (prev == SPELL_ROGUE_COMBAT && spellId != SPELL_ROGUE_COMBAT)
-        player->RemoveAurasDueToSpell(SPELL_BLADE_FLURRY);
-    if (spellId == SPELL_ROGUE_COMBAT)
-        ApplyRogueCombatBladeFlurry(player);
-    if (spellId == SPELL_MAGE_FROST)
-        GrantMageFrostBlizzard(player);
-    if (spellId == SPELL_ROGUE_SUBTLETY)
-        LivingGear_GrantSubtletyPerks(player);
-    GrantAndBroadcastClassPerks(player); // sends CPKALL, which the client actually handles
+    // CRASH FIX 2026-08-22. A class perk is selected by CASTING its spell, so
+    // this whole function runs from inside OnPlayerSpellCast -- part-way
+    // through the triggering Spell::cast(), before its effects have finished
+    // applying. Everything below adds auras or teaches spells on that same
+    // player, which is the reentrant path into Unit::_AddAura this module has
+    // been bitten by repeatedly.
+    //
+    // It bit again: "ASSERTION FAILED ... Function: _AddAura ... Condition:
+    // !m_cleanupDone" on a Paladin switching spec, which took the realm down.
+    // Every other cast in this module is already deferred for exactly this
+    // reason; this path was the one that never was.
+    //
+    // The DB write and the in-memory selection above stay synchronous -- they
+    // touch no spell state, and the player should not be able to double-select
+    // in the gap.
+    ObjectGuid const playerGuid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid, prev, spellId]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !p->IsInWorld() || !p->GetSession())
+            return;
+        if (prev == SPELL_ROGUE_COMBAT && spellId != SPELL_ROGUE_COMBAT)
+            p->RemoveAurasDueToSpell(SPELL_BLADE_FLURRY);
+        if (spellId == SPELL_ROGUE_COMBAT)
+            ApplyRogueCombatBladeFlurry(p);
+        if (spellId == SPELL_MAGE_FROST)
+            GrantMageFrostBlizzard(p);
+        if (spellId == SPELL_ROGUE_SUBTLETY)
+            LivingGear_GrantSubtletyPerks(p);
+        GrantAndBroadcastClassPerks(p); // sends CPKALL, which the client actually handles
+    }, std::chrono::milliseconds(1));
     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
         ChatHandler(player->GetSession()).PSendSysMessage(
             "|cff66ccff[Account Perks]|r {} is now your active class perk.", info->SpellName[0]);

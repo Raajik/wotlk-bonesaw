@@ -1939,7 +1939,15 @@ public:
     {
         if (GetClassPerk(player) != SPELL_SUBTLETY)
             return;
-        player->learnSpell(SPELL_SHADOWSTEP);
+        // Not a class check, deliberately: this asks "will the core keep this
+        // spell", not "is this a Rogue". Player::CheckSkillLearnedBySpell is
+        // what deletes cross-class spells at login (dozens of "Will be deleted"
+        // lines per startup, and the grant never stuck anyway), and it is
+        // itself switched off by ValidateSkillLearnedBySpells. So the day that
+        // config is turned off for multi-classing, this opens up on its own
+        // with no code change and no class hardcoded here.
+        if (player->CheckSkillLearnedBySpell(SPELL_SHADOWSTEP))
+            player->learnSpell(SPELL_SHADOWSTEP);
         // UnlockPerk (not raw learnSpell) so the client's db.perks
         // actually gets a PK|id|1 for these -- otherwise the addon UI
         // can never show them as known even though the character has

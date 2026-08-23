@@ -38,6 +38,8 @@ class Player;
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
+uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
+
 namespace LivingGearNext
 {
 uint32 const SPELL_CLASS_BUFFS = 910106;
@@ -279,6 +281,21 @@ void SendLine(Player* player, std::string const& line)
 bool HasPerk(Player* player, uint32 spellId)
 {
     return player && player->HasSpell(spellId);
+}
+
+// Bug report #25, 2026-08-22. The Paladin perks in this file were gated on
+// HasPerk() above, which asks "does the character KNOW this spell". For a class
+// perk that is never true: UnlockPerk() in LivingGear_ClassPerks.cpp writes
+// lg_account_perk and notifies the client, and deliberately never calls
+// learnSpell. So HasPerk(SPELL_PALADIN_HOLY) was false for every Paladin who
+// ever lived, and both Paladin perks were unreachable code.
+//
+// The selected spec lives in lg_char_class_perk and is what every other class
+// file checks. This is also the multi-classing-friendly choice: it asks what
+// the player picked, not what class they happen to be.
+bool HasClassPerk(Player* player, uint32 perkId)
+{
+    return player && ::GetClassPerk(player) == perkId;
 }
 
 // 2026-08-21: every caller in this file (Class Buffs, Riding, Auto-Accept)
@@ -774,7 +791,7 @@ void HandlePaladinPerkCast(Player* player, SpellInfo const* info, Unit* target)
     if (!player || !info)
         return;
 
-    if (HasPerk(player, SPELL_PALADIN_HOLY) && RankOf(info, SPELL_HOLY_SHOCK))
+    if (HasClassPerk(player, SPELL_PALADIN_HOLY) && RankOf(info, SPELL_HOLY_SHOCK))
     {
         // "hits enemies within 10 yards of the target" -- anchored on the
         // target, not the caster, which is what the wording says and also what
@@ -784,7 +801,7 @@ void HandlePaladinPerkCast(Player* player, SpellInfo const* info, Unit* target)
         return;
     }
 
-    if (!HasPerk(player, SPELL_PALADIN_RETRIBUTION))
+    if (!HasClassPerk(player, SPELL_PALADIN_RETRIBUTION))
         return;
 
     if (RankOf(info, SPELL_DIVINE_STORM))
@@ -801,7 +818,7 @@ void HandlePaladinPerkCast(Player* player, SpellInfo const* info, Unit* target)
 
 void RelocateConsecration(Player* player)
 {
-    if (!player || !player->GetMap() || !HasPerk(player, SPELL_PALADIN_HOLY))
+    if (!player || !player->GetMap() || !HasClassPerk(player, SPELL_PALADIN_HOLY))
         return;
     for (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_CONSECRATION); info; info = info->GetNextRankSpell())
     {
@@ -998,7 +1015,7 @@ public:
         // #25). Granted here rather than on selection so an existing
         // Retribution Paladin picks it up on their next login instead of
         // having to re-choose the perk.
-        if (HasPerk(player, SPELL_PALADIN_RETRIBUTION) && !player->HasSpell(SPELL_CRUSADER_STRIKE)
+        if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && !player->HasSpell(SPELL_CRUSADER_STRIKE)
             && sSpellMgr->GetSpellInfo(SPELL_CRUSADER_STRIKE))
             player->learnSpell(SPELL_CRUSADER_STRIKE);
         if (g_hasSpeedCapCol)
@@ -1175,13 +1192,13 @@ public:
             && (res == SPELL_FAILED_MOVING || res == SPELL_FAILED_LEVEL_REQUIREMENT
                 || res == SPELL_FAILED_LOWLEVEL))
             res = SPELL_CAST_OK;
-        if (HasPerk(player, SPELL_PALADIN_HOLY) && RankOf(info, SPELL_CONSECRATION)
+        if (HasClassPerk(player, SPELL_PALADIN_HOLY) && RankOf(info, SPELL_CONSECRATION)
             && player->GetDynObject(info->Id))
         {
             player->RemoveDynObject(info->Id);
             res = SPELL_FAILED_DONT_REPORT;
         }
-        if (HasPerk(player, SPELL_PALADIN_RETRIBUTION) && info->Id == SPELL_HAND_OF_FREEDOM
+        if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && info->Id == SPELL_HAND_OF_FREEDOM
             && res == SPELL_FAILED_NOT_READY)
             res = SPELL_CAST_OK;
     }
@@ -1223,7 +1240,7 @@ public:
         // covers them. Gated on the perk so a Protection or Retribution
         // Paladin's Consecration is untouched.
         Player* player = attacker->ToPlayer();
-        if (!player || !HasPerk(player, SPELL_PALADIN_HOLY))
+        if (!player || !HasClassPerk(player, SPELL_PALADIN_HOLY))
             return;
         if (RankOf(spellInfo, SPELL_CONSECRATION))
             damage = int32(float(damage) * CONSECRATION_DAMAGE_MULT);
