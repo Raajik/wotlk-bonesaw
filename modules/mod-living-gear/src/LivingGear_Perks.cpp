@@ -201,6 +201,8 @@ struct PerkCfg
     uint32 questFloorPct = 4;
     bool softenImmunity = true;
     bool ignoreSpellReqs = true;
+    // See ReconcilePerkSpells. Off until someone has watched a login with it on.
+    bool reconcilePerkSpells = false;
 };
 
 PerkCfg g_cfg;
@@ -359,16 +361,88 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg, bool learnSpell
     }
     uint32 const acc = player->GetSession()->GetAccountId();
     LoadPerks(acc);
-    if (!g_perks[acc].insert(spellId).second)
-        return;
-    CharacterDatabase.DirectExecute(
-        "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
-        acc, spellId);
+    // Perks are owned by the ACCOUNT but spells are learned per CHARACTER, and
+    // this used to return right here the moment the account already owned the
+    // perk -- before learning anything. So the first character on an account
+    // got the spell and no later one ever did, and a perk whose spell was
+    // added after the fact could never be learned by anyone who already held
+    // the row. Both were live: 61 accounts owned Fishing 910043 with zero
+    // characters having learned it, and one real account owned 70 perks whose
+    // five characters knew 20, 14, 11, 14 and 2 of them.
+    //
+    // Only the announcement is once-per-account now. Learning is idempotent
+    // and runs whenever it is missing.
+    bool const firstTime = g_perks[acc].insert(spellId).second;
+    if (firstTime)
+        CharacterDatabase.DirectExecute(
+            "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
+            acc, spellId);
     if (learnSpellToo && !player->HasSpell(spellId))
         player->learnSpell(spellId);
+    if (!firstTime)
+        return;
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
         Say(player, msg);
+}
+
+// Perks that are deliberately owned without being learnable: they exist as
+// account flags with nothing to cast, so learning them would put a dead entry
+// in the spellbook. Kept in one place because the login reconciliation below
+// has to make the same exception UnlockPerk's learnSpellToo=false callers do.
+bool PerkHasNoCastableSpell(uint32 spellId)
+{
+    return spellId == SPELL_SHADOW_DANCE || spellId == SPELL_SHADOW_CLONE;
+}
+
+// Repair pass, run at every login and re-sync.
+//
+// UnlockPerk only fires when a perk's unlock CONDITION is re-evaluated, and
+// most conditions are events (train a skill, win a battleground) that never
+// happen twice. That left two permanent holes: a new character on an
+// established account, and any perk whose spell_dbc row was added after the
+// account already owned the perk -- exactly what happened to the 40 badge
+// spells added in 0.1.61, which nobody had learned.
+//
+// Reconciling here means the character's spellbook converges on what the
+// account owns no matter which of those paths got it there.
+//
+// OFF BY DEFAULT, deliberately. tools/perk_grant_audit.py says 100 perks are
+// currently unlearned across 951 characters, so the first login after this
+// ships would fire ~100 learnSpell calls, each sending SMSG_LEARNED_SPELL. I
+// could not establish whether the 3.3.5 client shows a "spell learned" alert
+// for a passive with no SkillLineAbility row, and a wall of those at login is
+// not something to inflict on a guess.
+//
+// It is not needed for correctness either: HasPerk now consults the account
+// set in every file, so an unlearned perk still reads as owned and its gate
+// still opens. This exists for the cosmetic half -- making the spellbook
+// match the account -- and can be turned on once someone has watched one
+// character log in with it enabled.
+void ReconcilePerkSpells(Player* player)
+{
+    if (!player || !player->GetSession() || !g_cfg.reconcilePerkSpells)
+        return;
+    uint32 const acc = player->GetSession()->GetAccountId();
+    LoadPerks(acc);
+
+    // Copy first: learnSpell can run scripts, and this must not be iterating
+    // g_perks if any of them reach back into the perk system.
+    std::vector<uint32> owned(g_perks[acc].begin(), g_perks[acc].end());
+    uint32 learned = 0;
+    for (uint32 spellId : owned)
+    {
+        if (PerkHasNoCastableSpell(spellId) || player->HasSpell(spellId))
+            continue;
+        if (!sSpellMgr->GetSpellInfo(spellId))
+            continue;   // already logged loudly by UnlockPerk
+        player->learnSpell(spellId);
+        ++learned;
+    }
+    if (learned)
+        LOG_INFO("module.livinggear",
+            "Living Gear: {} learned {} account perk spell(s) it was missing.",
+            player->GetName(), learned);
 }
 
 // A player's own DisplayId only carries the bare racial body model --
@@ -1896,6 +1970,7 @@ void SendPerkSync(Player* player)
     uint32 const acc = player->GetSession()->GetAccountId();
     LoadPerks(acc);
     LoadAccountToggles(acc);
+    ReconcilePerkSpells(player);
     if (!g_perks[acc].empty())
     {
         // WotLK's addon-whisper channel silently truncates messages
@@ -2695,6 +2770,7 @@ void LoadPerkConfig()
     g_cfg.dungeonScale = sConfigMgr->GetOption<bool>("LivingGear.ZoneScale.Dungeons", true);
     g_cfg.softenImmunity = sConfigMgr->GetOption<bool>("LivingGear.SoftenCreatureImmunity", true);
     g_cfg.ignoreSpellReqs = sConfigMgr->GetOption<bool>("LivingGear.IgnoreSpellRequirements", true);
+    g_cfg.reconcilePerkSpells = sConfigMgr->GetOption<bool>("LivingGear.ReconcilePerkSpells", false);
     g_cfg.questScale = sConfigMgr->GetOption<bool>("LivingGear.QuestScale.Enable", true);
     g_cfg.questFloorPct = sConfigMgr->GetOption<uint32>("LivingGear.QuestScale.FloorPct", 4);
     if (g_cfg.questFloorPct > 100)
@@ -2749,6 +2825,16 @@ void LivingGear_GrantSubtletyPerks(Player* player)
 // the mob still shrugs off most of the hit. Player immunities (Divine
 // Shield, Ice Block, Anti-Magic Shell) are untouched -- the core patch
 // checks IsCreature() before ever asking this.
+// The canonical "does this player have this perk", exported so other module
+// files stop keeping their own copy. Six files had six versions of this and
+// two of them disagreed: Next.cpp asked only HasSpell (bug #25's mechanism)
+// and Gather.cpp asked only the account set, so the same perk could read
+// owned in one file and missing in another.
+bool LivingGear_HasPerk(Player* player, uint32 spellId)
+{
+    return LivingGearPerks::HasPerk(player, spellId);
+}
+
 bool LivingGear_SoftenCreatureImmunity()
 {
     return LivingGearPerks::g_cfg.softenImmunity;

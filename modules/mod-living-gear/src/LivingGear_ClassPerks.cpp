@@ -369,11 +369,19 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg)
         return;
     uint32 const acc = player->GetSession()->GetAccountId();
     LoadPerks(acc);
-    if (!g_perks[acc].insert(spellId).second)
+    // Bug #25 was exactly this: recorded against the account, never learned as
+    // a spell, so HasPerk-by-HasSpell said no while HasPerk-by-account said
+    // yes. Class perks are selected through the account set, but the class
+    // spec badges are real spells and other files do ask HasSpell.
+    bool const firstTime = g_perks[acc].insert(spellId).second;
+    if (firstTime)
+        CharacterDatabase.DirectExecute(
+            "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
+            acc, spellId);
+    if (!player->HasSpell(spellId))
+        player->learnSpell(spellId);
+    if (!firstTime)
         return;
-    CharacterDatabase.DirectExecute(
-        "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
-        acc, spellId);
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
         ChatHandler(player->GetSession()).SendSysMessage(msg);

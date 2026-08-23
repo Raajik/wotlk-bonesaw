@@ -53,6 +53,12 @@ uint32 LivingGear_AccountLockpickSkill(Player* player); // LivingGear_Gather.cpp
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
+// Canonical account-aware perk check (LivingGear_Perks.cpp). Autoloot was
+// gated on player->HasSpell, which is a per-character fact, while the perk
+// itself is owned by the account -- so an alt that never learned the spell
+// had autoloot silently switched off. Four characters were in that state.
+bool LivingGear_HasPerk(Player* player, uint32 spellId);
+
 namespace LivingGearVault
 {
 
@@ -999,7 +1005,7 @@ void ApplyLootRule(Player* player, Item* item)
     // g_vaultGrantDepth above.
     if (g_vaultGrantDepth)
         return;
-    if (!player || !item || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
+    if (!player || !item || !player->GetSession() || !LivingGear_HasPerk(player, SPELL_AUTOLOOT)
         || !AutolootOn(player->GetSession()->GetAccountId()))
         return;
     ItemTemplate const* proto = item->GetTemplate();
@@ -1069,7 +1075,7 @@ void SendVaultAndRuleSync(Player* player)
 // keeping for that case rather than silently doing nothing.
 bool TryAutolootPickpocket(Player* player, Unit* target)
 {
-    if (!player || !target || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
+    if (!player || !target || !player->GetSession() || !LivingGear_HasPerk(player, SPELL_AUTOLOOT)
         || !AutolootOn(player->GetSession()->GetAccountId()))
         return false;
     Creature* creature = target->ToCreature();
@@ -1125,7 +1131,7 @@ bool TryAutolootPickpocket(Player* player, Unit* target)
 // free-for-all slot bookkeeping directly, which is easy to get subtly wrong.
 void AutolootCreatureKill(Player* player, Creature* creature)
 {
-    if (!player || !creature || !player->IsAlive() || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
+    if (!player || !creature || !player->IsAlive() || !player->GetSession() || !LivingGear_HasPerk(player, SPELL_AUTOLOOT)
         || !AutolootOn(player->GetSession()->GetAccountId()))
         return;
     if (!creature->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE))
@@ -1186,7 +1192,7 @@ void AutolootCreatureKill(Player* player, Creature* creature)
 // skill-up chance and requirement match normal (manual) skinning exactly.
 void AutolootSkinKill(Player* player, Creature* creature)
 {
-    if (!player || !creature || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT)
+    if (!player || !creature || !player->GetSession() || !LivingGear_HasPerk(player, SPELL_AUTOLOOT)
         || !AutolootOn(player->GetSession()->GetAccountId()))
         return;
     if (!creature->HasUnitFlag(UNIT_FLAG_SKINNABLE))
@@ -1229,7 +1235,7 @@ void AutolootSkinKill(Player* player, Creature* creature)
 
 void DepositAll(Player* player)
 {
-    if (!player || !player->GetSession() || !player->HasSpell(SPELL_AUTOLOOT))
+    if (!player || !player->GetSession() || !LivingGear_HasPerk(player, SPELL_AUTOLOOT))
         return;
     uint32 const accountId = player->GetSession()->GetAccountId();
     std::vector<Item*> toDeposit;
@@ -1517,7 +1523,7 @@ public:
         // about.
         if (sSpellMgr->GetSpellInfo(SPELL_AUTOLOOT))
         {
-            if (!player->HasSpell(SPELL_AUTOLOOT))
+            if (!LivingGear_HasPerk(player, SPELL_AUTOLOOT))
                 player->learnSpell(SPELL_AUTOLOOT);
             // Also persist/sync it the same way UnlockPerk() elsewhere does,
             // so the addon's db.perks[910008] (PerkKnown()) actually goes

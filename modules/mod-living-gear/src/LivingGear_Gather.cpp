@@ -119,10 +119,15 @@ void LoadPerks(uint32 accountId)
     }
 }
 
+// The mirror of the Next.cpp problem: this asked only the account set, so a
+// perk learned as a spell but missing its lg_account_perk row read false.
+// Same answer as the other five copies now.
 bool HasPerk(Player* player, uint32 spellId)
 {
     if (!player || !player->GetSession())
         return false;
+    if (player->HasSpell(spellId))
+        return true;
     uint32 const accountId = player->GetSession()->GetAccountId();
     LoadPerks(accountId);
     return g_perks[accountId].count(spellId) > 0;
@@ -134,11 +139,17 @@ void UnlockPerk(Player* player, uint32 spellId, std::string const& msg)
         return;
     uint32 const accountId = player->GetSession()->GetAccountId();
     LoadPerks(accountId);
-    if (!g_perks[accountId].insert(spellId).second)
+    // This never learned the spell at all, so every gather perk read false to
+    // any HasSpell-flavoured check -- the same split that produced bug #25.
+    bool const firstTime = g_perks[accountId].insert(spellId).second;
+    if (firstTime)
+        CharacterDatabase.DirectExecute(
+            "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
+            accountId, spellId);
+    if (!player->HasSpell(spellId))
+        player->learnSpell(spellId);
+    if (!firstTime)
         return;
-    CharacterDatabase.DirectExecute(
-        "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
-        accountId, spellId);
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (!msg.empty())
         ChatHandler(player->GetSession()).SendSysMessage(msg.c_str());

@@ -113,13 +113,20 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg = nullptr)
         return;
     uint32 const acc = player->GetSession()->GetAccountId();
     LoadPerks(acc);
-    if (!g_perks[acc].insert(spellId).second)
-        return;
-    CharacterDatabase.DirectExecute(
-        "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
-        acc, spellId);
+    // Perks belong to the account, spells are learned per character. Returning
+    // on "the account already owns this" skipped the learn entirely, so only
+    // the first character on an account ever got the spell. See the long note
+    // on UnlockPerk in LivingGear_Perks.cpp; ReconcilePerkSpells() there is the
+    // login-time repair for characters that already missed out.
+    bool const firstTime = g_perks[acc].insert(spellId).second;
+    if (firstTime)
+        CharacterDatabase.DirectExecute(
+            "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
+            acc, spellId);
     if (!player->HasSpell(spellId))
         player->learnSpell(spellId);
+    if (!firstTime)
+        return;
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
         Say(player, msg);

@@ -41,6 +41,12 @@ bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 bool LivingGear_SafeToCastOn(Player* player); // LivingGear_Support.cpp
 uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 
+// Canonical implementation lives in LivingGear_Perks.cpp -- see the note
+// there. This file used to answer with player->HasSpell() alone, which is
+// exactly how bug #25 hid: a perk the account owned read as missing because
+// the spell had never been learned on that character.
+bool LivingGear_HasPerk(Player* player, uint32 spellId);
+
 namespace LivingGearNext
 {
 uint32 const SPELL_CLASS_BUFFS = 910106;
@@ -279,9 +285,14 @@ void SendLine(Player* player, std::string const& line)
     ::LivingGear_SendAddonLine(player, line);
 }
 
+// Bug #25's mechanism, and it was still here. Perks live on the ACCOUNT in
+// lg_account_perk; the spell is a per-character artefact that several unlock
+// paths never created. Asking only HasSpell meant a perk the account plainly
+// owned read as missing -- and the other five copies of this function in the
+// module already answered the fuller question. Now they all agree.
 bool HasPerk(Player* player, uint32 spellId)
 {
-    return player && player->HasSpell(spellId);
+    return ::LivingGear_HasPerk(player, spellId);
 }
 
 // Bug report #25, 2026-08-22. The Paladin perks in this file were gated on

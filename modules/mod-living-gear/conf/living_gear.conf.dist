@@ -95,6 +95,19 @@ LivingGear.SoftenCreatureImmunity = 1
 # errand. Creature casts are untouched; disarm still works. Core-patch 0020.
 LivingGear.IgnoreSpellRequirements = 1
 
+# Learn, at login, every perk spell the account owns that this character is
+# missing. Perks belong to the account but spells are learned per character,
+# and for a long time only the FIRST character on an account ever got them --
+# tools/perk_grant_audit.py counted 100 perks unlearned across 951 characters.
+#
+# Off by default on purpose. Turning it on makes the next login for each
+# character fire around a hundred learnSpell calls, and it is not established
+# whether the 3.3.5 client pops a "spell learned" alert for a passive with no
+# SkillLineAbility row. Watch one character log in with it on before leaving
+# it on. Nothing is broken while it is off: HasPerk consults the account set
+# in every file now, so an unlearned perk still reads as owned.
+LivingGear.ReconcilePerkSpells = 0
+
 # Kill XP floor (bug report #11). Every kill is worth at least this percentage
 # of the current level's XP bar, so trash far below you still pays something.
 # Zone scaling still governs anything worth more than the floor. Quest XP has
