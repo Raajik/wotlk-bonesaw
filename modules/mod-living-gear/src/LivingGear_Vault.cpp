@@ -1140,16 +1140,29 @@ bool TryAutolootPickpocket(Player* player, Unit* target)
             return;
         Loot* l = &c->loot;
         uint32 const maxSlot = l->GetMaxSlotInLootFor(p);
+        uint32 granted = 0, refused = 0;
         for (uint32 slot = 0; slot < maxSlot; ++slot)
         {
             InventoryResult msg = EQUIP_ERR_OK;
-            p->StoreLootItem(uint8(slot), l, msg);
+            if (p->StoreLootItem(uint8(slot), l, msg))
+                ++granted;
+            else
+                ++refused;
         }
+        uint32 const gold = l->gold;
         if (l->gold)
         {
             p->ModifyMoney(int32(l->gold));
             l->gold = 0;
         }
+        // Report #42: the Shadowstep sweep logs 4 humanoids pickpocketed and
+        // the player sees no loot, so the casts are fine and the grant is
+        // where it goes wrong. Same counters the chest path already prints,
+        // for the same reason -- "did it fire" and "did anything land" are
+        // different questions.
+        LOG_INFO("module.livinggear",
+            "pickpocket autoloot: '{}' -- {} slot(s), granted {}, refused {}, {} copper",
+            c->GetName(), maxSlot, granted, refused, gold);
     }, std::chrono::milliseconds(1));
     return true;
 }

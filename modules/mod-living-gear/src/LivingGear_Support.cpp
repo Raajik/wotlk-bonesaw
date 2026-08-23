@@ -414,7 +414,12 @@ bool ForceCompleteQuest(Player* player, uint32 questId)
     handler.PSendSysMessage("|cff66ccff[Quest]|r Completed that quest. Turn it in as normal.");
     LOG_INFO("module.livinggear", "Quest Complete used by {} on quest {}", player->GetName(), questId);
 
-    SendLine(player, Acore::StringFormat("QDONECD|{}", QUEST_COMPLETE_COOLDOWN));
+    // Two fields, same as SendQuestCompleteState. This was still sending one,
+    // so the moment the button was used the client got no price and could
+    // never offer the buyout -- the feature was unreachable in the only state
+    // it exists for.
+    SendLine(player, Acore::StringFormat("QDONECD|{}|{}", QUEST_COMPLETE_COOLDOWN,
+        QuestBypassCost(player, QUEST_COMPLETE_COOLDOWN)));
     return true;
 }
 

@@ -603,6 +603,22 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
             p->ModifyMoney(int32(l->gold));
             l->gold = 0;
         }
+        // Report #34, and the user's own reasoning is what cracked it: "if
+        // they're being looted, they should disappear completely." They were
+        // not disappearing, because a REFUSED item stays in the chest -- and
+        // the chest was being deactivated anyway. So either the chest sat
+        // there still lootable, or the leftovers were quietly destroyed with
+        // it. Both are wrong, and the second is worse.
+        //
+        // Only consume the chest when it is actually empty. Anything left
+        // means the player could not carry it, so leave the chest standing and
+        // say so rather than eating the difference.
+        if (refused)
+        {
+            ChatHandler(p->GetSession()).PSendSysMessage(
+                "|cff66ccff[Autoloot]|r Your bags are full -- {} item(s) left in the chest.", refused);
+            return;
+        }
         obj->SetLootState(GO_JUST_DEACTIVATED);
     }, std::chrono::milliseconds(1));
 }
