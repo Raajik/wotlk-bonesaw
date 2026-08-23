@@ -1779,20 +1779,37 @@ local function LayoutWorld()
             on = WorldToggleOn(info)
         end
         btn.tip = info.name .. " - " .. info.how
+        btn.label:SetText(info.name)
         if info.toggle then
-            btn.label:SetText(on and (info.name .. ": ON") or (info.name .. ": OFF"))
+            -- State lives in the switch, not in the label string, and the row
+            -- itself stays neutral. Green and red now mean one thing only:
+            -- this toggle is on, or it is off.
+            btn.label:SetTextColor(known and 0.88 or 0.5, known and 0.9 or 0.5, known and 0.94 or 0.5, 1)
+            btn.desc:SetTextColor(known and 0.5 or 0.38, known and 0.5 or 0.38, known and 0.55 or 0.42, 1)
+            btn._ir, btn._ig, btn._ib = 0.12, 0.12, 0.13
+            if not known then
+                btn.swLabel:SetText("LOCKED")
+                btn.swLabel:SetTextColor(0.5, 0.5, 0.5, 1)
+                Solid(btn.sw.bg, 0.12, 0.12, 0.13, 1)
+            elseif on then
+                btn.swLabel:SetText("ON")
+                btn.swLabel:SetTextColor(0.72, 0.96, 0.76, 1)
+                Solid(btn.sw.bg, 0.14, 0.35, 0.18, 1)
+            else
+                btn.swLabel:SetText("OFF")
+                btn.swLabel:SetTextColor(0.9, 0.62, 0.62, 1)
+                Solid(btn.sw.bg, 0.3, 0.14, 0.14, 1)
+            end
         else
-            btn.label:SetText(info.name)
-        end
-        if on then
-            btn._ir, btn._ig, btn._ib = 0.12, 0.32, 0.14
-            btn.label:SetTextColor(0.85, 0.95, 0.85, 1)
-        elseif info.toggle and known then
-            btn._ir, btn._ig, btn._ib = 0.32, 0.12, 0.12
-            btn.label:SetTextColor(0.95, 0.8, 0.8, 1)
-        else
-            btn._ir, btn._ig, btn._ib = 0.12, 0.12, 0.12
-            btn.label:SetTextColor(0.55, 0.55, 0.55, 1)
+            -- Actions are not stateful, so they only need to say whether they
+            -- can be used. No green.
+            if known then
+                btn._ir, btn._ig, btn._ib = 0.16, 0.19, 0.24
+                btn.label:SetTextColor(0.86, 0.9, 0.95, 1)
+            else
+                btn._ir, btn._ig, btn._ib = 0.11, 0.11, 0.11
+                btn.label:SetTextColor(0.45, 0.45, 0.45, 1)
+            end
         end
         Solid(btn.bg, btn._ir, btn._ig, btn._ib, 1)
     end
@@ -1821,6 +1838,24 @@ local function LayoutWorld()
             else
                 row.head:SetText(track.name)
             end
+        end
+        -- Bar, count and next-reward line: the three things the pips alone
+        -- could never say.
+        local got, total, nextHow = 0, #track.ticks, nil
+        for i = 1, total do
+            if PerkKnown(track.ticks[i].id) then
+                got = got + 1
+            elseif not nextHow then
+                nextHow = track.ticks[i].how
+            end
+        end
+        row.count:SetText(got .. " / " .. total)
+        local pct = total > 0 and (got / total) or 0
+        row.barFill:SetWidth(math.max(1, 150 * pct))
+        if nextHow then
+            row.next:SetText("Next: " .. nextHow)
+        else
+            row.next:SetText("Complete.")
         end
         for i = 1, #row.ticks do
             local tick = row.ticks[i]
@@ -3115,18 +3150,93 @@ function LG2.BuildWorldPanel(f)
         UpdateWorldScroll()
     end)
 
+    -- 2026-08-22 redesign. The old World tab was a single 4-wide grid of
+    -- identical buttons followed by rows of unlabelled pips, all sharing one
+    -- scroll. Three things were wrong with that and each is addressed here:
+    --
+    --   Actions and progression were interleaved. They are different kinds of
+    --   thing -- one you press, one you earn -- so they now get their own
+    --   sections with headings and a rule between them.
+    --
+    --   Colour was overloaded. Green meant BOTH "toggle is on" and "passive is
+    --   unlocked", so Riding and Track Ore: ON looked identical while meaning
+    --   different things. Toggles now carry an ON/OFF switch and own the
+    --   green/red; everything else stops using those colours entirely.
+    --
+    --   The pips said nothing. Each track is now a card with a progress bar, a
+    --   tier count, and the next reward spelled out from the `how` text that
+    --   was already in the data and only ever reachable by hovering.
+    local TOGGLE_ROW_H = 32
+    local ACTION_W, ACTION_H = 124, 18
+    local worldY = -6
+
+    ui.worldSectionToggles = Font(content, 10, 0.5, 0.68, 0.92)
+    ui.worldSectionToggles:SetPoint("TOPLEFT", 6, worldY)
+    ui.worldSectionToggles:SetText("TOGGLES")
+    worldY = worldY - 16
+
+    -- Laid out in two passes so toggles occupy a rail and the rest a grid,
+    -- while ui.worldUnlocks stays indexed 1:1 with WORLD_UNLOCKS. LayoutWorld
+    -- keeps its single loop that way, and nothing downstream has to care.
+    local toggleIdx, actionIdx = 0, 0
+    for i = 1, #WORLD_UNLOCKS do
+        if WORLD_UNLOCKS[i].toggle then
+            toggleIdx = toggleIdx + 1
+        else
+            actionIdx = actionIdx + 1
+        end
+    end
+    local toggleCount = toggleIdx
+    local toggleTop = worldY
+    local actionTop = worldY - toggleCount * TOGGLE_ROW_H - 24
+    ui.worldActionTop = actionTop
+
+    ui.worldSectionActions = Font(content, 10, 0.5, 0.68, 0.92)
+    ui.worldSectionActions:SetPoint("TOPLEFT", 6, actionTop + 16)
+    ui.worldSectionActions:SetText("ACTIONS")
+
+    local rule = content:CreateTexture(nil, "ARTWORK")
+    rule:SetPoint("TOPLEFT", 6, actionTop + 34)
+    rule:SetSize(500, 1)
+    Solid(rule, 0.26, 0.26, 0.3, 1)
+
     ui.worldUnlocks = {}
+    toggleIdx, actionIdx = 0, 0
     for i = 1, #WORLD_UNLOCKS do
         local info = WORLD_UNLOCKS[i]
-        local col = (i - 1) % 4
-        local row = math.floor((i - 1) / 4)
         local btn = CreateFrame("Button", nil, content)
-        btn:SetSize(124, 18)
-        btn:SetPoint("TOPLEFT", 6 + col * 128, -6 - row * 22)
-        StyleBtn(btn, 0.12, 0.12, 0.12)
-        btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
-        btn.label:SetPoint("CENTER", 0, 0)
-        btn.label:SetJustifyH("CENTER")
+        if info.toggle then
+            btn:SetSize(506, TOGGLE_ROW_H - 4)
+            btn:SetPoint("TOPLEFT", 6, toggleTop - toggleIdx * TOGGLE_ROW_H)
+            toggleIdx = toggleIdx + 1
+            StyleBtn(btn, 0.12, 0.12, 0.13)
+            btn.label = Font(btn, 11, 0.88, 0.9, 0.94)
+            btn.label:SetPoint("TOPLEFT", 8, -3)
+            -- The requirement/description text has always existed on every
+            -- perk. It was only ever visible on hover; here it is just there.
+            btn.desc = Font(btn, 9, 0.5, 0.5, 0.55)
+            btn.desc:SetPoint("TOPLEFT", 8, -16)
+            btn.desc:SetWidth(400)
+            btn.desc:SetText(info.how)
+            btn.sw = CreateFrame("Frame", nil, btn)
+            btn.sw:SetSize(52, 16)
+            btn.sw:SetPoint("RIGHT", btn, "RIGHT", -8, 0)
+            btn.sw.bg = btn.sw:CreateTexture(nil, "ARTWORK")
+            btn.sw.bg:SetAllPoints(btn.sw)
+            btn.swLabel = Font(btn.sw, 10, 0.9, 0.9, 0.9)
+            btn.swLabel:SetPoint("CENTER", 0, 0)
+            btn.swLabel:SetJustifyH("CENTER")
+        else
+            local col = actionIdx % 4
+            local row = math.floor(actionIdx / 4)
+            actionIdx = actionIdx + 1
+            btn:SetSize(ACTION_W, ACTION_H)
+            btn:SetPoint("TOPLEFT", 6 + col * 128, actionTop - row * 22)
+            StyleBtn(btn, 0.12, 0.12, 0.12)
+            btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
+            btn.label:SetPoint("CENTER", 0, 0)
+            btn.label:SetJustifyH("CENTER")
+        end
         btn.label:SetText(info.name)
         btn:SetScript("OnEnter", function(self)
             Solid(self.bg, math.min(1, self._ir + 0.08), math.min(1, self._ig + 0.08), math.min(1, self._ib + 0.08), 1)
@@ -3167,26 +3277,63 @@ function LG2.BuildWorldPanel(f)
     end
 
     ui.worldTracks = {}
-    local unlockRows = math.ceil(#WORLD_UNLOCKS / 4)
-    local trackY = -6 - unlockRows * 22 - 8
+    local actionRows = 0
+    for i = 1, #WORLD_UNLOCKS do
+        if not WORLD_UNLOCKS[i].toggle then
+            actionRows = actionRows + 1
+        end
+    end
+    actionRows = math.ceil(actionRows / 4)
+    local CARD_H = 44
+    local trackY = ui.worldActionTop - actionRows * 22 - 26
+
+    ui.worldSectionProgress = Font(content, 10, 0.5, 0.68, 0.92)
+    ui.worldSectionProgress:SetPoint("TOPLEFT", 6, trackY + 16)
+    ui.worldSectionProgress:SetText("PROGRESSION")
+    local rule2 = content:CreateTexture(nil, "ARTWORK")
+    rule2:SetPoint("TOPLEFT", 6, trackY + 34)
+    rule2:SetSize(500, 1)
+    Solid(rule2, 0.26, 0.26, 0.3, 1)
+
     for t = 1, #WORLD_TRACKS do
         local track = WORLD_TRACKS[t]
         local row = CreateFrame("Frame", nil, content)
-        row:SetSize(500, 20)
+        row:SetSize(506, CARD_H - 4)
         row:SetPoint("TOPLEFT", 6, trackY)
-        row.head = Font(row, 10, 0.4, 0.8, 1)
-        row.head:SetPoint("LEFT", 0, 0)
-        row.head:SetWidth(168)
+        row.bg = row:CreateTexture(nil, "BACKGROUND")
+        row.bg:SetAllPoints(row)
+        Solid(row.bg, 0.105, 0.105, 0.115, 1)
+        row.head = Font(row, 11, 0.55, 0.85, 1)
+        row.head:SetPoint("TOPLEFT", 8, -4)
+        row.head:SetWidth(190)
+        -- Progress bar: two flat textures rather than a StatusBar, so a reskin
+        -- cannot swap the texture out from under it.
+        row.barBg = row:CreateTexture(nil, "ARTWORK")
+        row.barBg:SetPoint("TOPLEFT", 204, -6)
+        row.barBg:SetSize(150, 8)
+        Solid(row.barBg, 0.07, 0.07, 0.08, 1)
+        row.barFill = row:CreateTexture(nil, "OVERLAY")
+        row.barFill:SetPoint("TOPLEFT", 204, -6)
+        row.barFill:SetSize(1, 8)
+        Solid(row.barFill, 0.28, 0.62, 0.32, 1)
+        row.count = Font(row, 10, 0.6, 0.6, 0.66)
+        row.count:SetPoint("TOPLEFT", 362, -5)
+        -- The line the old design could only show for one track at a time, in
+        -- a footer. Now every track carries its own.
+        row.next = Font(row, 9, 0.52, 0.52, 0.58)
+        row.next:SetPoint("TOPLEFT", 8, -22)
+        row.next:SetWidth(490)
+        row.next:SetHeight(16)
         row.ticks = {}
         local n = #track.ticks
         for i = 1, n do
             local tick = CreateFrame("Button", nil, row)
-            tick:SetSize(18, 16)
-            tick:SetPoint("LEFT", 172 + (i - 1) * 22, 0)
+            tick:SetSize(10, 10)
+            tick:SetPoint("TOPLEFT", 204 + (i - 1) * 13, -20)
             tick.bg = tick:CreateTexture(nil, "BACKGROUND")
             tick.bg:SetAllPoints(tick)
             Solid(tick.bg, 0.11, 0.11, 0.11, 1)
-            tick.mark = Font(tick, 10, 0.55, 0.95, 0.6)
+            tick.mark = Font(tick, 8, 0.55, 0.95, 0.6)
             tick.mark:SetPoint("CENTER", 0, 0)
             tick.mark:SetJustifyH("CENTER")
             tick:SetScript("OnEnter", function(self)
@@ -3201,7 +3348,7 @@ function LG2.BuildWorldPanel(f)
             row.ticks[i] = tick
         end
         ui.worldTracks[t] = row
-        trackY = trackY - 24
+        trackY = trackY - CARD_H
     end
 
     ui.jumpLabel = Font(content, 10, 0.7, 0.7, 0.7)
@@ -5163,6 +5310,565 @@ questCompleteWatcher:SetScript("OnEvent", function()
     BuildQuestCompleteBtn()
     UpdateQuestCompleteBtn()
 end)
+
+-- =====================================================================
+-- Account Perks redesign preview  (/lgpreview)
+--
+-- Ten candidate layouts for the Account Perks panel, rendered in game from
+-- the REAL perk data so they can be judged against a real account rather
+-- than a mockup full of placeholder text.
+--
+-- This is a viewer, nothing more. It is deliberately inert:
+--   - it never calls SendLine, so no addon command ever reaches the server
+--   - it never writes db, so no setting is changed
+--   - it never touches ui.*, so the live panel is untouched whether this
+--     window is open or not
+-- Every control drawn below is a picture of a control. Clicking one says so.
+--
+-- Each design is built once, lazily, into its own container frame; switching
+-- designs just shows one and hides the rest. That avoids widget pooling
+-- entirely, which 3.3.5 makes awkward since frames cannot be destroyed.
+-- =====================================================================
+local Preview = {}
+LG2.Preview = Preview
+Preview.panels = {}
+
+local PV_W, PV_H = 720, 560
+local PV_BODY_W = PV_W - 172
+
+local PV_DESIGNS = {
+    { key = "split",     label = "1 Split",       title = "Split: Actions vs Progression" },
+    { key = "toggles",   label = "2 Toggle rail", title = "Toggle rail" },
+    { key = "spellbook", label = "3 Spellbook",   title = "Spellbook model" },
+    { key = "cards",     label = "4 Track cards", title = "Track cards" },
+    { key = "grouped",   label = "5 Grouped",     title = "One list, grouped, with search" },
+    { key = "dash",      label = "6 Dashboard",   title = "Dashboard first" },
+    { key = "icons",     label = "7 Icon grid",   title = "Dense icon grid" },
+    { key = "next",      label = "8 Next queue",  title = "What's next queue" },
+    { key = "detail",    label = "9 Master/detail", title = "Master and detail" },
+    { key = "minimal",   label = "10 Minimal",    title = "Shrink to almost nothing" },
+}
+
+-- ---- small drawing helpers, local to the preview ---------------------
+local function PBox(parent, w, h, r, g, b, a)
+    local f = CreateFrame("Frame", nil, parent)
+    f:SetSize(w, h)
+    f.bg = f:CreateTexture(nil, "BACKGROUND")
+    f.bg:SetAllPoints(f)
+    Solid(f.bg, r or 0.12, g or 0.12, b or 0.12, a or 1)
+    return f
+end
+
+local function PLabel(parent, text, size, r, g, b)
+    local fs = Font(parent, size or 12, r, g, b)
+    fs:SetText(text or "")
+    return fs
+end
+
+-- Two flat textures rather than a StatusBar: no texture atlas to fight, and
+-- it renders identically under a reskin.
+local function PBar(parent, w, h, pct, r, g, b)
+    local f = PBox(parent, w, h, 0.08, 0.08, 0.08, 1)
+    local fill = f:CreateTexture(nil, "ARTWORK")
+    fill:SetPoint("LEFT", f, "LEFT", 0, 0)
+    fill:SetSize(math.max(1, w * math.max(0, math.min(1, pct or 0))), h)
+    Solid(fill, r or 0.25, g or 0.6, b or 0.3, 1)
+    f.fill = fill
+    return f
+end
+
+-- ---- read-only views of the live data --------------------------------
+local function PV_TrackProgress(track)
+    local total, got = 0, 0
+    for i = 1, #track.ticks do
+        total = total + 1
+        if PerkKnown(track.ticks[i].id) then
+            got = got + 1
+        end
+    end
+    return got, total
+end
+
+local function PV_NextTick(track)
+    for i = 1, #track.ticks do
+        if not PerkKnown(track.ticks[i].id) then
+            return track.ticks[i]
+        end
+    end
+    return nil
+end
+
+local function PV_FirstSentence(s)
+    if not s or s == "" then
+        return ""
+    end
+    local cut = string.find(s, "%. ")
+    if cut then
+        return string.sub(s, 1, cut)
+    end
+    return s
+end
+
+local function PV_Toggles()
+    local out = {}
+    for i = 1, #WORLD_UNLOCKS do
+        if WORLD_UNLOCKS[i].toggle then
+            out[#out + 1] = WORLD_UNLOCKS[i]
+        end
+    end
+    return out
+end
+
+local function PV_NonToggles()
+    local out = {}
+    for i = 1, #WORLD_UNLOCKS do
+        if not WORLD_UNLOCKS[i].toggle then
+            out[#out + 1] = WORLD_UNLOCKS[i]
+        end
+    end
+    return out
+end
+
+-- =====================================================================
+-- The ten designs. Each takes an empty container and fills it.
+-- =====================================================================
+local PV_BUILD = {}
+
+-- 1. Split: actions above, progression below, with a real divider and each
+--    half given a heading. The single change that addresses the actual
+--    complaint -- two different kinds of thing sharing one scroll.
+PV_BUILD.split = function(p)
+    local y = -6
+    PLabel(p, "ACTIONS", 11, 0.6, 0.75, 0.95):SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    y = y - 18
+    local acts = PV_NonToggles()
+    local col, per = 0, 3
+    local cw = math.floor((PV_BODY_W - 16) / per)
+    for i = 1, math.min(#acts, 12) do
+        local info = acts[i]
+        local known = PerkKnown(info.id)
+        local b = PBox(p, cw - 6, 20, known and 0.12 or 0.10, known and 0.26 or 0.10, known and 0.14 or 0.10, 1)
+        b:SetPoint("TOPLEFT", p, "TOPLEFT", 4 + col * cw, y)
+        local t = PLabel(b, info.name, 11, known and 0.85 or 0.45, known and 0.95 or 0.45, known and 0.85 or 0.45)
+        t:SetPoint("LEFT", b, "LEFT", 6, 0)
+        col = col + 1
+        if col >= per then
+            col = 0
+            y = y - 23
+        end
+    end
+    if col > 0 then y = y - 23 end
+    y = y - 10
+
+    local rule = p:CreateTexture(nil, "ARTWORK")
+    rule:SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    rule:SetSize(PV_BODY_W - 12, 1)
+    Solid(rule, 0.3, 0.3, 0.34, 1)
+    y = y - 14
+
+    PLabel(p, "PROGRESSION", 11, 0.6, 0.75, 0.95):SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    y = y - 18
+    for t = 1, math.min(#WORLD_TRACKS, 9) do
+        local track = WORLD_TRACKS[t]
+        local got, total = PV_TrackProgress(track)
+        PLabel(p, track.name, 11, 0.8, 0.85, 0.9):SetPoint("TOPLEFT", p, "TOPLEFT", 8, y)
+        local bar = PBar(p, 200, 10, total > 0 and got / total or 0)
+        bar:SetPoint("TOPLEFT", p, "TOPLEFT", 130, y - 1)
+        PLabel(p, got .. "/" .. total, 10, 0.6, 0.6, 0.65):SetPoint("TOPLEFT", p, "TOPLEFT", 340, y)
+        y = y - 17
+    end
+end
+
+-- 2. Toggle rail: state lives in a switch, not in the label string, so the
+--    red/green overload disappears. Description sits under the name, which
+--    is where the `how` text has always belonged.
+PV_BUILD.toggles = function(p)
+    local y = -6
+    PLabel(p, "Switches are drawn, not wired. Clicking does nothing here.", 10, 0.55, 0.55, 0.6)
+        :SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    y = y - 20
+    local toggles = PV_Toggles()
+    for i = 1, #toggles do
+        local info = toggles[i]
+        local on = WorldToggleOn(info)
+        local row = PBox(p, PV_BODY_W - 12, 34, 0.11, 0.11, 0.12, 1)
+        row:SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+        PLabel(row, info.name, 12, 0.9, 0.92, 0.95):SetPoint("TOPLEFT", row, "TOPLEFT", 8, -4)
+        local sub = PLabel(row, PV_FirstSentence(info.how), 10, 0.5, 0.5, 0.55)
+        sub:SetPoint("TOPLEFT", row, "TOPLEFT", 8, -18)
+        sub:SetWidth(PV_BODY_W - 120)
+        local sw = PBox(row, 54, 18, on and 0.15 or 0.2, on and 0.35 or 0.14, on and 0.18 or 0.14, 1)
+        sw:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+        local st = PLabel(sw, on and "ON" or "OFF", 11, on and 0.7 or 0.75, on and 0.95 or 0.6, on and 0.75 or 0.6)
+        st:SetPoint("CENTER", sw, "CENTER", 0, 0)
+        st:SetJustifyH("CENTER")
+        y = y - 38
+    end
+end
+
+-- 3. Spellbook model: these utilities are already real spells. Draw them as
+--    icons you would drag to a bar and the panel stops needing to hold them
+--    at all. Icon here is a placeholder square; the real thing would pull
+--    the spell texture.
+PV_BUILD.spellbook = function(p)
+    local y = -6
+    PLabel(p, "These are real spells. Drag to an action bar and close this panel for good.", 10, 0.55, 0.55, 0.6)
+        :SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    y = y - 22
+    local acts = PV_NonToggles()
+    local col, per = 0, 8
+    for i = 1, #acts do
+        local info = acts[i]
+        local known = PerkKnown(info.id)
+        local cell = PBox(p, 54, 54, 0.1, 0.1, 0.11, 1)
+        cell:SetPoint("TOPLEFT", p, "TOPLEFT", 6 + col * 60, y)
+        local ic = PBox(cell, 38, 38, known and 0.18 or 0.12, known and 0.3 or 0.12, known and 0.2 or 0.12, 1)
+        ic:SetPoint("TOP", cell, "TOP", 0, -3)
+        local nm = PLabel(cell, info.name, 8, known and 0.8 or 0.4, known and 0.85 or 0.4, known and 0.8 or 0.4)
+        nm:SetPoint("BOTTOM", cell, "BOTTOM", 0, 2)
+        nm:SetWidth(52)
+        nm:SetJustifyH("CENTER")
+        col = col + 1
+        if col >= per then
+            col = 0
+            y = y - 60
+        end
+    end
+end
+
+-- 4. Track cards: the pips become a bar with a number, and the next reward
+--    is spelled out inline instead of hiding in a tooltip.
+PV_BUILD.cards = function(p)
+    local y = -6
+    for t = 1, math.min(#WORLD_TRACKS, 8) do
+        local track = WORLD_TRACKS[t]
+        local got, total = PV_TrackProgress(track)
+        local nxt = PV_NextTick(track)
+        local card = PBox(p, PV_BODY_W - 12, 52, 0.11, 0.11, 0.12, 1)
+        card:SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+        PLabel(card, track.name, 12, 0.9, 0.92, 0.95):SetPoint("TOPLEFT", card, "TOPLEFT", 8, -5)
+        local tier = PLabel(card, "Tier " .. got .. " / " .. total, 10, 0.6, 0.8, 0.6)
+        tier:SetPoint("TOPLEFT", card, "TOPLEFT", 110, -5)
+        local bar = PBar(card, 180, 8, total > 0 and got / total or 0)
+        bar:SetPoint("TOPLEFT", card, "TOPLEFT", 200, -6)
+        local nextText = nxt and ("Next: " .. PV_FirstSentence(nxt.how)) or "Complete."
+        local sub = PLabel(card, nextText, 10, 0.55, 0.55, 0.6)
+        sub:SetPoint("TOPLEFT", card, "TOPLEFT", 8, -24)
+        sub:SetWidth(PV_BODY_W - 30)
+        sub:SetHeight(22)
+        y = y - 56
+    end
+end
+
+-- 5. Grouped list with a search box. Scales as perks keep being added, which
+--    is the direction of travel.
+PV_BUILD.grouped = function(p)
+    local y = -6
+    local sb = PBox(p, PV_BODY_W - 12, 22, 0.08, 0.08, 0.09, 1)
+    sb:SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    PLabel(sb, "Search perks...", 11, 0.45, 0.45, 0.5):SetPoint("LEFT", sb, "LEFT", 8, 0)
+    local hide = PLabel(p, "[x] Hide locked", 10, 0.6, 0.6, 0.65)
+    hide:SetPoint("TOPRIGHT", p, "TOPRIGHT", -8, y - 28)
+    y = y - 30
+
+    local sections = {
+        { "TOGGLES", PV_Toggles() },
+        { "UTILITIES", PV_NonToggles() },
+    }
+    for s = 1, #sections do
+        y = y - 6
+        PLabel(p, sections[s][1], 10, 0.55, 0.7, 0.9):SetPoint("TOPLEFT", p, "TOPLEFT", 6, y)
+        y = y - 16
+        local list = sections[s][2]
+        for i = 1, math.min(#list, 7) do
+            local info = list[i]
+            local known = PerkKnown(info.id)
+            local row = PBox(p, PV_BODY_W - 16, 18, 0.1, 0.1, 0.11, 1)
+            row:SetPoint("TOPLEFT", p, "TOPLEFT", 6, y)
+            PLabel(row, info.name, 11, known and 0.85 or 0.45, known and 0.9 or 0.45, known and 0.85 or 0.45)
+                :SetPoint("LEFT", row, "LEFT", 6, 0)
+            local st = PLabel(row, known and "unlocked" or "locked", 9, 0.5, 0.5, 0.55)
+            st:SetPoint("RIGHT", row, "RIGHT", -6, 0)
+            y = y - 20
+        end
+    end
+end
+
+-- 6. Dashboard: lead with what you already have, because checking status is
+--    the common visit and browsing is the rare one.
+PV_BUILD.dash = function(p)
+    local y = -6
+    PLabel(p, "WHAT YOU HAVE", 11, 0.55, 0.7, 0.9):SetPoint("TOPLEFT", p, "TOPLEFT", 6, y)
+    y = y - 20
+    local shown, col = 0, 0
+    for t = 1, #WORLD_TRACKS do
+        local track = WORLD_TRACKS[t]
+        local got, total = PV_TrackProgress(track)
+        if got > 0 then
+            local tile = PBox(p, 168, 40, 0.11, 0.13, 0.11, 1)
+            tile:SetPoint("TOPLEFT", p, "TOPLEFT", 6 + col * 176, y)
+            PLabel(tile, track.name, 11, 0.8, 0.9, 0.8):SetPoint("TOPLEFT", tile, "TOPLEFT", 8, -5)
+            PLabel(tile, got .. " of " .. total .. " tiers", 14, 0.6, 0.95, 0.65)
+                :SetPoint("BOTTOMLEFT", tile, "BOTTOMLEFT", 8, 6)
+            col = col + 1
+            shown = shown + 1
+            if col >= 3 then
+                col = 0
+                y = y - 46
+            end
+            if shown >= 9 then break end
+        end
+    end
+    if col > 0 then y = y - 46 end
+    y = y - 12
+
+    PLabel(p, "NEXT THREE GOALS", 11, 0.55, 0.7, 0.9):SetPoint("TOPLEFT", p, "TOPLEFT", 6, y)
+    y = y - 20
+    local goals = 0
+    for t = 1, #WORLD_TRACKS do
+        local nxt = PV_NextTick(WORLD_TRACKS[t])
+        if nxt and goals < 3 then
+            local row = PBox(p, PV_BODY_W - 16, 34, 0.11, 0.11, 0.12, 1)
+            row:SetPoint("TOPLEFT", p, "TOPLEFT", 6, y)
+            PLabel(row, WORLD_TRACKS[t].name, 11, 0.85, 0.9, 0.95)
+                :SetPoint("TOPLEFT", row, "TOPLEFT", 8, -4)
+            local sub = PLabel(row, PV_FirstSentence(nxt.how), 10, 0.55, 0.55, 0.6)
+            sub:SetPoint("TOPLEFT", row, "TOPLEFT", 8, -18)
+            sub:SetWidth(PV_BODY_W - 40)
+            goals = goals + 1
+            y = y - 38
+        end
+    end
+end
+
+-- 7. Dense icon grid: everything at once in about a third the height, detail
+--    on hover. The opposite bet to design 9.
+PV_BUILD.icons = function(p)
+    local y = -6
+    PLabel(p, "Everything at a glance. Detail on hover.", 10, 0.55, 0.55, 0.6)
+        :SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    y = y - 20
+    local col, per = 0, 10
+    for i = 1, #WORLD_UNLOCKS do
+        local info = WORLD_UNLOCKS[i]
+        local known = PerkKnown(info.id)
+        local on = info.toggle and WorldToggleOn(info) or false
+        local r, g, b = 0.12, 0.12, 0.13
+        if info.toggle and on then r, g, b = 0.14, 0.34, 0.16
+        elseif info.toggle and known then r, g, b = 0.3, 0.14, 0.14
+        elseif known then r, g, b = 0.16, 0.24, 0.3 end
+        local cell = PBox(p, 34, 34, r, g, b, 1)
+        cell:SetPoint("TOPLEFT", p, "TOPLEFT", 6 + col * 38, y)
+        local ab = PLabel(cell, string.sub(info.name, 1, 3), 9, known and 0.85 or 0.4, known and 0.9 or 0.4, known and 0.85 or 0.4)
+        ab:SetPoint("CENTER", cell, "CENTER", 0, 0)
+        ab:SetJustifyH("CENTER")
+        col = col + 1
+        if col >= per then col = 0; y = y - 38 end
+    end
+    if col > 0 then y = y - 38 end
+    y = y - 10
+    PLabel(p, "green = toggle on   red = toggle off   blue = unlocked   grey = locked", 10, 0.5, 0.5, 0.55)
+        :SetPoint("TOPLEFT", p, "TOPLEFT", 6, y)
+end
+
+-- 8. Next queue: turn the single "Next:" footer into the whole organising
+--    idea. Everything still to earn, nearest first.
+PV_BUILD.next = function(p)
+    local y = -6
+    PLabel(p, "Everything still to earn, closest first.", 10, 0.55, 0.55, 0.6)
+        :SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    y = y - 20
+    local queue = {}
+    for t = 1, #WORLD_TRACKS do
+        local track = WORLD_TRACKS[t]
+        local got, total = PV_TrackProgress(track)
+        local nxt = PV_NextTick(track)
+        if nxt then
+            queue[#queue + 1] = { name = track.name, how = nxt.how, pct = total > 0 and got / total or 0 }
+        end
+    end
+    table.sort(queue, function(a, b) return a.pct > b.pct end)
+    for i = 1, math.min(#queue, 10) do
+        local q = queue[i]
+        local row = PBox(p, PV_BODY_W - 16, 32, 0.11, 0.11, 0.12, 1)
+        row:SetPoint("TOPLEFT", p, "TOPLEFT", 6, y)
+        local bar = PBar(row, 4, 32, 1, 0.3, 0.6 * q.pct + 0.2, 0.3)
+        bar:SetPoint("LEFT", row, "LEFT", 0, 0)
+        PLabel(row, q.name, 11, 0.9, 0.92, 0.95):SetPoint("TOPLEFT", row, "TOPLEFT", 12, -3)
+        local sub = PLabel(row, PV_FirstSentence(q.how), 10, 0.55, 0.55, 0.6)
+        sub:SetPoint("TOPLEFT", row, "TOPLEFT", 12, -16)
+        sub:SetWidth(PV_BODY_W - 46)
+        y = y - 36
+    end
+end
+
+-- 9. Master and detail: categories left, full text right. No hovering to
+--    read anything. The opposite bet to design 7.
+PV_BUILD.detail = function(p)
+    local listW = 150
+    local list = PBox(p, listW, 300, 0.09, 0.09, 0.1, 1)
+    list:SetPoint("TOPLEFT", p, "TOPLEFT", 4, -6)
+    local y = -4
+    for t = 1, math.min(#WORLD_TRACKS, 12) do
+        local sel = (t == 2)
+        local row = PBox(list, listW - 8, 20, sel and 0.16 or 0.09, sel and 0.2 or 0.09, sel and 0.26 or 0.1, 1)
+        row:SetPoint("TOPLEFT", list, "TOPLEFT", 4, y)
+        PLabel(row, WORLD_TRACKS[t].name, 11, sel and 0.9 or 0.6, sel and 0.95 or 0.6, sel and 1 or 0.65)
+            :SetPoint("LEFT", row, "LEFT", 6, 0)
+        y = y - 22
+    end
+
+    local track = WORLD_TRACKS[2]
+    local dx = listW + 14
+    PLabel(p, track.name, 15, 0.95, 0.95, 1):SetPoint("TOPLEFT", p, "TOPLEFT", dx, -8)
+    local dy = -32
+    for i = 1, #track.ticks do
+        local tick = track.ticks[i]
+        local known = PerkKnown(tick.id)
+        local dot = PBox(p, 10, 10, known and 0.3 or 0.16, known and 0.7 or 0.16, known and 0.35 or 0.17, 1)
+        dot:SetPoint("TOPLEFT", p, "TOPLEFT", dx, dy - 2)
+        local txt = PLabel(p, tick.how, 10, known and 0.8 or 0.5, known and 0.85 or 0.5, known and 0.8 or 0.5)
+        txt:SetPoint("TOPLEFT", p, "TOPLEFT", dx + 18, dy)
+        txt:SetWidth(PV_BODY_W - dx - 26)
+        txt:SetHeight(26)
+        dy = dy - 30
+    end
+end
+
+-- 10. Minimal: toggles only. Utilities live on action bars (design 3),
+--     progression collapses to one line. The least panel that still works.
+PV_BUILD.minimal = function(p)
+    local y = -6
+    local toggles = PV_Toggles()
+    for i = 1, #toggles do
+        local info = toggles[i]
+        local on = WorldToggleOn(info)
+        local row = PBox(p, 260, 20, 0.11, 0.11, 0.12, 1)
+        row:SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+        PLabel(row, info.name, 11, 0.85, 0.9, 0.95):SetPoint("LEFT", row, "LEFT", 6, 0)
+        local st = PLabel(row, on and "ON" or "OFF", 10, on and 0.6 or 0.7, on and 0.95 or 0.5, on and 0.65 or 0.5)
+        st:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+        y = y - 23
+    end
+    y = y - 14
+    local done, total = 0, 0
+    for t = 1, #WORLD_TRACKS do
+        local g, n = PV_TrackProgress(WORLD_TRACKS[t])
+        done = done + g
+        total = total + n
+    end
+    PLabel(p, "Perks earned: " .. done .. " of " .. total, 12, 0.7, 0.85, 0.7)
+        :SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+    y = y - 20
+    PLabel(p, "Everything castable lives on your action bars. Type /lg perks for the full list.", 10, 0.5, 0.5, 0.55)
+        :SetPoint("TOPLEFT", p, "TOPLEFT", 4, y)
+end
+
+-- =====================================================================
+-- The viewer frame itself.
+-- =====================================================================
+local function PV_Show(index)
+    local pv = Preview.frame
+    if not pv then
+        return
+    end
+    for i = 1, #PV_DESIGNS do
+        if Preview.panels[i] then
+            Preview.panels[i]:Hide()
+        end
+        if pv.tabs[i] then
+            Solid(pv.tabs[i].bg, i == index and 0.2 or 0.12, i == index and 0.26 or 0.12,
+                i == index and 0.34 or 0.13, 1)
+        end
+    end
+    if not Preview.panels[index] then
+        local panel = CreateFrame("Frame", nil, pv.body)
+        panel:SetAllPoints(pv.body)
+        Preview.panels[index] = panel
+        local ok, err = pcall(PV_BUILD[PV_DESIGNS[index].key], panel)
+        if not ok then
+            PLabel(panel, "This mockup failed to draw: " .. tostring(err), 11, 1, 0.5, 0.5)
+                :SetPoint("TOPLEFT", panel, "TOPLEFT", 4, -6)
+        end
+    end
+    Preview.panels[index]:Show()
+    pv.title:SetText(PV_DESIGNS[index].title)
+    Preview.current = index
+end
+
+function Preview.Toggle()
+    if Preview.frame and Preview.frame:IsShown() then
+        Preview.frame:Hide()
+        return
+    end
+    if not Preview.frame then
+        local pv = CreateFrame("Frame", "LivingGearPerkPreview", UIParent)
+        pv:SetSize(PV_W, PV_H)
+        pv:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+        pv:SetFrameStrata("DIALOG")
+        pv:SetToplevel(true)
+        pv:EnableMouse(true)
+        pv:SetMovable(true)
+        pv:RegisterForDrag("LeftButton")
+        pv:SetScript("OnDragStart", function(self) self:StartMoving() end)
+        pv:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+
+        local bg = pv:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints(pv)
+        Solid(bg, 0.06, 0.06, 0.07, 0.96)
+
+        local head = PLabel(pv, "Account Perks - design preview", 15, 0.95, 0.95, 1)
+        head:SetPoint("TOPLEFT", pv, "TOPLEFT", 12, -10)
+
+        -- Said plainly and kept on screen, because a mockup that looks live
+        -- is worse than no mockup.
+        local warn = PLabel(pv, "PREVIEW ONLY - nothing here is wired up. No setting is changed and nothing is sent to the server.",
+            10, 1, 0.75, 0.4)
+        warn:SetPoint("TOPLEFT", pv, "TOPLEFT", 12, -30)
+
+        local close = CreateFrame("Button", nil, pv)
+        close:SetSize(22, 20)
+        close:SetPoint("TOPRIGHT", pv, "TOPRIGHT", -8, -8)
+        StyleBtn(close, 0.3, 0.12, 0.12)
+        local cx = PLabel(close, "X", 12, 0.95, 0.85, 0.85)
+        cx:SetPoint("CENTER", close, "CENTER", 0, 0)
+        close:SetScript("OnClick", function() pv:Hide() end)
+
+        local title = PLabel(pv, "", 13, 0.75, 0.88, 1)
+        title:SetPoint("TOPLEFT", pv, "TOPLEFT", 168, -50)
+
+        pv.tabs = {}
+        for i = 1, #PV_DESIGNS do
+            local b = CreateFrame("Button", nil, pv)
+            b:SetSize(150, 24)
+            b:SetPoint("TOPLEFT", pv, "TOPLEFT", 10, -48 - (i - 1) * 27)
+            StyleBtn(b, 0.12, 0.12, 0.13)
+            local t = PLabel(b, PV_DESIGNS[i].label, 11, 0.85, 0.88, 0.92)
+            t:SetPoint("LEFT", b, "LEFT", 8, 0)
+            b:SetScript("OnClick", function() PV_Show(i) end)
+            pv.tabs[i] = b
+        end
+
+        local body = CreateFrame("Frame", nil, pv)
+        body:SetPoint("TOPLEFT", pv, "TOPLEFT", 168, -68)
+        body:SetSize(PV_BODY_W, PV_H - 84)
+        local bbg = body:CreateTexture(nil, "BACKGROUND")
+        bbg:SetAllPoints(body)
+        Solid(bbg, 0.085, 0.085, 0.095, 1)
+
+        pv.title = title
+        pv.body = body
+        Preview.frame = pv
+    end
+    Preview.frame:Show()
+    PV_Show(Preview.current or 1)
+end
+
+SLASH_LGPREVIEW1 = "/lgpreview"
+SLASH_LGPREVIEW2 = "/lgpv"
+SlashCmdList["LGPREVIEW"] = function()
+    Preview.Toggle()
+end
 
 SLASH_LIVINGGEAR1 = "/lg"
 SLASH_LIVINGGEAR2 = "/livinggear"

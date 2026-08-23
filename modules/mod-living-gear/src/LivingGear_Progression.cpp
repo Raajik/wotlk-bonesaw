@@ -517,14 +517,44 @@ public:
         // This only touches the skill-up gain amount, and only for the
         // non-cooking profession set (cooking has its own regen-tier perks
         // at the same 75-450 breakpoints).
-        if (!player || !skill || !gain || !IsTradeSkill(skill->SkillLine))
+        // Bug report #20, 2026-08-22: "professions 100% skill-up buffs for
+        // hitting 75, 150, 225 etc don't work". Reading the code has not
+        // explained it, and three plausible causes are already ruled out:
+        //   - the reporter genuinely holds 4 of the 6 tiers, so the multiplier
+        //     should be 5.0
+        //   - his Tailoring is 73 against a rank cap of 150, so UpdateSkillPro's
+        //     clamp to MaxValue is not eating the gain
+        //   - the other OnPlayerUpdateCraftingSkill in LivingGear_Perks.cpp
+        //     ignores `gain` entirely, so nothing is clobbering this
+        // Log what actually happens rather than shipping a guess. This is a log
+        // line, not a chat print -- no player sees it.
+        if (!player || !skill)
             return;
+        if (!IsTradeSkill(skill->SkillLine))
+        {
+            LOG_INFO("module.livinggear", "trade skill-up: {} skill line {} is not a trade skill, no boost",
+                player->GetName(), skill->SkillLine);
+            return;
+        }
+        if (!gain)
+        {
+            LOG_INFO("module.livinggear", "trade skill-up: {} skill {} arrived with gain 0",
+                player->GetName(), skill->SkillLine);
+            return;
+        }
         CheckTradeMilestones(player);
         float const mult = TradePerkMultiplier(player);
+        uint32 const before = gain;
         if (mult <= 1.0f)
+        {
+            LOG_INFO("module.livinggear", "trade skill-up: {} skill {} gain {} unboosted, multiplier {}",
+                player->GetName(), skill->SkillLine, before, mult);
             return;
+        }
         uint32 const boosted = uint32(float(gain) * mult + 0.5f);
         gain = boosted < 1 ? 1 : boosted;
+        LOG_INFO("module.livinggear", "trade skill-up: {} skill {} gain {} -> {} (multiplier {})",
+            player->GetName(), skill->SkillLine, before, gain, mult);
     }
 };
 
