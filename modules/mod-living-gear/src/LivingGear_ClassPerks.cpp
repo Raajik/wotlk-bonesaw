@@ -265,6 +265,12 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     { SPELL_ROGUE_SUBTLETY,      { SPELL_HEMORRHAGE_G, SPELL_SHADOWSTEP_G, 0 } },
     { SPELL_MAGE_ARCANE,         { SPELL_ARCANE_POWER, SPELL_MIRROR_IMAGE, 0 } },
     { SPELL_MAGE_FIRE,           { SPELL_LIVING_BOMB, 0, 0 } },
+    // Report #54: "Blizzard was not un-learned when i swapped specs." Frost had
+    // no entry here because GrantMageFrostBlizzard already existed -- and that
+    // legacy path hands the spell over WITHOUT recording it in
+    // lg_char_class_grant, so the revoke had nothing to act on. Anything a perk
+    // grants has to come through this table or it can never be taken back.
+    { SPELL_MAGE_FROST,          { SPELL_BLIZZARD_RANKS[0], 0, 0 } },
     { SPELL_HUNTER_MARKSMANSHIP, { SPELL_CHIMERA_SHOT, 0, 0 } },
     { SPELL_HUNTER_BEAST_MASTERY,{ SPELL_BESTIAL_WRATH, 0, 0 } },
     { SPELL_HUNTER_SURVIVAL,     { SPELL_EXPLOSIVE_SHOT_R1, 0, 0 } },
@@ -938,8 +944,9 @@ void SelectClassPerk(Player* player, uint32 spellId)
             p->RemoveAurasDueToSpell(SPELL_BLADE_FLURRY);
         if (spellId == SPELL_ROGUE_COMBAT)
             ApplyRogueCombatBladeFlurry(p);
-        if (spellId == SPELL_MAGE_FROST)
-            GrantMageFrostBlizzard(p);
+        // GrantMageFrostBlizzard is deliberately NOT called here any more --
+        // the grant table above covers Blizzard and, unlike this, records it
+        // so switching away can revoke it. See report #54.
         if (spellId == SPELL_ROGUE_SUBTLETY)
             LivingGear_GrantSubtletyPerks(p);
         // Reports #33, #36, #37, #39, #40. Everything above this line is the
@@ -1299,11 +1306,13 @@ void TickMageFrostBlizzardDamage(Player* player, MageState& st, uint32 diff)
     if (!g_reentryGuard.insert(guid).second)
         return;
 
+    uint32 found = 0, hit = 0;
     for (uint32 id : SPELL_BLIZZARD_RANKS)
     {
         DynamicObject* dyn = player->GetDynObject(id);
         if (!dyn)
             continue;
+        ++found;
         SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
         if (!info)
             continue;
@@ -1315,11 +1324,18 @@ void TickMageFrostBlizzardDamage(Player* player, MageState& st, uint32 diff)
         float radius = dyn->GetRadius();
         if (radius <= 0.0f)
             radius = CLASS_PERK_RANGE;
-        ForEachHostileNear(player, dyn, radius, [player, tick](Unit* target)
+        ForEachHostileNear(player, dyn, radius, [player, tick, &hit](Unit* target)
         {
             player->CastSpell(target, tick, true);
+            ++hit;
         });
     }
+    // Report #53: "Blizzard does no damage", still, after 0.1.62 supposedly
+    // fixed it. Rather than assume which half is wrong, say whether we found a
+    // Blizzard on the ground at all and whether anything was in it.
+    if (found)
+        LOG_INFO("module.livinggear", "blizzard tick: {} object(s) on the ground, {} target(s) hit",
+            found, hit);
 
     g_reentryGuard.erase(guid);
 }
@@ -3012,7 +3028,10 @@ public:
         if (uint32 const selected = GetClassPerk(player))
             ApplyClassPerkSpells(player, selected, selected);
         ApplyRogueCombatBladeFlurry(player);
-        GrantMageFrostBlizzard(player);
+        // Not GrantMageFrostBlizzard: ApplyClassPerkSpells above already
+        // hands Blizzard over AND records it, which is what makes the revoke
+        // in report #54 possible. Granting it twice by two different routes is
+        // how it became unrevokable in the first place.
     }
 
     void OnPlayerLogout(Player* player) override
