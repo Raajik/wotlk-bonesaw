@@ -750,6 +750,23 @@ bool RuleMatches(LgRule const& rule, ItemTemplate const* proto, uint32 accountId
 
 uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
 {
+    // Bug report #21, 2026-08-22, and a regression introduced by #13 the same
+    // day: an item the player needs for a quest they are ON never gets routed
+    // anywhere. It stays in the bag.
+    //
+    // #13 added a rule sending food, potions and scrolls to the vendor by
+    // default. Smoked Desert Dumplings are ITEM_CLASS_CONSUMABLE /
+    // ITEM_SUBCLASS_FOOD and are the objective of "Kitchen Assistance", so
+    // every one the player cooked was sold out from under them. The rule was
+    // right; putting it after IsReagentItem -- the only branch that happened
+    // to check quest items -- was not.
+    //
+    // Guarding here rather than inside the food branch, because the same trap
+    // is one careless "return ACT_VENDOR;" away on any future branch. Quest
+    // items are now the first thing this function decides, so nothing added
+    // below can quietly eat one.
+    if (IsQuestItem(proto, player))
+        return ACT_BAG;
     // 2026-08-22: locked containers file into the reagent vault instead of
     // sitting in bags. Pickpocketing in particular produces junkboxes far
     // faster than anyone opens them, and a Rogue working a crowd would fill
