@@ -101,9 +101,10 @@ bool LivingGear_BypassStealthRequirement(Unit* caster);
 // right before the real reagent check, so banked reagents still count as
 // "in your backpack" for crafting (LivingGear_Vault.cpp).
 void LivingGear_TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed);
-// Living Gear core-patch: hands a profession tool back out of the reagent
-// vault when a recipe asks for one (LivingGear_Vault.cpp).
-void LivingGear_TopUpToolFromVault(Player* player, uint32 totemCategory);
+// Living Gear core-patch: does the reagent vault hold a tool that satisfies
+// this requirement? Answers in place -- nothing is moved (LivingGear_Vault.cpp).
+bool LivingGear_VaultHasToolCategory(Player* player, uint32 totemCategory);
+bool LivingGear_VaultHasItem(Player* player, uint32 itemId);
 #include <G3D/g3dmath.h>
 
 /// @todo: this import is not necessary for compilation and marked as unused by the IDE
@@ -7439,27 +7440,18 @@ SpellCastResult Spell::CheckItems(uint32* param1, uint32* param2)
             }
         }
 
-        // Living Gear core-patch, bug report #29: a profession tool filed into
-        // the reagent vault has to still count as held, exactly like a reagent.
-        // Tools are not reagents -- they live in Totem[]/TotemCategory[] and are
-        // checked against real inventory below -- so the reagent top-up above
-        // never covered them, and a banked Blacksmith Hammer left every
-        // blacksmithing recipe insisting you needed a hammer.
-        for (int i = 0; i < 2; ++i)
-        {
-            if (m_spellInfo->Totem[i] != 0 && !player->HasItemCount(m_spellInfo->Totem[i]))
-                LivingGear_TopUpReagentFromVault(player, m_spellInfo->Totem[i], 1);
-            if (m_spellInfo->TotemCategory[i] != 0)
-                LivingGear_TopUpToolFromVault(player, m_spellInfo->TotemCategory[i]);
-        }
-
         // check totem-item requirements (items presence in inventory)
         uint32 totems = 2;
         for (int i = 0; i < 2; ++i)
         {
             if (m_spellInfo->Totem[i] != 0)
             {
-                if (player->HasItemCount(m_spellInfo->Totem[i]))
+                // Living Gear core-patch, bug report #29: the reagent bank
+                // counts as inventory for tool requirements, same as it does
+                // for reagents. Nothing is moved -- a tool is not consumed, so
+                // the check only needs a truthful answer.
+                if (player->HasItemCount(m_spellInfo->Totem[i])
+                    || LivingGear_VaultHasItem(player, m_spellInfo->Totem[i]))
                 {
                     totems -= 1;
                     continue;
@@ -7477,7 +7469,12 @@ SpellCastResult Spell::CheckItems(uint32* param1, uint32* param2)
         {
             if (m_spellInfo->TotemCategory[i] != 0)
             {
-                if (player->HasItemTotemCategory(m_spellInfo->TotemCategory[i]))
+                // Living Gear core-patch, bug report #29. IsTotemCategoryCompatiableWith
+                // does the work on the vault side, so a banked Gnomish Army
+                // Knife covers every tool its category mask covers, with no
+                // special case here.
+                if (player->HasItemTotemCategory(m_spellInfo->TotemCategory[i])
+                    || LivingGear_VaultHasToolCategory(player, m_spellInfo->TotemCategory[i]))
                 {
                     TotemCategory -= 1;
                     continue;

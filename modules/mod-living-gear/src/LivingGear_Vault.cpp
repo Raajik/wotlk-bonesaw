@@ -381,56 +381,49 @@ void TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
         VaultAdd(accountId, 0, VAULT_REAGENT, itemId, taken - stored); // bag full -- put the remainder back
 }
 
-// Called from a core patch in Spell::CheckItems (Spell.cpp), just before the
-// engine's own tool check.
+// Called from a core patch in Spell::CheckItems (Spell.cpp), from inside the
+// engine's own tool checks.
 //
 // The other half of bug report #29. Tool requirements are NOT reagents: they
-// live in SpellInfo::TotemCategory[] and are tested with
-// HasItemTotemCategory(), which walks real inventory only. TopUpReagentFromVault
-// covers Reagent[] and does nothing for these, so a Blacksmith Hammer sitting
-// in the reagent bank left every blacksmithing recipe insisting you needed a
-// hammer -- the item was banked, visible, and useless.
+// live in SpellInfo::Totem[] (a named item) and SpellInfo::TotemCategory[] (a
+// kind of tool), and are tested with HasItemCount / HasItemTotemCategory,
+// both of which walk real inventory only. TopUpReagentFromVault covers
+// Reagent[] and nothing else, so a Blacksmith Hammer sitting in the reagent
+// bank left every blacksmithing recipe insisting you needed a hammer -- the
+// item was banked, visible, and useless.
 //
-// Unlike a reagent, a tool is not consumed, so this hands it back permanently
-// rather than topping up per cast: after the first craft the player is simply
-// holding their hammer again, which is where a tool wants to be.
-void TopUpToolFromVault(Player* player, uint32 totemCategory)
+// These ANSWER the question rather than moving anything. The first cut of
+// this withdrew the tool into the player's bags, which worked but quietly
+// emptied the bank the player had deliberately filed it into. A tool is not
+// consumed, so there is nothing to supply -- the only thing the check needs
+// is a truthful "yes, you have one".
+//
+// Using the engine's own IsTotemCategoryCompatiableWith is what makes the
+// Gnomish Army Knife work with no special case: its totem category mask is a
+// superset of the individual tools', so one banked Army Knife satisfies
+// blacksmithing, engineering and the rest exactly as it would in a bag.
+bool VaultHasToolCategory(Player* player, uint32 totemCategory)
 {
     if (!player || !player->GetSession() || !totemCategory)
-        return;
-    if (player->HasItemTotemCategory(totemCategory))
-        return;
+        return false;
     uint32 const accountId = player->GetSession()->GetAccountId();
     LoadVault(accountId);
-
-    // Copy the candidate ids out before touching the vault: VaultRemove
-    // mutates the very map being walked.
-    std::vector<uint32> candidates;
     for (auto const& [key, count] : g_vaults[accountId])
     {
         if (key.kind != VAULT_REAGENT || !count)
             continue;
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(key.itemEntry);
         if (proto && player->IsTotemCategoryCompatiableWith(proto, totemCategory))
-            candidates.push_back(key.itemEntry);
+            return true;
     }
+    return false;
+}
 
-    for (uint32 itemEntry : candidates)
-    {
-        if (!VaultRemove(accountId, 0, VAULT_REAGENT, itemEntry, 1))
-            continue;
-        if (StoreFromVault(player, itemEntry, 1))
-        {
-            SendLine(player, Acore::StringFormat("VLT|{}|{}|{}|{}",
-                uint32(VAULT_REAGENT), itemEntry,
-                VaultCount(accountId, 0, VAULT_REAGENT, itemEntry),
-                sObjectMgr->GetItemTemplate(itemEntry)
-                    ? sObjectMgr->GetItemTemplate(itemEntry)->Name1 : "Item"));
-            return;
-        }
-        // Bags were full -- put it back rather than deleting the only tool.
-        VaultAdd(accountId, 0, VAULT_REAGENT, itemEntry, 1);
-    }
+bool VaultHasItem(Player* player, uint32 itemId)
+{
+    if (!player || !player->GetSession() || !itemId)
+        return false;
+    return VaultCount(player->GetSession()->GetAccountId(), 0, VAULT_REAGENT, itemId) > 0;
 }
 
 // Every item id any quest anywhere references: objective items, the source
@@ -712,9 +705,26 @@ void GrantAccountKeys(Player* player)
 // Arclight Spanner, ...) are ITEM_CLASS_WEAPON / ITEM_SUBCLASS_WEAPON_MISC
 // in this item data, not ITEM_CLASS_TRADE_GOODS -- confirmed live against
 // item_template (2026-08-21) rather than assumed.
+//
+// That class/subclass pair is not the whole story, though. The Gnomish Army
+// Knife is ITEM_CLASS_TRADE_GOODS / 3 and stands in for several tools at once
+// (totem category 161, whose mask is a superset of the individual tools'), so
+// the narrow test missed it entirely. Anything the game itself tags with a
+// totem category and that we already treat as trade goods is a tool: that
+// reaches the Army Knife, enchanting rods, the Gyromatic Micro-Adjustor and
+// the Jeweler's Kit.
+//
+// Deliberately NOT reached: ITEM_CLASS_ARMOR / relics (72 equippable "Totem
+// of ..." items) and the shaman totem items in ITEM_CLASS_MISC. Those carry
+// totem categories too but are gear a player wears or carries, not crafting
+// tools, and banking them would be a nasty surprise.
 bool IsToolItem(ItemTemplate const* proto)
 {
-    return proto && proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_MISC;
+    if (!proto)
+        return false;
+    if (proto->Class == ITEM_CLASS_WEAPON && proto->SubClass == ITEM_SUBCLASS_WEAPON_MISC)
+        return true;
+    return proto->TotemCategory != 0 && proto->Class == ITEM_CLASS_TRADE_GOODS;
 }
 
 bool IsReagentItem(ItemTemplate const* proto, Player* player = nullptr)
@@ -1654,12 +1664,18 @@ void LivingGear_TopUpReagentFromVault(Player* player, uint32 itemId, uint32 need
     LivingGearVault::TopUpReagentFromVault(player, itemId, needed);
 }
 
-// Bug report #29: profession tools live in SpellInfo::TotemCategory[], not
-// Reagent[], so the reagent top-up above never covered them and a banked
-// hammer could not satisfy a blacksmithing recipe.
-void LivingGear_TopUpToolFromVault(Player* player, uint32 totemCategory)
+// Bug report #29: profession tools live in SpellInfo::Totem[] and
+// TotemCategory[], not Reagent[], so the reagent top-up above never covered
+// them and a banked hammer could not satisfy a blacksmithing recipe. These
+// answer in place -- nothing leaves the reagent bank.
+bool LivingGear_VaultHasToolCategory(Player* player, uint32 totemCategory)
 {
-    LivingGearVault::TopUpToolFromVault(player, totemCategory);
+    return LivingGearVault::VaultHasToolCategory(player, totemCategory);
+}
+
+bool LivingGear_VaultHasItem(Player* player, uint32 itemId)
+{
+    return LivingGearVault::VaultHasItem(player, itemId);
 }
 
 // Addon-command entry point, called by the dispatcher in LivingGear.cpp.

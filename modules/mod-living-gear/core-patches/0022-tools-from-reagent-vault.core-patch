@@ -1,49 +1,73 @@
-Let a profession tool banked in the reagent vault satisfy a recipe.
+Let a profession tool banked in the reagent vault satisfy a recipe, in place.
 Touches: src/server/game/Spells/Spell.cpp
 
 Why: bug report #29 -- "Bought a blacksmith hammer, didn't go into inventory
 or into reagent bank, need it for crafting."
 
-Tools are reagent-vault material by IsReagentItem (IsToolItem covers
-ITEM_CLASS_WEAPON / ITEM_SUBCLASS_WEAPON_MISC -- Mining Pick, Skinning
-Knife, Blacksmith Hammer, Arclight Spanner), so one is pulled out of the bag
-the moment it is acquired. That half worked. What did not work is that a
-banked tool cannot satisfy the recipe that needs it:
+Tools are reagent-vault material by IsReagentItem, so one is pulled out of
+the bag the moment it is acquired. That half worked. What did not work is
+that a banked tool cannot satisfy the recipe that needs it:
 
   Reagent[]        materials      TopUpReagentFromVault covers this
   Totem[]          a named item   nothing covered this
   TotemCategory[]  a tool kind    nothing covered this
 
-Totem[] and TotemCategory[] are checked further down CheckItems with
-HasItemCount / HasItemTotemCategory, both of which walk real inventory only.
-So the hammer was banked, visible in the reagent panel, and useless -- every
-blacksmithing recipe still said you needed a hammer. Core-patch 0020
-explicitly left totem requirements alone; this is the follow-up that covers
-them, and it covers them by SUPPLYING the tool rather than by waiving the
-check, which is the right shape for a requirement that is real.
+Totem[] and TotemCategory[] are checked in CheckItems with HasItemCount /
+HasItemTotemCategory, both of which walk real inventory only. So the hammer
+was banked, visible in the reagent panel, and useless -- every blacksmithing
+recipe still said you needed a hammer. Core-patch 0020 explicitly left totem
+requirements alone; this is the follow-up, and it covers them by ANSWERING
+the check rather than waiving it, which is the right shape for a requirement
+that is real.
 
-Unlike a reagent, a tool is not consumed, so TopUpToolFromVault hands it back
-permanently instead of topping up per cast. After the first craft the player
-is simply holding their hammer again.
+Nothing is moved. The first cut of this withdrew the tool into the player's
+bags, which worked but quietly emptied the bank the player had deliberately
+filed it into -- and the point of the reagent bank is that things stay there
+and still count. A tool is not consumed, so there is nothing to supply: the
+check only ever needed a truthful "yes, you have one".
 
-Paired with a module-side change in DefaultLootAction: only the FIRST copy of
-a tool is banked, and later copies stay in the bag. The bot accounts had
-accumulated 30-75 Blacksmith Hammers apiece, which is a tool sink, not a
-convenience.
+The Gnomish Army Knife falls out for free. It is ITEM_CLASS_TRADE_GOODS / 3
+rather than a weapon, so the old IsToolItem missed it, and its totem category
+(161) has a mask that is a superset of the individual tools'. Because the
+vault side asks the engine's own IsTotemCategoryCompatiableWith, one banked
+Army Knife satisfies blacksmithing, engineering and the rest with no special
+case anywhere.
+
+Paired with two module-side changes in LivingGear_Vault.cpp:
+  - IsToolItem also accepts trade goods carrying a totem category, so the
+    Army Knife, enchanting rods, the Gyromatic Micro-Adjustor and the
+    Jeweler's Kit are recognised as tools. It still does NOT reach
+    ARMOR/relics or the shaman totem items, which are gear, not tools.
+  - DefaultLootAction banks only the FIRST copy of a tool; later copies stay
+    in the bag. The bot accounts had 30-75 Blacksmith Hammers apiece, which
+    is a tool sink rather than a convenience.
 
 --- a/src/server/game/Spells/Spell.cpp
 +++ b/src/server/game/Spells/Spell.cpp
 @@ near the other Living Gear forward declarations
-+void LivingGear_TopUpToolFromVault(Player* player, uint32 totemCategory);
++bool LivingGear_VaultHasToolCategory(Player* player, uint32 totemCategory);
++bool LivingGear_VaultHasItem(Player* player, uint32 itemId);
 
-@@ Spell::CheckItems, immediately before the Totem / TotemCategory checks
-+        for (int i = 0; i < 2; ++i)
-+        {
-+            if (m_spellInfo->Totem[i] != 0 && !player->HasItemCount(m_spellInfo->Totem[i]))
-+                LivingGear_TopUpReagentFromVault(player, m_spellInfo->Totem[i], 1);
-+            if (m_spellInfo->TotemCategory[i] != 0)
-+                LivingGear_TopUpToolFromVault(player, m_spellInfo->TotemCategory[i]);
-+        }
-+
-         // check totem-item requirements (items presence in inventory)
-         uint32 totems = 2;
+@@ Spell::CheckItems, the Totem[] check
+             if (m_spellInfo->Totem[i] != 0)
+             {
+-                if (player->HasItemCount(m_spellInfo->Totem[i]))
++                if (player->HasItemCount(m_spellInfo->Totem[i])
++                    || LivingGear_VaultHasItem(player, m_spellInfo->Totem[i]))
+                 {
+                     totems -= 1;
+                     continue;
+                 }
+             }
+
+@@ Spell::CheckItems, the TotemCategory[] check
+             if (m_spellInfo->TotemCategory[i] != 0)
+             {
+-                if (player->HasItemTotemCategory(m_spellInfo->TotemCategory[i]))
++                if (player->HasItemTotemCategory(m_spellInfo->TotemCategory[i])
++                    || LivingGear_VaultHasToolCategory(player, m_spellInfo->TotemCategory[i]))
+                 {
+                     TotemCategory -= 1;
+                     continue;
+                 }
+             }
