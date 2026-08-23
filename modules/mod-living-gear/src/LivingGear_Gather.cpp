@@ -35,6 +35,9 @@
 #include <unordered_set>
 #include <vector>
 
+// Castable perks only get learned; badges do not. LivingGear_Perks.cpp.
+bool LivingGear_PerkIsCastable(uint32 spellId);
+
 class Player;
 bool IsAutolootEnabled(Player* player); // LivingGear_Vault.cpp
 
@@ -146,7 +149,9 @@ void UnlockPerk(Player* player, uint32 spellId, std::string const& msg)
         CharacterDatabase.DirectExecute(
             "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
             accountId, spellId);
-    if (!player->HasSpell(spellId))
+    // Castable perks only -- learning a badge spams chat and puts nothing in
+    // the spellbook. See LivingGear_PerkIsCastable in LivingGear_Perks.cpp.
+    if (LivingGear_PerkIsCastable(spellId) && !player->HasSpell(spellId))
         player->learnSpell(spellId);
     if (!firstTime)
         return;

@@ -27,6 +27,20 @@ sessions ran against this repo without ever seeing any of it.
 4. **Every ship gets a `ship/X.Y.Z` git tag.** It is the only record of what
    players actually have. `git log ship/<latest>..HEAD` is the pending list.
 
+5. **Never guess. Verify, then theorise.** State a hypothesis as a
+   hypothesis, then go and check it before acting on it or reporting it.
+   The logout crash cost three wrong fixes this way: a crash dump read
+   `X: -8377 Y: -2757`, that got called "Stormwind" without ever being
+   checked, and an entire theory about a bot druid buffing across a city
+   was built on top of it. The coordinates were Burning Steppes and the
+   player was alone. Reading `Unit::CleanupsBeforeDelete` -- ten seconds of
+   actual evidence -- showed `CombatStop()` runs two lines AFTER
+   `m_cleanupDone` is set, which was the answer all along.
+
+   The database, the source under `src/server/`, and the worldserver log
+   are all right there. Use them. "I believe X" in a report must mean it
+   was checked, and if it could not be checked, say so in the same breath.
+
 ## Where things are
 
 - Real module source: `modules/mod-living-gear/`. The `main` branch has only a

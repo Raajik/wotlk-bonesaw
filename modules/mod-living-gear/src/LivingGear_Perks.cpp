@@ -342,6 +342,8 @@ bool HasPerk(Player* player, uint32 spellId)
 // categorize them, so the client dumps them into the General spellbook tab
 // regardless of being excluded from CASTABLE_SPELLS client-side. HasPerk()'s
 // g_perks[acc]/DB fallback works fine without ever calling learnSpell.
+bool PerkIsCastable(uint32 spellId);   // defined just below; UnlockPerk needs it
+
 void UnlockPerk(Player* player, uint32 spellId, char const* msg, bool learnSpellToo = true)
 {
     if (!player || !player->GetSession())
@@ -377,7 +379,10 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg, bool learnSpell
         CharacterDatabase.DirectExecute(
             "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
             acc, spellId);
-    if (learnSpellToo && !player->HasSpell(spellId))
+    // Badges are never learned. They have no SkillLineAbility row so they
+    // appear nowhere, HasPerk reads the account set regardless, and learning
+    // one only spams "You have learned a new ability" into chat.
+    if (learnSpellToo && PerkIsCastable(spellId) && !player->HasSpell(spellId))
         player->learnSpell(spellId);
     if (!firstTime)
         return;
@@ -2455,6 +2460,21 @@ public:
 
     void OnPlayerLeaveCombat(Player* player) override
     {
+        // THE logout crash, finally. Unit::CleanupsBeforeDelete sets
+        // m_cleanupDone and THEN calls CombatStop() two lines later
+        // (Unit.cpp:12745, :12747), and CombatStop fires this hook. So logging
+        // out while in combat runs TryAutoMount -- which casts a mount -- on a
+        // player the engine has already finished tearing down, and _AddAura
+        // asserts.
+        //
+        // That is why it needed no second player nearby and why it kept
+        // happening in the same spot: it is "log out during or just after a
+        // fight", not anything to do with who else was around. Three earlier
+        // passes guarded ticks and spread targets and never touched this,
+        // because OnPlayerLogout genuinely IS safe -- it runs at
+        // WorldSession.cpp:857, before the cleanup at :873.
+        if (!LivingGear_SafeToCastOn(player))
+            return;
         TryAutoMount(player);
     }
 
@@ -2871,6 +2891,20 @@ void LivingGear_GrantSubtletyPerks(Player* player)
 bool LivingGear_HasPerk(Player* player, uint32 spellId)
 {
     return LivingGearPerks::HasPerk(player, spellId);
+}
+
+// Is this perk a real, pressable ability? See PerkIsCastable.
+//
+// Exported because every UnlockPerk has to ask it before learning. Learning a
+// badge produces "You have learned a new ability: *Mine: 150" in chat and puts
+// nothing anywhere -- badges have no SkillLineAbility row -- so it is pure
+// noise. Removing the early return in UnlockPerk yesterday fixed alts not
+// getting their perks and simultaneously turned every login into a wall of
+// those messages, because a badge whose condition still holds gets re-unlocked
+// each time.
+bool LivingGear_PerkIsCastable(uint32 spellId)
+{
+    return LivingGearPerks::PerkIsCastable(spellId);
 }
 
 bool LivingGear_SoftenCreatureImmunity()

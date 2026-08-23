@@ -69,6 +69,9 @@
 #include <unordered_set>
 #include <vector>
 
+// Castable perks only get learned; badges do not. LivingGear_Perks.cpp.
+bool LivingGear_PerkIsCastable(uint32 spellId);
+
 // LivingGear_Perks.cpp -- owns Rogue Subtlety. Declared at global scope
 // (not inside namespace LivingGearClassPerks below) so the unqualified
 // call in SelectClassPerk() actually binds to the real global-scope
@@ -378,7 +381,9 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg)
         CharacterDatabase.DirectExecute(
             "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
             acc, spellId);
-    if (!player->HasSpell(spellId))
+    // Castable perks only -- learning a badge spams chat and puts nothing in
+    // the spellbook. See LivingGear_PerkIsCastable in LivingGear_Perks.cpp.
+    if (LivingGear_PerkIsCastable(spellId) && !player->HasSpell(spellId))
         player->learnSpell(spellId);
     if (!firstTime)
         return;
@@ -2761,6 +2766,12 @@ public:
 
     void OnPlayerLeaveCombat(Player* player) override
     {
+        // CombatStop() runs AFTER m_cleanupDone is set (Unit.cpp:12745 then
+        // :12747), so this hook fires on a torn-down player when someone logs
+        // out in combat. Same guard as the ticks. See the note on the matching
+        // handler in LivingGear_Perks.cpp.
+        if (!LivingGear_SafeToCastOn(player))
+            return;
         OnLeaveCombatMage(player);
     }
 };
