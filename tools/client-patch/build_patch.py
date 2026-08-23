@@ -81,7 +81,7 @@ CUSTOM_SPELLS = {
     910034: ("*Mage: Frost", "Blizzard is instant, no cooldown, and lingers like Death and Decay. In combat, Ice Lance hits enemies within 15 yards every 2 sec.", 188),
     910035: ("*Rogue: Assassination", "Poisons deal 300% increased damage. DoT poisons spread to enemies within 10 yards.", 500),
     910036: ("*Rogue: Combat", "Blade Flurry is always active. Energy regeneration increased by 50%. Combo builders have a 30% chance to cast free Killing Spree.", 514),
-    910037: ("*Rogue: Subtlety", "Gain Shadowstep (6 sec cooldown). Shadowstep chains up to 8 Ambushes (+500% damage). Learn Shadow Dance.", 250),
+    910037: ("*Rogue: Subtlety", "Gain Shadowstep (6 sec cooldown) pickpockets every humanoid within 20 yards where you land. Hemorrhage spreads a boosted Ambush and Garrote bleed to everything within 10 yards. Learn Shadow Dance.", 250),
     # Jack in the Box dropped entirely 2026-08-21, replaced by Shadow Dance
     # (reuses its freed spell ID). Icon 95 (Kill Combo's) reused
     # deliberately -- confirmed rendering fine in this build already; MPQ

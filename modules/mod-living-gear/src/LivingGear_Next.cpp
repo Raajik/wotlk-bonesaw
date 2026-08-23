@@ -48,6 +48,20 @@ uint32 const SPELL_PALADIN_HOLY = 910069;
 uint32 const SPELL_PALADIN_RETRIBUTION = 910071;
 uint32 const SPELL_HAND_OF_FREEDOM = 1044;
 uint32 const SPELL_CONSECRATION = 26573;
+// Bug report #25, 2026-08-22. The Paladin perks promised these and the module
+// did not contain the words "Holy Shock", "Crusader Strike", "Divine Storm" or
+// "Exorcism" anywhere -- found by tools/perk_promise_audit.py. Across all 30
+// specs Paladin was the only one with promises that had no implementation.
+uint32 const SPELL_HOLY_SHOCK = 20473;
+uint32 const SPELL_CRUSADER_STRIKE = 35395;
+uint32 const SPELL_DIVINE_STORM = 53385;
+uint32 const SPELL_EXORCISM = 879;
+uint32 const SPELL_RETRIBUTION_AURA = 7294;
+float const CONSECRATION_DAMAGE_MULT = 11.0f;  // "+1000%"
+float const HOLY_SHOCK_DAMAGE_MULT = 4.0f;     // "+300%"
+float const HOLY_SHOCK_SPLASH_RANGE = 10.0f;
+uint32 const DIVINE_STORM_EXTRA_HITS = 3;      // "each press hits 4 times"
+float const EXORCISM_SPLASH_RANGE = 10.0f;
 uint32 const SPELL_AVENGERS_SHIELD = 31935;
 uint32 const NPC_KELTHUZAD = 15990;
 uint32 const MAP_NAXXRAMAS = 533;
@@ -79,6 +93,150 @@ struct NextState
 std::unordered_map<uint32, NextState> g_state;
 std::unordered_map<uint32, std::unordered_set<uint8>> g_classBuffUnlock;
 std::unordered_map<uint32, uint32> g_accountRiding;
+
+// ---------------------------------------------------------------------
+// Account-wide gold, honor and arena points (bug report #24, restored
+// 2026-08-22).
+//
+// This existed before the 14k-line LivingGear.cpp was split and was lost in
+// that split, like the amenity functions were. The `lg_account_meta` columns
+// (shared_gold, shared_honor, shared_arena, shared_inited) survived with real
+// data in them, so only the code needed rebuilding.
+//
+// One pool per account. Any character spending or earning updates the pool,
+// and every other character of theirs that is online is updated to match.
+//
+// g_syncingShared is the recursion guard: ApplySharedCurrenciesTo calls
+// SetMoney, which fires OnPlayerMoneyChanged, which would call
+// PushSharedCurrencies straight back into this.
+std::unordered_map<uint32, uint32> g_sharedGold;
+std::unordered_map<uint32, uint32> g_sharedHonor;
+std::unordered_map<uint32, uint32> g_sharedArena;
+std::unordered_map<uint32, uint8> g_sharedInited;
+std::unordered_set<uint32> g_sharedLoaded;
+std::unordered_set<uint32> g_syncingShared;
+
+// Playerbots must never take part. They have their own gold, there are ~90 bot
+// accounts in lg_account_meta, and letting one write to a pool would be both
+// wrong and very hard to notice.
+bool SharedEligible(Player* player)
+{
+    return player && player->GetSession() && !player->GetSession()->IsBot();
+}
+
+void LoadSharedCurrencies(uint32 accountId)
+{
+    if (!g_sharedLoaded.insert(accountId).second)
+        return;
+    g_sharedGold[accountId] = 0;
+    g_sharedHonor[accountId] = 0;
+    g_sharedArena[accountId] = 0;
+    g_sharedInited[accountId] = 0;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `shared_gold`, `shared_honor`, `shared_arena`, `shared_inited` "
+        "FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+    {
+        g_sharedGold[accountId] = (*result)[0].Get<uint32>();
+        g_sharedHonor[accountId] = (*result)[1].Get<uint32>();
+        g_sharedArena[accountId] = (*result)[2].Get<uint32>();
+        g_sharedInited[accountId] = (*result)[3].Get<uint8>();
+    }
+}
+
+void SaveSharedCurrencies(uint32 accountId)
+{
+    CharacterDatabase.Execute(
+        "INSERT INTO `lg_account_meta` (`account_id`, `shared_gold`, `shared_honor`, "
+        "`shared_arena`, `shared_inited`) VALUES ({}, {}, {}, {}, {}) "
+        "ON DUPLICATE KEY UPDATE `shared_gold` = {}, `shared_honor` = {}, "
+        "`shared_arena` = {}, `shared_inited` = {}",
+        accountId, g_sharedGold[accountId], g_sharedHonor[accountId],
+        g_sharedArena[accountId], g_sharedInited[accountId],
+        g_sharedGold[accountId], g_sharedHonor[accountId],
+        g_sharedArena[accountId], g_sharedInited[accountId]);
+}
+
+void ApplySharedCurrenciesTo(Player* player)
+{
+    if (!SharedEligible(player))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    g_syncingShared.insert(accountId);
+    player->SetMoney(g_sharedGold[accountId]);
+    player->SetHonorPoints(g_sharedHonor[accountId]);
+    player->SetArenaPoints(g_sharedArena[accountId]);
+    g_syncingShared.erase(accountId);
+}
+
+void PushSharedCurrencies(Player* source)
+{
+    if (!SharedEligible(source))
+        return;
+    uint32 const accountId = source->GetSession()->GetAccountId();
+    if (g_syncingShared.count(accountId))
+        return;
+    LoadSharedCurrencies(accountId);
+    if (!g_sharedInited[accountId])
+        return; // not seeded yet; EnsureSharedCurrencies owns the first write
+    g_sharedGold[accountId] = source->GetMoney();
+    g_sharedHonor[accountId] = source->GetHonorPoints();
+    g_sharedArena[accountId] = source->GetArenaPoints();
+    SaveSharedCurrencies(accountId);
+
+    ObjectGuid const sourceGuid = source->GetGUID();
+    for (auto const& pair : ObjectAccessor::GetPlayers())
+    {
+        Player* alt = pair.second;
+        if (!alt || alt->GetGUID() == sourceGuid || !SharedEligible(alt))
+            continue;
+        if (alt->GetSession()->GetAccountId() == accountId)
+            ApplySharedCurrenciesTo(alt);
+    }
+}
+
+// Seeds the pool the first time, then hands the character the pooled values.
+//
+// The seed is MAX across the account's characters, NOT the sum the original
+// used, and not the stored value. That matters because this feature was dead
+// for a while and characters drifted apart in the meantime:
+//   - Trusting the stored value would have taken 182k copper off Muckfuppet
+//     and 1.7 MILLION off Swayss, whose characters had earned well past the
+//     last pooled figure. That is the same shape as bug #21 and not a mistake
+//     worth making twice.
+//   - Summing would mint gold from nothing, and worse on accounts that WERE
+//     synced before, where every character already holds the same pool and the
+//     sum multiplies it by the number of characters.
+// MAX means nobody loses what their best character had, and nothing is
+// invented. rev_living_gear_shared_reseed.sql clears shared_inited so every
+// account re-seeds exactly once under this rule.
+void EnsureSharedCurrencies(Player* player)
+{
+    if (!SharedEligible(player))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadSharedCurrencies(accountId);
+    if (!g_sharedInited[accountId])
+    {
+        uint32 gold = player->GetMoney();
+        uint32 honor = player->GetHonorPoints();
+        uint32 arena = player->GetArenaPoints();
+        if (QueryResult result = CharacterDatabase.Query(
+            "SELECT COALESCE(MAX(`money`), 0), COALESCE(MAX(`totalHonorPoints`), 0), "
+            "COALESCE(MAX(`arenaPoints`), 0) FROM `characters` WHERE `account` = {}",
+            accountId))
+        {
+            gold = std::max(gold, (*result)[0].Get<uint32>());
+            honor = std::max(honor, (*result)[1].Get<uint32>());
+            arena = std::max(arena, (*result)[2].Get<uint32>());
+        }
+        g_sharedGold[accountId] = gold;
+        g_sharedHonor[accountId] = honor;
+        g_sharedArena[accountId] = arena;
+        g_sharedInited[accountId] = 1;
+        SaveSharedCurrencies(accountId);
+    }
+    ApplySharedCurrenciesTo(player);
+}
 bool g_metaReady = false;
 bool g_hasSpeedCapCol = false;
 bool g_hasRidingCol = false;
@@ -551,6 +709,96 @@ void CapQuestGoRespawn(GameObject* go)
         go->SetRespawnDelay(QUEST_RESPAWN_CAP);
 }
 
+// Paladin perks, bug report #25. Every cast below is deferred and triggered,
+// for the reason this module keeps relearning: OnPlayerSpellCast fires part-way
+// through the triggering Spell::cast(), and starting more casts on a unit that
+// is still mid-cast is the reentrant path into Unit::_AddAura that produced the
+// recurring assert crashes.
+void PaladinSplashImpl(ObjectGuid playerGuid, ObjectGuid firstTarget, uint32 spellId, float range)
+{
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!player || !player->IsInWorld() || !player->IsAlive())
+        return;
+    Unit* anchor = firstTarget ? ObjectAccessor::GetUnit(*player, firstTarget) : player;
+    if (!anchor || !anchor->IsInWorld())
+        anchor = player;
+
+    std::list<Unit*> around;
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(anchor, player, range);
+    Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(anchor, around, check);
+    Cell::VisitObjects(anchor, searcher, range);
+    for (Unit* u : around)
+    {
+        if (!u || !u->IsAlive() || u->GetGUID() == firstTarget)
+            continue;
+        if (!player->IsValidAttackTarget(u))
+            continue;
+        player->CastSpell(u, spellId, true);
+    }
+}
+
+void PaladinSplash(Player* player, Unit* target, uint32 spellId, float range)
+{
+    if (!player || !spellId)
+        return;
+    ObjectGuid const playerGuid = player->GetGUID();
+    ObjectGuid const targetGuid = target ? target->GetGUID() : ObjectGuid::Empty;
+    player->m_Events.AddEventAtOffset([playerGuid, targetGuid, spellId, range]()
+    {
+        PaladinSplashImpl(playerGuid, targetGuid, spellId, range);
+    }, std::chrono::milliseconds(1));
+}
+
+// Divine Storm "each press hits 4 times": three extra triggered copies on top
+// of the one the player actually cast.
+void DivineStormExtraHits(Player* player)
+{
+    if (!player)
+        return;
+    ObjectGuid const playerGuid = player->GetGUID();
+    for (uint32 i = 0; i < DIVINE_STORM_EXTRA_HITS; ++i)
+    {
+        player->m_Events.AddEventAtOffset([playerGuid]()
+        {
+            Player* p = ObjectAccessor::FindPlayer(playerGuid);
+            if (p && p->IsInWorld() && p->IsAlive())
+                p->CastSpell(p, SPELL_DIVINE_STORM, true);
+        }, std::chrono::milliseconds(120 + i * 120));
+    }
+}
+
+// Called from the spell-cast hook. Splits by perk so a Paladin only ever gets
+// the behaviour of the spec they actually chose.
+void HandlePaladinPerkCast(Player* player, SpellInfo const* info, Unit* target)
+{
+    if (!player || !info)
+        return;
+
+    if (HasPerk(player, SPELL_PALADIN_HOLY) && RankOf(info, SPELL_HOLY_SHOCK))
+    {
+        // "hits enemies within 10 yards of the target" -- anchored on the
+        // target, not the caster, which is what the wording says and also what
+        // makes it useful at range.
+        if (target && player->IsValidAttackTarget(target))
+            PaladinSplash(player, target, info->Id, HOLY_SHOCK_SPLASH_RANGE);
+        return;
+    }
+
+    if (!HasPerk(player, SPELL_PALADIN_RETRIBUTION))
+        return;
+
+    if (RankOf(info, SPELL_DIVINE_STORM))
+    {
+        DivineStormExtraHits(player);
+        return;
+    }
+    // "While Retribution Aura is up, Crusader Strike also casts Exorcism on
+    // nearby enemies." The aura condition is the player's own choice of aura,
+    // so it stays a real check rather than being assumed.
+    if (RankOf(info, SPELL_CRUSADER_STRIKE) && player->HasAura(SPELL_RETRIBUTION_AURA))
+        PaladinSplash(player, target, SPELL_EXORCISM, EXORCISM_SPLASH_RANGE);
+}
+
 void RelocateConsecration(Player* player)
 {
     if (!player || !player->GetMap() || !HasPerk(player, SPELL_PALADIN_HOLY))
@@ -725,6 +973,8 @@ public:
         PLAYERHOOK_ON_LOGIN,
         PLAYERHOOK_ON_LOGOUT,
         PLAYERHOOK_ON_UPDATE,
+        PLAYERHOOK_ON_MONEY_CHANGED,
+        PLAYERHOOK_ON_SPELL_CAST,
         PLAYERHOOK_ON_MAP_CHANGED,
         PLAYERHOOK_ON_CREATURE_KILL,
         PLAYERHOOK_ON_LEARN_SPELL,
@@ -743,6 +993,14 @@ public:
         DetectNextSchema();
         LoadClassBuffUnlock(accountId);
         LoadAccountRiding(accountId);
+        EnsureSharedCurrencies(player);
+        // Paladin Retribution promises "Learn Crusader Strike" (bug report
+        // #25). Granted here rather than on selection so an existing
+        // Retribution Paladin picks it up on their next login instead of
+        // having to re-choose the perk.
+        if (HasPerk(player, SPELL_PALADIN_RETRIBUTION) && !player->HasSpell(SPELL_CRUSADER_STRIKE)
+            && sSpellMgr->GetSpellInfo(SPELL_CRUSADER_STRIKE))
+            player->learnSpell(SPELL_CRUSADER_STRIKE);
         if (g_hasSpeedCapCol)
         {
             if (QueryResult result = CharacterDatabase.Query(
@@ -768,6 +1026,10 @@ public:
     {
         if (!player)
             return;
+        // Only money changes push during play, so honor and arena earned this
+        // session would otherwise sit unpooled until the next coin moved.
+        // Cheap here and it closes that window.
+        PushSharedCurrencies(player);
         ApplyClassBuffs(player, false);
         NextState& st = StateFor(player);
         if (st.weaponPeakOn)
@@ -794,6 +1056,28 @@ public:
     void OnPlayerQuestAccept(Player* player, Quest const* /*quest*/) override
     {
         UnlockPerk(player, SPELL_AUTO_ACCEPT);
+    }
+
+    // Deferred by a tick: this fires from inside the money change itself, and
+    // ApplySharedCurrenciesTo calls SetMoney on other players, which is the
+    // reentrancy this module has been bitten by repeatedly.
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override
+    {
+        if (!player || !spell)
+            return;
+        HandlePaladinPerkCast(player, spell->GetSpellInfo(), spell->m_targets.GetUnitTarget());
+    }
+
+    void OnPlayerMoneyChanged(Player* player, int32& /*amount*/) override
+    {
+        if (!SharedEligible(player))
+            return;
+        ObjectGuid const guid = player->GetGUID();
+        player->m_Events.AddEventAtOffset([guid]()
+        {
+            if (Player* p = ObjectAccessor::FindPlayer(guid))
+                PushSharedCurrencies(p);
+        }, std::chrono::milliseconds(1));
     }
 
     void OnPlayerMapChanged(Player* player) override
@@ -933,6 +1217,18 @@ public:
             return;
         if (RankOf(spellInfo, SPELL_AVENGERS_SHIELD) && attacker->IsPlayer())
             damage = int32(float(damage) * AS_DAMAGE_MULT);
+
+        // Paladin Holy (bug report #25): "Consecration damage +1000%" and
+        // "Holy Shock damage +300%". Both are direct spell damage, so one hook
+        // covers them. Gated on the perk so a Protection or Retribution
+        // Paladin's Consecration is untouched.
+        Player* player = attacker->ToPlayer();
+        if (!player || !HasPerk(player, SPELL_PALADIN_HOLY))
+            return;
+        if (RankOf(spellInfo, SPELL_CONSECRATION))
+            damage = int32(float(damage) * CONSECRATION_DAMAGE_MULT);
+        else if (RankOf(spellInfo, SPELL_HOLY_SHOCK))
+            damage = int32(float(damage) * HOLY_SHOCK_DAMAGE_MULT);
     }
 
     void OnAuraApply(Unit* unit, Aura* aura) override

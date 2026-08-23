@@ -378,7 +378,7 @@ local CLASS_PERKS = {
     ROGUE = {
         { id = 910035, name = "Assassination", how = "Poisons deal +300% damage. DoTs spread within 10 yards." },
         { id = 910036, name = "Combat", how = "Blade Flurry always on. +50% energy regen. 30% free Killing Spree on builders." },
-        { id = 910037, name = "Subtlety", how = "Shadowstep (6 sec cooldown) chains up to 8 Ambushes (+500% damage). Learn Shadow Dance.",
+        { id = 910037, name = "Subtlety", how = "Shadowstep (6 sec cooldown) pickpockets every humanoid within 20 yards where you land. Hemorrhage spreads a boosted Ambush and Garrote bleed to everything within 10 yards. Learn Shadow Dance.",
           subPerks = { { id = 910102, name = "Shadow Dance", how = "Permanent. Openers usable without stealth. +10% attack power to your party/raid." } } },
     },
     PALADIN = {
