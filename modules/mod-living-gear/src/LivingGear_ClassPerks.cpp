@@ -2911,6 +2911,21 @@ bool LivingGear_HandleClassPerksCommand(Player* player, std::string const& msg)
     uint32 spellId = 0;
     if (sscanf(msg.c_str(), "CLASS|%u", &spellId) != 1)
         return false;
+    // Yorgen (priest) reports the three cards render but no click does
+    // anything. Every link reads correct: the account owns 910163-910165, the
+    // spells are learned, CanSelectClassPerk handles CLASS_PRIEST,
+    // GrantAndBroadcastClassPerks runs at login and on REQ, the CPKALL handler
+    // parses, and LayoutClass sets btn.ownClass through LayoutRows.
+    //
+    // So stop reading and measure. This says whether the click reaches the
+    // server at all, and if it does, exactly which gate rejects it. Cheap, and
+    // it splits the problem in half instead of producing another theory.
+    bool const owns = LivingGearClassPerks::HasPerk(player, spellId);
+    bool const selectable = LivingGearClassPerks::CanSelectClassPerk(player, spellId);
+    LOG_INFO("module.livinggear",
+        "CLASS| from {} (class {}) for perk {}: owns={} selectable={} current={}",
+        player ? player->GetName() : "?", player ? uint32(player->getClass()) : 0,
+        spellId, owns, selectable, LivingGearClassPerks::GetClassPerk(player));
     LivingGearClassPerks::SelectClassPerk(player, spellId);
     return true;
 }
