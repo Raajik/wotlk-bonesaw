@@ -150,23 +150,26 @@ def format_report(row: dict) -> str:
     return "\n".join(lines)
 
 
-def chunk_messages(reports: list[str], header: str) -> list[str]:
-    """Pack formatted reports into as few messages as fit under the limit."""
-    messages: list[str] = []
-    current = header
-    for report in reports:
-        candidate = current + "\n\n" + report if current else report
-        if len(candidate) > MAX_MESSAGE and current:
-            messages.append(current)
-            current = report
-        else:
-            current = candidate
-    if current:
-        messages.append(current)
-    return messages
+def store_message_id(report_id: str, message_id: str, db_password: str) -> None:
+    """Remember which Discord message carries which report.
+
+    Without this there is no way to go back and strike a report through when it
+    is fixed -- the whole point of bug_resolve.py."""
+    if not message_id:
+        return
+    safe = "".join(c for c in message_id if c.isdigit())
+    if not safe:
+        return
+    run_sql("UPDATE lg_bug_report SET discord_message_id = '%s' WHERE id = %d;"
+            % (safe, int(report_id)), db_password)
 
 
-def post(url: str, content: str) -> None:
+
+def post(url: str, content: str) -> str:
+    # ?wait=true makes Discord return the created message rather than an empty
+    # 204, which is the only way to learn its id.
+    if "?" not in url:
+        url = url + "?wait=true"
     payload = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -177,7 +180,10 @@ def post(url: str, content: str) -> None:
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 if 200 <= response.status < 300:
-                    return
+                    try:
+                        return str(json.loads(response.read().decode()).get("id", ""))
+                    except Exception:
+                        return ""
                 raise RuntimeError(f"Discord returned HTTP {response.status}")
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < 2:
@@ -227,15 +233,35 @@ def main() -> int:
         print("No new bug reports.")
         return 0
 
-    header = f"**{len(rows)} new bug report(s)**"
-    messages = chunk_messages([format_report(r) for r in rows], header)
-
     if args.dry_run:
-        for message in messages:
-            print(message)
+        for row in rows:
+            print(format_report(row))
             print("-" * 60)
-        print(f"(dry run: {len(rows)} report(s) left unmarked)")
+        print("(dry run: %d report(s) left unmarked)" % len(rows))
         return 0
+
+    # One message per report. Batching kept the message count down, but a
+    # batched message cannot be struck through for a single report inside it,
+    # and being able to close reports matters more than tidiness.
+    done = []
+    try:
+        for row in rows:
+            message_id = post(url, format_report(row))
+            store_message_id(row["id"], message_id, args.db_password)
+            done.append(row["id"])
+            time.sleep(0.4)  # stay clear of the webhook rate limit
+    except RuntimeError as exc:
+        print("error posting to Discord: %s" % exc, file=sys.stderr)
+        # Mark whatever genuinely landed, so a partial run does not repost the
+        # ones that already made it.
+        if done:
+            mark_posted(done, args.db_password)
+            print("Posted %d before failing; those are marked." % len(done))
+        return 1
+
+    mark_posted(done, args.db_password)
+    print("Posted %d report(s)." % len(done))
+    return 0
 
     posted_any = False
     try:

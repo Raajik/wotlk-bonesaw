@@ -49,6 +49,37 @@ channel looks exactly like "no bugs today". Check `bug_digest.log` — it
 records a timestamp and exit code for every run, whether or not anything
 was posted.
 
+## Closing reports
+
+Reports were write-once until 2026-08-22: they arrived, went to Discord, and
+nothing ever marked one done. `bug_resolve.py` closes that loop.
+
+```
+python tools/bug-reports/bug_resolve.py                      # what is open
+python tools/bug-reports/bug_resolve.py --all                # everything
+python tools/bug-reports/bug_resolve.py 21 fixed "guarded quest items"
+python tools/bug-reports/bug_resolve.py 15 attempted "instrumented, not solved"
+python tools/bug-reports/bug_resolve.py 4 wontfix "needs client DBC work"
+python tools/bug-reports/bug_resolve.py 21 open              # reopen
+```
+
+Marking a report **edits its original Discord message in place** — the
+description is struck through and the resolution appended — rather than posting
+a second message nobody would connect to the first. Webhooks can edit their own
+messages, which is why `bug_digest.py` now posts one message per report and
+records the id; batching several into one message would make striking a single
+report impossible.
+
+Reports posted before that change have no id on file. They are still updated in
+the database, and the tool says so rather than failing.
+
+**Use `attempted` when that is the truth.** #15 (solid chests) was instrumented,
+not solved. Calling that "fixed" is a lie that costs someone an afternoon when
+it comes back.
+
+Where this fits: resolve reports as part of the ship that carries the fix, so
+the Discord channel matches what players actually have.
+
 ## Durability
 
 Every report exists in three places, and losing Discord loses none of them:
