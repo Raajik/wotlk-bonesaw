@@ -118,8 +118,9 @@ LivingGear.ReconcilePerkSpells = 1
 # before the price decays back to base -- without it the price would ratchet
 # upward forever and the feature would be dead after one bad afternoon.
 #
-# BaseCost is copper. 500000 = 50 gold.
-LivingGear.QuestBypass.BaseCost = 500000
+# BaseCost is copper. 5000000 = 500 gold. With Multiplier 2.0 a second
+# buyout inside the window is 1000g and a third is 2000g.
+LivingGear.QuestBypass.BaseCost = 5000000
 LivingGear.QuestBypass.Multiplier = 2.0
 LivingGear.QuestBypass.WindowSeconds = 3600
 

@@ -72,9 +72,10 @@ uint32 const BUG_MIN_LENGTH = 5;
 uint32 const QUEST_COMPLETE_COOLDOWN = 600;
 
 // Gold buyout for the cooldown. Read from config in LivingGear_SupportConfig().
-// 50g base: enough that a levelling character notices, trivial to a rich one --
-// which is what the escalation is for.
-uint32 g_questBypassBase = 500000;      // copper
+// 500g base, per user request: this is meant to hurt if you lean on it. With
+// the doubling below, a second buyout inside the hour is 1000g and a third is
+// 2000g, which is the "costly in rapid succession" the sink is for.
+uint32 g_questBypassBase = 5000000;     // copper
 float  g_questBypassMult = 2.0f;        // per buyout inside the window
 uint32 g_questBypassWindow = 3600;      // window length, seconds
 
@@ -837,7 +838,7 @@ void AddSC_LivingGearSupport()
     LivingGearSupport::g_questDropAlways =
         sConfigMgr->GetOption<bool>("LivingGear.QuestDropAlways", true);
     LivingGearSupport::g_questBypassBase =
-        sConfigMgr->GetOption<uint32>("LivingGear.QuestBypass.BaseCost", 500000);
+        sConfigMgr->GetOption<uint32>("LivingGear.QuestBypass.BaseCost", 5000000);
     LivingGearSupport::g_questBypassMult =
         sConfigMgr->GetOption<float>("LivingGear.QuestBypass.Multiplier", 2.0f);
     LivingGearSupport::g_questBypassWindow =
