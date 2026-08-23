@@ -169,7 +169,7 @@ CUSTOM_SPELLS = {
     # No leading asterisk (bug report #14): the "*" prefix marks perks the player
     # casts from the Account Perks panel. Kill Combo is a buff that happens TO
     # you, so it reads as a normal buff and is named like one.
-    910089: ("Kill Combo", "Kills stack this, up to 10. Kill XP increased by 20% per stack. Movement speed increased by 5% per stack. Refreshes to 10 minutes on every kill. Survives death and logging out.", 95),
+    910089: ("Kill Combo", "Kills stack this, up to 10. Kill XP increased by 20% per stack. Movement speed increased by 5% per stack, on foot, mounted and flying. Refreshes to 10 minutes on every kill. Survives death and logging out.", 95),
     910090: ("*Quests - Finish", "Summon the questgivers for completed quests in your log for 60 sec. Turn in and take follow-ups from them. Unlocked by completing 1 quest.", 141),
     910091: ("*Attuned Armory", "Make a wearable copy of an item you have attuned. The attunement stays on the account.", 249),
     910092: ("*Solo Queue", "Queue for dungeons and raids by yourself. No group required.", 169),
@@ -249,7 +249,9 @@ HOT_SPELLS = {
 #                    the buff lasted six seconds.
 VISIBLE_AURAS = {
     910087: (21, 1, ((6, 129, 1, 39, 1), (6, 130, 1, 39, 1))),
-    910089: (6, 10, ((6, 129, 1, 0, 1), (6, 130, 1, 0, 1))),
+    # 129 on foot, 130 ground mount, 209 flying (bug report #27 -- the buff
+    # did nothing in the air, because 129/130 do not cover flight).
+    910089: (6, 10, ((6, 129, 1, 0, 1), (6, 130, 1, 0, 1), (6, 209, 1, 0, 1))),
     910098: (0, 0, ((6, 58, 1, 499, 1),)),
     # +10% attack power, permanent while a Subtlety Rogue is in the party.
     910173: (21, 0, ((6, 166, 0, 10, 1),)),

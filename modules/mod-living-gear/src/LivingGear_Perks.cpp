@@ -711,13 +711,23 @@ void RecastCombo(Player* player)
         return;
     }
 
-    // bp0 is just a display/marker value (effect 1, dummy) -- the real xp
-    // bonus is read from ComboCount() directly in OnPlayerGiveXP, not from
-    // the aura. bp1 (effect 2, native MOD_INCREASE_SPEED) is what actually
-    // grants the move-speed bonus, via the engine's normal aura handling.
-    int32 xpMarker = int32(stacks);
+    // All three effects are movement speed, and all three get the SAME value.
+    //
+    // The comment that used to sit here called bp0 a "display/marker" for the
+    // XP bonus. It was wrong, and the mistake was costing players speed: the
+    // spell's effect 1 is MOD_SPEED_ALWAYS (129, on foot) and it was being fed
+    // the raw stack count, so walking speed rose 1% per stack while mounted
+    // speed rose the advertised 5%. The XP bonus has always been read from
+    // ComboCount() in OnPlayerGiveXP and never from this aura at all.
+    //
+    // Effect 3 is MOD_MOUNTED_FLIGHT_SPEED_ALWAYS (209), added for bug report
+    // #27 -- the buff did nothing in the air, because 129 and 130 only cover
+    // ground movement. All three of these are the "_ALWAYS" variants, which is
+    // why flight uses 209 rather than 207.
     int32 speedPct = int32(stacks) * COMBO_SPEED_PCT_PER_STACK;
-    player->CastCustomSpell(player, SPELL_COMBO, &xpMarker, &speedPct, nullptr, true);
+    int32 groundPct = speedPct;
+    int32 flightPct = speedPct;
+    player->CastCustomSpell(player, SPELL_COMBO, &groundPct, &speedPct, &flightPct, true);
     g_comboShown[guid] = stacks;
 
     if (Aura* cast = player->GetAura(SPELL_COMBO))
@@ -729,8 +739,12 @@ void RecastCombo(Player* player)
         // CastCustomSpell just passed in and would silently drop the move
         // speed bonus to zero.
         cast->SetStackAmount(uint8(stacks));
-        if (AuraEffect* speed = cast->GetEffect(EFFECT_1))
-            speed->ChangeAmount(speedPct);
+        // Every effect has to be restored, not just one: SetStackAmount
+        // recalculates them all from the spell's own base points and would
+        // otherwise drop each back to zero.
+        for (uint8 i = EFFECT_0; i <= EFFECT_2; ++i)
+            if (AuraEffect* speed = cast->GetEffect(i))
+                speed->ChangeAmount(speedPct);
 
         // Show the time actually left rather than a fresh 10 minutes. Matters
         // at login, where the buff is usually part spent already.
