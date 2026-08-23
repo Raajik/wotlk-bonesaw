@@ -74,6 +74,7 @@
 // call in SelectClassPerk() actually binds to the real global-scope
 // definition instead of an unresolved namespace-local declaration.
 void LivingGear_GrantSubtletyPerks(Player* player);
+bool LivingGear_SafeToCastOn(Player* player); // LivingGear_Support.cpp
 
 class Player;
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
@@ -2412,7 +2413,10 @@ public:
 
     void OnPlayerUpdate(Player* player, uint32 diff) override
     {
-        if (!player || !player->IsInWorld())
+        // Crash guard: several ticks below cast auras on the player, and doing
+        // that after Player::CleanupsBeforeDelete asserts on !m_cleanupDone and
+        // takes the realm down. See LivingGear_SafeToCastOn.
+        if (!LivingGear_SafeToCastOn(player))
             return;
         uint32 const selected = GetClassPerk(player);
         if (selected == SPELL_MAGE_ARCANE)

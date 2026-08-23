@@ -53,6 +53,45 @@
 #include "WorldPacket.h"
 #include <cmath>
 
+// Living Gear core-patch: waives weapon, positioning and reagent requirements
+// for player casts (LivingGear_Perks.cpp).
+bool LivingGear_IgnoreSpellRequirements();
+
+// Spells that keep paying their reagents even when the waiver above is on.
+//
+// Making a Flask cost nothing is not "removing a reagent requirement", it is
+// deleting the crafting economy: every profession spell lists its materials
+// as reagents, so a blanket waiver would let anyone produce Titansteel from
+// an empty bag. The waiver is for spells cast at the world -- buffs, utility,
+// combat -- and stops at anything that manufactures an item.
+static bool LivingGear_SpellPaysReagents(SpellInfo const* spellInfo)
+{
+    if (!spellInfo)
+        return true;
+
+    for (uint8 i = EFFECT_0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        switch (spellInfo->Effects[i].Effect)
+        {
+            case SPELL_EFFECT_CREATE_ITEM:
+            case SPELL_EFFECT_CREATE_ITEM_2:
+            case SPELL_EFFECT_CREATE_RANDOM_ITEM:
+            case SPELL_EFFECT_ENCHANT_ITEM:
+            case SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY:
+            case SPELL_EFFECT_ENCHANT_ITEM_PRISMATIC:
+            case SPELL_EFFECT_ENCHANT_HELD_ITEM:
+            case SPELL_EFFECT_TRADE_SKILL:
+            case SPELL_EFFECT_DISENCHANT:
+            case SPELL_EFFECT_PROSPECTING:
+            case SPELL_EFFECT_MILLING:
+                return true;
+            default:
+                break;
+        }
+    }
+
+    return false;
+}
 // Living Gear core-patch: makes Lockpicking account-wide (LivingGear_Gather.cpp).
 uint32 LivingGear_AccountLockpickSkill(Player* player);
 // Living Gear core-patch: Shadow Dance lets stealth-only openers be used
@@ -5547,6 +5586,13 @@ void Spell::TakeReagents()
     if (p_caster->CanNoReagentCast(m_spellInfo))
         return;
 
+    // Bonesaw: the reagent check in CheckItems no longer runs for most player
+    // casts, so consumption has to match it. Without this a player who
+    // happened to be carrying the component would still lose it while one who
+    // was not cast for free -- punishing exactly the person who prepared.
+    if (LivingGear_IgnoreSpellRequirements() && !LivingGear_SpellPaysReagents(m_spellInfo))
+        return;
+
     for (uint32 x = 0; x < MAX_SPELL_REAGENTS; ++x)
     {
         if (m_spellInfo->Reagent[x] <= 0)
@@ -5901,12 +5947,22 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* /*param1*/, uint32* /*para
 
         if (target != m_caster)
         {
+            // Bonesaw: positioning requirements are waived for players.
+            // "You must be behind the target" on Backstab and friends is a
+            // melee-dance tax that mostly punishes latency, and it made the
+            // Hemorrhage spread unable to apply its own abilities to anything
+            // not conveniently turned around.
+            bool const bonesawIgnorePositioning =
+                LivingGear_IgnoreSpellRequirements() && m_caster->IsPlayer();
+
             // Must be behind the target
-            if (m_spellInfo->HasAttribute(SPELL_ATTR0_CU_REQ_CASTER_BEHIND_TARGET) && target->HasInArc(static_cast<float>(M_PI), m_caster))
+            if (!bonesawIgnorePositioning
+                && m_spellInfo->HasAttribute(SPELL_ATTR0_CU_REQ_CASTER_BEHIND_TARGET) && target->HasInArc(static_cast<float>(M_PI), m_caster))
                 return SPELL_FAILED_NOT_BEHIND;
 
             // Target must be facing you
-            if (m_spellInfo->HasAttribute(SPELL_ATTR0_CU_REQ_TARGET_FACING_CASTER) && !target->HasInArc(static_cast<float>(M_PI), m_caster))
+            if (!bonesawIgnorePositioning
+                && m_spellInfo->HasAttribute(SPELL_ATTR0_CU_REQ_TARGET_FACING_CASTER) && !target->HasInArc(static_cast<float>(M_PI), m_caster))
                 return SPELL_FAILED_NOT_INFRONT;
 
             if ((!m_caster->IsTotem() || !m_spellInfo->IsPositive()) && !m_spellInfo->HasAttribute(SPELL_ATTR2_IGNORE_LINE_OF_SIGHT) &&
@@ -7316,14 +7372,30 @@ SpellCastResult Spell::CheckItems(uint32* param1, uint32* param2)
     {
         // Xinef: this is not true in my opinion, in eg bladestorm will not be canceled after disarm
         //if (!HasTriggeredCastFlag(TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT))
-        if (m_caster->IsPlayer() && !m_caster->ToPlayer()->HasItemFitToSpellRequirements(m_spellInfo))
+        // Bonesaw: players are not held to a spell's weapon requirement. Ambush
+        // and Backstab wanting a dagger, Hemorrhage wanting anything but, and
+        // the rest of the WotLK weapon gating exists to shape a gear treadmill
+        // this realm does not run. Creatures are untouched -- the check above
+        // for them is about being disarmed, which is a real mechanic.
+        if (!LivingGear_IgnoreSpellRequirements() && m_caster->IsPlayer()
+            && !m_caster->ToPlayer()->HasItemFitToSpellRequirements(m_spellInfo))
             return SPELL_FAILED_EQUIPPED_ITEM_CLASS;
     }
 
     // do not take reagents for these item casts
     if (!(m_CastItem && m_CastItem->GetTemplate()->HasFlag(ITEM_FLAG_NO_REAGENT_COST)))
     {
-        bool checkReagents = !HasTriggeredCastFlag(TRIGGERED_IGNORE_POWER_AND_REAGENT_COST) && !player->CanNoReagentCast(m_spellInfo);
+        // Bonesaw: reagents are not required from players for spells they
+        // cast at things. The reagent vault already made "do I physically
+        // hold it" the wrong question (core-patch 0011 tops the bag up
+        // mid-CheckCast); this finishes the job for buffs and utility spells,
+        // where hunting a component adds errand and nothing else.
+        //
+        // Crafting is deliberately excluded -- see LivingGear_SpellPaysReagents.
+        bool checkReagents = (!LivingGear_IgnoreSpellRequirements()
+                              || LivingGear_SpellPaysReagents(m_spellInfo))
+            && !HasTriggeredCastFlag(TRIGGERED_IGNORE_POWER_AND_REAGENT_COST)
+            && !player->CanNoReagentCast(m_spellInfo);
         // Not own traded item (in trader trade slot) requires reagents even if triggered spell
         if (!checkReagents)
             if (Item* targetItem = m_targets.GetItemTarget())

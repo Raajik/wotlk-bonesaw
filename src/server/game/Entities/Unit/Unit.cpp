@@ -9859,6 +9859,54 @@ int32 Unit::SpellBaseHealingBonusDone(SpellSchoolMask schoolMask)
 // Living Gear core-patch: config gate, LivingGear_Perks.cpp.
 bool LivingGear_SoftenCreatureImmunity();
 
+// Damage-over-time mechanics, as opposed to control mechanics. A creature
+// flagged immune to these is not protecting itself from being controlled, it
+// is protecting itself from being hurt in a particular flavour -- which is the
+// thing the realm has decided should not exist.
+//
+// Everything absent from this set stays enforced on purpose. Softening
+// MECHANIC_STUN or MECHANIC_FEAR would let a rogue kidney-shot a raid boss;
+// "nothing is immune to damage" is not the same request as "nothing is immune
+// to crowd control", and conflating them would quietly delete encounter
+// design across the whole game.
+static bool LivingGear_IsDamageMechanic(uint32 mechanic)
+{
+    switch (mechanic)
+    {
+        case MECHANIC_BLEED:     // Rend, Rupture, Garrote, Lacerate
+        case MECHANIC_INFECTED:  // disease damage-over-time
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool Unit::LivingGearSoftenedMechanicImmunity(uint32 mechanic) const
+{
+    static uint32 constexpr templateSpellId = std::numeric_limits<uint32>::max();
+
+    if (!mechanic || !IsCreature() || !LivingGear_IsDamageMechanic(mechanic))
+        return false;
+    if (!LivingGear_SoftenCreatureImmunity())
+        return false;
+
+    // Same template-versus-aura split as the school version: a scripted
+    // invulnerability phase is a real aura and keeps working. Only the flat
+    // "this creature type does not bleed" from creature_template is dropped.
+    bool fromTemplate = false;
+    for (auto const& [immunityMechanic, immunityAuraId] : m_spellImmune[IMMUNITY_MECHANIC])
+    {
+        if (immunityMechanic != mechanic)
+            continue;
+        if (immunityAuraId == templateSpellId)
+            fromTemplate = true;
+        else
+            return false;
+    }
+
+    return fromTemplate;
+}
+
 // Living Gear core-patch: "mobs that are outright immune to a damage school
 // should not exist -- they should just resist most of it instead."
 //
@@ -10114,7 +10162,7 @@ bool Unit::IsImmunedToSpell(SpellInfo const* spellInfo, Unit const* caster, Spel
     if (uint32 mechanic = spellInfo->Mechanic)
     {
         SpellImmuneContainer const& mechanicList = m_spellImmune[IMMUNITY_MECHANIC];
-        if (mechanicList.count(mechanic) > 0)
+        if (mechanicList.count(mechanic) > 0 && !LivingGearSoftenedMechanicImmunity(mechanic))
             return true;
     }
 
@@ -10189,7 +10237,7 @@ bool Unit::IsImmunedToSpellEffect(SpellInfo const* spellInfo, uint32 index, Unit
     if (uint32 mechanic = spellInfo->Effects[index].Mechanic)
     {
         auto const& mechanicList = m_spellImmune[IMMUNITY_MECHANIC];
-        if (mechanicList.count(mechanic) > 0)
+        if (mechanicList.count(mechanic) > 0 && !LivingGearSoftenedMechanicImmunity(mechanic))
             return true;
     }
 

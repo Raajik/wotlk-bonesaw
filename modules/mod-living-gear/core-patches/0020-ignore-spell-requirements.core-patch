@@ -1,0 +1,98 @@
+Waive weapon, positioning and reagent requirements on player casts.
+Touches: src/server/game/Spells/Spell.cpp
+
+Why: player report -- "can we ignore item requirements for attacks like that
+(and positioning like behind target for that matter) AND also remove reagent
+requirements from spells/buffs that players cast?"
+
+"Attacks like that" is Hemorrhage's spread. Bug #23/#28 was a rogue watching
+the spread hook fire (13 casts logged) while nothing landed, because Ambush
+is dagger-only and Hemorrhage is explicitly not-a-dagger; the two can never
+be satisfied at once. Adding TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT to
+that one call site fixed that one spread. This generalises it, because the
+same class of rule was going to keep producing the same class of report --
+Backstab wanting a dagger, and behind-the-target wanting a melee dance that
+mostly punishes latency.
+
+Three sites, all in Spell::CheckCast / Spell::CheckItems:
+
+  SPELL_FAILED_EQUIPPED_ITEM_CLASS   weapon class/subclass requirement
+  SPELL_FAILED_NOT_BEHIND            SPELL_ATTR0_CU_REQ_CASTER_BEHIND_TARGET
+  SPELL_FAILED_NOT_INFRONT           SPELL_ATTR0_CU_REQ_TARGET_FACING_CASTER
+  checkReagents                      spell component consumption
+
+Scope: players only. Every site tests IsPlayer() (the reagent block is
+already inside a player-only branch) so creature casts keep every check.
+That matters for the equipped-item test in particular: for a creature that
+check is how being disarmed works, and it is a real mechanic worth keeping.
+
+Reagents were already half-waived. Core-patch 0011 tops the player's bag up
+from the reagent vault during CheckCast, which had made "do you physically
+hold it" the wrong question for anything the vault stocked. This finishes
+that: the check does not run for players, so nothing is demanded.
+
+CRAFTING IS EXCLUDED, and this is the part worth reading twice. Every
+profession spell lists its materials as reagents -- there is no separate
+"materials" system -- so a blanket waiver does not remove an errand, it lets
+anyone produce Titansteel Bars from an empty bag and deletes the crafting
+economy in one line. LivingGear_SpellPaysReagents() keeps the cost on
+anything that manufactures or alters an item:
+
+  CREATE_ITEM / CREATE_ITEM_2 / CREATE_RANDOM_ITEM
+  ENCHANT_ITEM / _TEMPORARY / _PRISMATIC / ENCHANT_HELD_ITEM
+  TRADE_SKILL, DISENCHANT, PROSPECTING, MILLING
+
+Spell::TakeReagents carries the same test. It has to: consumption is a
+separate function from the check, so waiving only the check would destroy
+the component of a player who happened to be carrying one while a player
+with an empty bag cast for free -- punishing precisely the person who
+prepared. Both sides move together or neither does.
+
+Gated by LivingGear.IgnoreSpellRequirements (default 1), read via
+LivingGear_IgnoreSpellRequirements() in LivingGear_Perks.cpp.
+
+Not covered: totem requirements, spell focus objects (anvil, forge), and
+SPELL_FAILED_EQUIPPED_ITEM (a specific required item, as opposed to a weapon
+class). Those are the checks where the requirement is the point of the spell
+rather than a tax on it. Revisit if a report says otherwise.
+
+--- a/src/server/game/Spells/Spell.cpp
++++ b/src/server/game/Spells/Spell.cpp
+@@ near the other Living Gear forward declarations
++bool LivingGear_IgnoreSpellRequirements();
++
++static bool LivingGear_SpellPaysReagents(SpellInfo const* spellInfo)
++{
++    // true for anything that manufactures or alters an item -- see above
++}
+
+@@ Spell::TakeReagents, after the CanNoReagentCast bail
++    if (LivingGear_IgnoreSpellRequirements() && !LivingGear_SpellPaysReagents(m_spellInfo))
++        return;
+
+@@ Spell::CheckCast, the facing checks
++            bool const bonesawIgnorePositioning =
++                LivingGear_IgnoreSpellRequirements() && m_caster->IsPlayer();
++
+     // Must be behind the target
+-    if (m_spellInfo->HasAttribute(SPELL_ATTR0_CU_REQ_CASTER_BEHIND_TARGET) && ...)
++    if (!bonesawIgnorePositioning
++        && m_spellInfo->HasAttribute(SPELL_ATTR0_CU_REQ_CASTER_BEHIND_TARGET) && ...)
+         return SPELL_FAILED_NOT_BEHIND;
+     // Target must be facing you
+-    if (m_spellInfo->HasAttribute(SPELL_ATTR0_CU_REQ_TARGET_FACING_CASTER) && ...)
++    if (!bonesawIgnorePositioning
++        && m_spellInfo->HasAttribute(SPELL_ATTR0_CU_REQ_TARGET_FACING_CASTER) && ...)
+         return SPELL_FAILED_NOT_INFRONT;
+
+@@ Spell::CheckItems, the weapon requirement
+-    if (m_caster->IsPlayer() && !m_caster->ToPlayer()->HasItemFitToSpellRequirements(m_spellInfo))
++    if (!LivingGear_IgnoreSpellRequirements() && m_caster->IsPlayer()
++        && !m_caster->ToPlayer()->HasItemFitToSpellRequirements(m_spellInfo))
+         return SPELL_FAILED_EQUIPPED_ITEM_CLASS;
+
+@@ Spell::CheckItems, the reagent gate
+-    bool checkReagents = !HasTriggeredCastFlag(TRIGGERED_IGNORE_POWER_AND_REAGENT_COST) && !player->CanNoReagentCast(m_spellInfo);
++    bool checkReagents = !LivingGear_IgnoreSpellRequirements()
++        && !HasTriggeredCastFlag(TRIGGERED_IGNORE_POWER_AND_REAGENT_COST)
++        && !player->CanNoReagentCast(m_spellInfo);

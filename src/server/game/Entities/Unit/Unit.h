@@ -1673,6 +1673,11 @@ public:
     // resist. Template-sourced immunity only -- see the implementation.
     [[nodiscard]] bool LivingGearSoftenedSchoolImmunity(SpellSchoolMask schoolMask) const;
 
+    // Living Gear core-patch: the same treatment for damage-dealing MECHANIC
+    // immunity, which is what actually makes a creature bleed-proof. Control
+    // mechanics (stun, fear, root) are deliberately not covered.
+    [[nodiscard]] bool LivingGearSoftenedMechanicImmunity(uint32 mechanic) const;
+
     [[nodiscard]] bool IsImmunedToDamageOrSchool(SpellSchoolMask schoolMask) const;
     [[nodiscard]] bool IsImmunedToAuraPeriodicTick(Unit const* caster, SpellInfo const* spellInfo) const;
     virtual bool IsImmunedToSpellEffect(SpellInfo const* spellInfo, uint32 index, Unit const* caster = nullptr) const;

@@ -200,6 +200,7 @@ struct PerkCfg
     bool questScale = true;
     uint32 questFloorPct = 4;
     bool softenImmunity = true;
+    bool ignoreSpellReqs = true;
 };
 
 PerkCfg g_cfg;
@@ -676,7 +677,12 @@ uint32 ComboCount(Player* player)
 // leave the engine to tick the timer down on its own.
 void RecastCombo(Player* player)
 {
-    if (!player || !HasPerk(player, SPELL_COMBO) || !sSpellMgr->GetSpellInfo(SPELL_COMBO))
+    // Guarded here as well as in the update tick: this is also reached from
+    // OnPlayerLogin and from AddCombo() on a creature kill, and a kill landing
+    // as the player logs out is exactly the race that keeps asserting.
+    if (!LivingGear_SafeToCastOn(player))
+        return;
+    if (!HasPerk(player, SPELL_COMBO) || !sSpellMgr->GetSpellInfo(SPELL_COMBO))
         return;
     uint32 const guid = player->GetGUID().GetCounter();
     uint32 const stacks = ComboCount(player);
@@ -1195,10 +1201,37 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
         if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
             continue;
         LivingGear_DiagBump(player, "hemo.hit");
-        player->CastCustomSpell(u, ambush, &dmg, nullptr, nullptr, true);
+
+        // Ambush is dagger-only (EquippedItemSubClassMask 0x8000), and
+        // TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT (0x00080000) sits OUTSIDE
+        // TRIGGERED_FULL_MASK (0x0007FFFF) -- so `triggered = true` does NOT
+        // waive it. Every Ambush this spread was silently failing with
+        // SPELL_FAILED_EQUIPPED_ITEM_CLASS for any Rogue not holding a dagger
+        // in the main hand, and silently because TRIGGERED_DONT_REPORT_CAST_ERROR
+        // IS inside the mask. Diagnostics showed 13 casts, 57 targets hit and
+        // nothing landing, which is what sent us looking here.
+        //
+        // Hemorrhage itself takes axes, maces, swords, staves and fists, so
+        // "spread an Ambush" cannot sensibly mean "only if you brought a
+        // dagger". The requirement is waived; the damage still comes from
+        // whatever weapon the player is actually holding.
+        TriggerCastFlags const spreadFlags =
+            TriggerCastFlags(TRIGGERED_FULL_MASK | TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT);
+
+        CustomSpellValues ambushValues;
+        ambushValues.AddSpellMod(SPELLVALUE_BASE_POINT0, dmg);
+        SpellCastResult const ambushResult =
+            player->CastCustomSpell(ambush, ambushValues, u, spreadFlags);
+        if (ambushResult != SPELL_CAST_OK)
+            LOG_INFO("module.livinggear", "hemo: ambush {} on {} failed, result {}",
+                ambush, u->GetName(), uint32(ambushResult));
+
         // The bleed's 1000% multiplier is NOT applied here -- it lives in
         // ModifyPeriodicDamageAurasTick so it covers every Garrote equally.
-        player->CastSpell(u, garrote, true);
+        SpellCastResult const garroteResult = player->CastSpell(u, garrote, spreadFlags);
+        if (garroteResult != SPELL_CAST_OK)
+            LOG_INFO("module.livinggear", "hemo: garrote {} on {} failed, result {}",
+                garrote, u->GetName(), uint32(garroteResult));
     }
 }
 
@@ -2661,6 +2694,7 @@ void LoadPerkConfig()
     g_cfg.zoneIncoming = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.IncomingPerLevel", 0.12f);
     g_cfg.dungeonScale = sConfigMgr->GetOption<bool>("LivingGear.ZoneScale.Dungeons", true);
     g_cfg.softenImmunity = sConfigMgr->GetOption<bool>("LivingGear.SoftenCreatureImmunity", true);
+    g_cfg.ignoreSpellReqs = sConfigMgr->GetOption<bool>("LivingGear.IgnoreSpellRequirements", true);
     g_cfg.questScale = sConfigMgr->GetOption<bool>("LivingGear.QuestScale.Enable", true);
     g_cfg.questFloorPct = sConfigMgr->GetOption<uint32>("LivingGear.QuestScale.FloorPct", 4);
     if (g_cfg.questFloorPct > 100)
@@ -2718,6 +2752,16 @@ void LivingGear_GrantSubtletyPerks(Player* player)
 bool LivingGear_SoftenCreatureImmunity()
 {
     return LivingGearPerks::g_cfg.softenImmunity;
+}
+
+// Config gate for the core patch that waives weapon, positioning and reagent
+// requirements on player casts. All three are the same kind of rule -- WotLK
+// telling a player "not with that weapon / not from there / not without the
+// component" -- and none of them are wanted here. Creature casts keep every
+// check; the patch sites test IsPlayer() before consulting this.
+bool LivingGear_IgnoreSpellRequirements()
+{
+    return LivingGearPerks::g_cfg.ignoreSpellReqs;
 }
 
 // Called from a core patch in Spell::CheckCast (Spell.cpp).

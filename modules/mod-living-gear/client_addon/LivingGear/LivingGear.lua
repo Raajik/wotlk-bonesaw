@@ -1418,19 +1418,39 @@ local function VaultOf(kind, cat)
     return out
 end
 
+-- id -> total count across the vault, rebuilt only when the vault actually
+-- changes (LG2._vaultGen).
+--
+-- This used to be a linear scan of db.vault per call, which was fine while the
+-- only caller was the Reagents panel. It is not fine now that GetTradeSkillInfo
+-- consults it: TradeSkillFrame_Update asks about every row of a several-hundred
+-- recipe list, each with up to eight reagents, so the scan version would be
+-- hundreds of thousands of table walks per redraw and would visibly hang the
+-- profession window.
+local vaultMapCache, vaultMapGen = nil, -1
+local function VaultMap()
+    local gen = LG2._vaultGen or 0
+    if vaultMapCache and vaultMapGen == gen then
+        return vaultMapCache
+    end
+    local m = {}
+    for i = 1, #db.vault do
+        local it = db.vault[i]
+        local id = tonumber(it.entry)
+        if id then
+            m[id] = (m[id] or 0) + (tonumber(it.count) or 0)
+        end
+    end
+    vaultMapCache, vaultMapGen = m, gen
+    return m
+end
+
 local function VaultCountOf(entry)
-    local n = 0
     local want = tonumber(entry)
     if not want then
         return 0
     end
-    for i = 1, #db.vault do
-        local it = db.vault[i]
-        if tonumber(it.entry) == want then
-            n = n + (tonumber(it.count) or 0)
-        end
-    end
-    return n
+    return VaultMap()[want] or 0
 end
 
 function LG2.ItemIdFromArg(item)
@@ -3857,6 +3877,7 @@ function LG2.UpsertVault(kind, entry, count, name)
             name = name,
         })
     end
+    LG2._vaultGen = (LG2._vaultGen or 0) + 1
 end
 
 function LG2.HookQuestTracker()
@@ -4153,6 +4174,7 @@ function LG2.HandleAddon(prefix, message)
         -- a redraw-ordering issue. See Bonesaw.md if this needs revisiting.
         db.rules = {}
         db.vault = {}
+        LG2._vaultGen = (LG2._vaultGen or 0) + 1
         db.armory = {}
         db.attune = { on = 1, count = 0, off = 0 }
         -- Rebuilt in full by the ATL| burst that follows in this same sync,
@@ -4352,6 +4374,7 @@ function LG2.HandleAddon(prefix, message)
                 count = count,
                 name = name,
             })
+            LG2._vaultGen = (LG2._vaultGen or 0) + 1
             if ui.reagents and ui.reagents:IsShown() then
                 vaultLayoutPending = true
             end
@@ -4921,6 +4944,91 @@ if origReagentInfo and GetTradeSkillReagentItemLink then
     end
 end
 
+-- How many of a recipe the player could make if the reagent bank counted as
+-- bag space.
+--
+-- This is the piece that was missing, and it is why the old system had to
+-- physically move materials into the backpack. GetTradeSkillReagentInfo was
+-- already hooked below to report vault-inclusive counts, so a recipe LOOKED
+-- craftable -- but numAvailable comes back from GetTradeSkillInfo, computed in
+-- C from real bag contents, and TradeSkillFrame_Update greys out Create
+-- whenever that reads 0. Fixing the reagent rows without fixing numAvailable
+-- produced exactly bug #16: "shows up in the profession interface already" and
+-- still refuses to craft.
+--
+-- Recomputing it from the (vault-inclusive) reagent rows is the actual answer
+-- to "point the profession window at the reagent bank": the window is told
+-- about the bank, instead of the bank being shovelled into the window ten
+-- crafts at a time and left there.
+local craftAvailCache, craftAvailGen = {}, -1
+local function CraftableWithVault(index, numReagents, reagentInfo)
+    if not index or not numReagents or numReagents < 1 then
+        return nil
+    end
+    -- Bag contents move without the vault changing, so the cache is keyed on
+    -- both. LG2._bagGen is bumped from BAG_UPDATE.
+    local gen = (LG2._vaultGen or 0) * 1048576 + (LG2._bagGen or 0)
+    if gen ~= craftAvailGen then
+        craftAvailCache, craftAvailGen = {}, gen
+    end
+    local hit = craftAvailCache[index]
+    if hit ~= nil then
+        return hit
+    end
+
+    local best
+    for r = 1, numReagents do
+        local _, _, required, have = reagentInfo(index, r)
+        required = tonumber(required) or 0
+        have = tonumber(have) or 0
+        if required > 0 then
+            local canDo = math.floor(have / required)
+            if not best or canDo < best then
+                best = canDo
+            end
+            if best == 0 then
+                break
+            end
+        end
+    end
+    craftAvailCache[index] = best or false
+    return best
+end
+
+local origTradeSkillInfo = GetTradeSkillInfo
+if origTradeSkillInfo then
+    GetTradeSkillInfo = function(index)
+        local name, skillType, numAvailable, isExpanded, altVerb, numSkillUps =
+            origTradeSkillInfo(index)
+        -- Headers have no reagents; asking about them returns nothing useful
+        -- and would poison the cache.
+        if name and skillType ~= "header" and GetTradeSkillNumReagents then
+            local ok, n = pcall(CraftableWithVault, index,
+                GetTradeSkillNumReagents(index), GetTradeSkillReagentInfo)
+            if ok and n and n > (numAvailable or 0) then
+                numAvailable = n
+            end
+        end
+        return name, skillType, numAvailable, isExpanded, altVerb, numSkillUps
+    end
+end
+
+local origCraftInfo = GetCraftInfo
+if origCraftInfo then
+    GetCraftInfo = function(index)
+        local name, subName, craftType, numAvailable, isExpanded, cost, level =
+            origCraftInfo(index)
+        if name and craftType ~= "header" and GetCraftNumReagents then
+            local ok, n = pcall(CraftableWithVault, index,
+                GetCraftNumReagents(index), GetCraftReagentInfo)
+            if ok and n and n > (numAvailable or 0) then
+                numAvailable = n
+            end
+        end
+        return name, subName, craftType, numAvailable, isExpanded, cost, level
+    end
+end
+
 local origCraftReagent = GetCraftReagentInfo
 if origCraftReagent and GetCraftReagentItemLink then
     GetCraftReagentInfo = function(index, reagentIndex)
@@ -5038,44 +5146,67 @@ end
 -- bank, 'missing reagent: x' ... even though it shows up in the profession
 -- interface already."
 --
--- Both halves of that sentence are true at once, and that is the whole bug.
--- GetTradeSkillReagentInfo is hooked further up to report vault-inclusive
--- counts, so the recipe LOOKS craftable. But the client validates a craft
--- against the REAL bag contents in code we cannot hook, and refuses before the
--- cast is ever sent -- so the server-side top-up in Spell::CheckCast
--- (core-patch 0011) never gets the chance to run. The reagents have to be
--- physically in the bags BEFORE Create is pressed, which is what CRAFTPREP does.
+-- The original reading of that was "the client validates against real bag
+-- contents in code we cannot hook", and the fix was to pre-stage ten crafts'
+-- worth of materials into the backpack whenever a recipe was selected. It
+-- worked, but it made the reagent bank a place things were constantly being
+-- shovelled out of and swept back into, for no reason the player could see.
 --
--- It was only being asked for on TRADE_SKILL_SHOW / TRADE_SKILL_UPDATE. Neither
--- of those fires when you click a different recipe in the list, so the recipe
--- you actually selected was the one case never prepared. Hooking the selection
--- functions closes that, and hooking the craft calls keeps the bag topped up
--- across repeat crafts as each one consumes what was staged.
+-- The real blocker was narrower and is now handled properly: numAvailable came
+-- from GetTradeSkillInfo, computed in C from bag contents, and
+-- TradeSkillFrame_Update greys out Create whenever it reads 0. That function is
+-- hooked further up, so the window now counts the reagent bank itself and
+-- nothing has to be moved in advance -- the server's own top-up in
+-- Spell::CheckItems (core-patch 0011) supplies the materials at cast time and
+-- they are consumed immediately, so they never sit in a bag at all.
+--
+-- Staging survives only as a fallback, for the case where the client turns out
+-- to refuse the cast for some reason the numAvailable hook does not cover. It
+-- fires on a failed craft rather than on every selection, and asks for one
+-- craft's worth rather than ten, so worst case a single recipe's materials
+-- briefly pass through the bag instead of a standing pile.
+local craftWatch = nil
+
+local function CraftFallback()
+    craftWatch = nil
+    pcall(LG2.SendCraftPrep, true)
+end
+
 local function HookCraftPrep()
     if LG2._craftPrepHooked then
         return
     end
     LG2._craftPrepHooked = true
-    if type(TradeSkillFrame_SetSelection) == "function" then
-        hooksecurefunc("TradeSkillFrame_SetSelection", function()
-            pcall(LG2.SendCraftPrep, true)
-        end)
+    -- Post-hooks: arm a short watchdog when a craft is requested. If the cast
+    -- never reaches the server (UNIT_SPELLCAST_SENT clears this), stage the
+    -- reagents so the retry has them in the bag.
+    local function armWatch()
+        craftWatch = GetTime() + 0.5
     end
-    if type(CraftFrame_SetSelection) == "function" then
-        hooksecurefunc("CraftFrame_SetSelection", function()
-            pcall(LG2.SendCraftPrep, true)
-        end)
-    end
-    -- Fires as the craft starts, so the NEXT one in a repeat run is covered.
     if type(DoTradeSkill) == "function" then
-        hooksecurefunc("DoTradeSkill", function()
-            pcall(LG2.SendCraftPrep, true)
-        end)
+        hooksecurefunc("DoTradeSkill", armWatch)
     end
     if type(DoCraft) == "function" then
-        hooksecurefunc("DoCraft", function()
-            pcall(LG2.SendCraftPrep, true)
-        end)
+        hooksecurefunc("DoCraft", armWatch)
+    end
+end
+
+function LG2.NoteCraftCastSent()
+    craftWatch = nil
+end
+
+function LG2.NoteCraftError()
+    -- Any error message arriving right after Create was pressed is worth one
+    -- staging attempt. Deliberately not matched against a specific string:
+    -- those are locale-dependent and this only costs a redundant top-up.
+    if craftWatch then
+        CraftFallback()
+    end
+end
+
+function LG2.TickCraftWatch()
+    if craftWatch and GetTime() >= craftWatch then
+        CraftFallback()
     end
 end
 
@@ -5092,6 +5223,8 @@ ev:RegisterEvent("QUEST_GREETING")
 ev:RegisterEvent("QUEST_DETAIL")
 ev:RegisterEvent("TRADE_SKILL_SHOW")
 ev:RegisterEvent("TRADE_SKILL_UPDATE")
+ev:RegisterEvent("BAG_UPDATE")
+ev:RegisterEvent("UI_ERROR_MESSAGE")
 ev:RegisterEvent("CRAFT_SHOW")
 ev:RegisterEvent("CRAFT_UPDATE")
 ev:SetScript("OnEvent", function(_, event, a1, a2)
@@ -5136,14 +5269,23 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
     elseif event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_UPDATE"
         or event == "CRAFT_SHOW" or event == "CRAFT_UPDATE" then
         pcall(HookCraftPrep)
-        pcall(LG2.SendCraftPrep)
+    elseif event == "BAG_UPDATE" then
+        -- Invalidates the craftable-count cache: what is in the bags is half
+        -- of that sum.
+        LG2._bagGen = (LG2._bagGen or 0) + 1
+    elseif event == "UI_ERROR_MESSAGE" then
+        pcall(LG2.NoteCraftError)
     elseif event == "UNIT_SPELLCAST_SENT" or event == "UNIT_SPELLCAST_SUCCEEDED" then
+        if a1 == "player" then
+            pcall(LG2.NoteCraftCastSent)
+        end
         if a1 == "player" and LG2.IsAccountPerksName(a2) then
             OpenFromCast()
         end
     end
 end)
 ev:SetScript("OnUpdate", function(self, elapsed)
+    pcall(LG2.TickCraftWatch)
     if vaultLayoutPending and ui.reagents and ui.reagents:IsShown() then
         vaultLayoutPending = false
         RefreshVaultPanel()

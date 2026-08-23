@@ -1256,20 +1256,31 @@ void DrainLegacyQuestVault(Player* player)
             "[Vault] Returned {} item(s) that were stuck in the retired quest vault.", returned);
 }
 
-// How many crafts' worth of reagents to materialise when a recipe is
-// selected. One would technically unblock the Create button, but the
-// client would then show "1" craftable forever, which reads as broken.
-uint32 const CRAFT_PREP_BATCH = 10;
+// How many crafts' worth of reagents to materialise when the fallback runs.
+//
+// This was 10, because staging was the ONLY thing making a recipe look
+// craftable and a permanent "1 craftable" reads as broken. The addon now
+// hooks GetTradeSkillInfo and computes that number from the reagent bank
+// directly, so the count in the window no longer depends on what is sitting
+// in a bag -- which means staging only has to cover the craft actually being
+// attempted. One is the whole requirement, and it is consumed immediately,
+// so nothing accumulates in the backpack.
+uint32 const CRAFT_PREP_BATCH = 1;
 
-// The 3.3.5 tradeskill window computes "how many can I make" purely from
-// bag contents, so a recipe whose reagents live in the reagent vault reads
-// as 0 and Create stays greyed out. The server-side top-up already wired
-// into Spell::CheckItems (TopUpReagentFromVault, via a core patch) only
-// ever runs on a cast -- and the client refuses to send that cast, so it
-// never got a chance to help. No amount of server-side work fixes a button
-// the client will not enable, which is why this is addon-driven: the addon
-// reports the selected recipe (CRAFTPREP|<spellId>) and we put the
-// reagents somewhere the client can actually see them.
+// Fallback for a craft the client would not send.
+//
+// This used to run on every recipe selection, because the tradeskill window
+// computes "how many can I make" in C from bag contents and greys out Create
+// at 0 -- so the only way to make a vault-stocked recipe craftable was to put
+// the materials in a bag first. The addon now overrides that number
+// (GetTradeSkillInfo hook) from the vault itself, so the normal path is:
+// window shows the true count, Create is live, the cast goes out, and
+// TopUpReagentFromVault in Spell::CheckItems supplies the materials at cast
+// time. Nothing is staged and nothing is left behind.
+//
+// This remains for the case where a craft is refused anyway. The addon calls
+// it after a failed Create rather than on selection, and CRAFT_PREP_BATCH is
+// 1, so at worst a single recipe's materials pass through the bag.
 void PrepareCraftReagents(Player* player, uint32 spellId)
 {
     if (!player || !player->GetSession() || !spellId)

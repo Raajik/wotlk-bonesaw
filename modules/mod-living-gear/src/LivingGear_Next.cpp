@@ -1058,6 +1058,11 @@ public:
 
     void OnPlayerUpdate(Player* player, uint32 /*diff*/) override
     {
+        // Crash guard: several ticks below cast auras on the player, and doing
+        // that after Player::CleanupsBeforeDelete asserts on !m_cleanupDone and
+        // takes the realm down. See LivingGear_SafeToCastOn.
+        if (!LivingGear_SafeToCastOn(player))
+            return;
         if (!player || !player->IsInWorld())
             return;
         uint32 const now = getMSTime();

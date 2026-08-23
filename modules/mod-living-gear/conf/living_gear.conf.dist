@@ -85,6 +85,16 @@ LivingGear.QuestScale.FloorPct = 4
 # immunity are unaffected. See core-patch 0017.
 LivingGear.SoftenCreatureImmunity = 1
 
+# Waive weapon, positioning and reagent requirements on spells players cast.
+# All three are the same rule wearing different hats -- "not with that weapon",
+# "not from in front", "not without the component" -- and none of them make a
+# fight more interesting here. Ambush and Backstab work without a dagger and
+# from any angle, and buffs stop demanding you carry a bag of components.
+# Crafting still costs its materials -- profession spells list those as
+# reagents, so waiving them there would mean free Titansteel, not less
+# errand. Creature casts are untouched; disarm still works. Core-patch 0020.
+LivingGear.IgnoreSpellRequirements = 1
+
 # Kill XP floor (bug report #11). Every kill is worth at least this percentage
 # of the current level's XP bar, so trash far below you still pays something.
 # Zone scaling still governs anything worth more than the floor. Quest XP has
