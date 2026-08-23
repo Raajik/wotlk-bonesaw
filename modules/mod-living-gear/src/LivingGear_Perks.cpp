@@ -114,6 +114,18 @@ float const CC_REDUCTION_PCT = 0.95f;
 // power, cast on the Rogue and their party so it shows up in the buff bar
 // like any other raid buff instead of being an invisible stat modifier.
 uint32 const SPELL_SHADOW_DANCE_BUFF = 910173;
+// First Aid track, 2026-08-22. Advertised and earnable since the track was
+// written, implemented by nothing -- found by tools/perk_audit.py. Nothing in
+// the module so much as contained the word "bandage" before this.
+uint32 const SPELL_AID_INSTANT = 910046;
+uint32 const SPELL_AID_RESTORE = 910047;
+uint32 const SPELL_AID_CLEANSE = 910048;
+// Fishing "Speed" (910045) lives here rather than in LivingGear_Gather.cpp
+// because cast time is set in OnSpellPrepare, and this file owns that hook.
+uint32 const SPELL_FISH_BITE_SPEED = 910045;
+// One debuff per second while bandaged, so Cleanse is a steady scrub rather
+// than an instant full dispel.
+uint32 const AID_CLEANSE_MS = 1000;
 // Cooking regen (2026-08-22): real aura feeding MOD_REGEN/MOD_POWER_REGEN,
 // base points set per-cast from the player's max health/mana. See TickCooking.
 uint32 const SPELL_COOK_REGEN = 910174;
@@ -216,6 +228,7 @@ std::unordered_map<uint32, uint32> g_cookAcc;
 // hp-per-5 in the high 32 bits, mana-per-5 in the low: the last amounts
 // actually cast, so an unchanged tier doesn't re-flash the buff icon.
 std::unordered_map<uint32, uint64> g_cookAmount;
+std::unordered_map<uint32, uint32> g_aidCleanseTick;
 std::unordered_map<uint32, uint32> g_curatorAcc;
 std::unordered_map<uint32, uint32> g_comboTick;
 // Shadow Dance's +10% attack power half -- keyed by player GUID (not
@@ -1349,6 +1362,49 @@ uint32 CookingTier(Player* player)
 // Base points depend on max health/mana, which move with gear and level, so
 // the aura is recast whenever the computed amounts drift or the aura has
 // gone missing -- not blindly every tick, which would re-flash the icon.
+// First Aid "Cleanse" (910048): "While bandaged, remove debuffs every second."
+//
+// Scoped to what a bandage plausibly helps with -- disease, poison and bleeds.
+// Deliberately NOT a blanket harmful-aura strip: that would shrug off boss
+// mechanics, crowd control and every scripted debuff in the game, which is a
+// far bigger change than the description promises.
+//
+// One per tick, oldest first, so it reads as steadily cleaning up rather than
+// wiping everything the instant a bandage lands.
+void TickFirstAidCleanse(Player* player, uint32& acc, uint32 diff)
+{
+    if (!player || !player->IsAlive())
+        return;
+    acc += diff;
+    if (acc < AID_CLEANSE_MS)
+        return;
+    acc = 0;
+    if (!player->HasAuraWithMechanic(1 << MECHANIC_BANDAGE))
+        return;
+    if (!HasPerk(player, SPELL_AID_CLEANSE))
+        return;
+
+    uint32 const cleansable = (1 << DISPEL_DISEASE) | (1 << DISPEL_POISON);
+    Unit::AuraApplicationMap const& applications = player->GetAppliedAuras();
+    for (auto const& pair : applications)
+    {
+        AuraApplication const* app = pair.second;
+        if (!app || app->IsPositive())
+            continue;
+        Aura* aura = app->GetBase();
+        if (!aura)
+            continue;
+        SpellInfo const* info = aura->GetSpellInfo();
+        if (!info)
+            continue;
+        bool const bleed = info->GetAllEffectsMechanicMask() & (1 << MECHANIC_BLEED);
+        if (!bleed && !((1 << info->Dispel) & cleansable))
+            continue;
+        player->RemoveAura(pair.first);
+        return; // one per second
+    }
+}
+
 void TickCooking(Player* player, uint32 diff)
 {
     if (!player)
@@ -1920,6 +1976,7 @@ public:
         g_comboTick.erase(g);
         g_cookAcc.erase(g);
         g_cookAmount.erase(g);
+        g_aidCleanseTick.erase(g);
         g_pullRadiusTick.erase(g);
         g_trackOreTick.erase(g);
         g_trackHerbTick.erase(g);
@@ -1931,6 +1988,7 @@ public:
     void OnPlayerUpdate(Player* player, uint32 diff) override
     {
         TickCooking(player, diff);
+        TickFirstAidCleanse(player, g_aidCleanseTick[player->GetGUID().GetCounter()], diff);
         TickCurator(player, diff);
         {
             uint32 const id = player->GetGUID().GetCounter();
@@ -2245,6 +2303,15 @@ public:
         // ("teleportation stone"), not a gradual per-rank reduction.
         if (travel && (info->Id == 8690 || info->Id == 556))
             spell->SetCastTime(0);
+        // First Aid "Instant" (910046): bandages apply with no channel. The
+        // heal itself is unchanged -- it is still the periodic the bandage
+        // always applied, which is what makes this an instant HoT rather than
+        // an instant heal.
+        if (info->Mechanic == MECHANIC_BANDAGE && HasPerk(player, SPELL_AID_INSTANT))
+            spell->SetCastTime(0);
+        // Fishing "Speed" (910045): bites come twice as fast.
+        if (info->IsAbilityOfSkillType(SKILL_FISHING) && HasPerk(player, SPELL_FISH_BITE_SPEED))
+            spell->SetCastTime(spell->GetCastTime() / 2);
         uint32 ranks = 0;
         for (uint32 id : SPELL_CRAFT)
             if (HasPerk(player, id))
@@ -2272,9 +2339,35 @@ public:
         UNITHOOK_ON_DAMAGE,
         UNITHOOK_ON_AURA_APPLY,
         UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
+        UNITHOOK_MODIFY_HEAL_RECEIVED,
         UNITHOOK_SHOULD_TRACK_VALUES_UPDATE_POS_BY_INDEX,
         UNITHOOK_ON_PATCH_VALUES_UPDATE
     }) { }
+
+    // First Aid "Restore" (910047): "Bandages restore 1% HP per second at
+    // 1-75, 2% at 76-150, and so on." Expressed as a multiplier on the
+    // bandage's own healing rather than a flat percentage, so higher-rank
+    // bandages stay better than low ones instead of every bandage collapsing
+    // to the same number.
+    //
+    // Tier comes from the healer's First Aid skill in 75-point bands, matching
+    // how the description reads and how the Cooking tiers already work.
+    void ModifyHealReceived(Unit* /*target*/, Unit* healer, uint32& heal,
+        SpellInfo const* spellInfo) override
+    {
+        if (!healer || !spellInfo || !heal || !healer->IsPlayer())
+            return;
+        if (spellInfo->Mechanic != MECHANIC_BANDAGE)
+            return;
+        Player* player = healer->ToPlayer();
+        if (!HasPerk(player, SPELL_AID_RESTORE))
+            return;
+        uint32 const skill = AccountMaxSkill(player, SKILL_FIRST_AID);
+        uint32 const tier = std::max<uint32>(1, (skill + 74) / 75);
+        uint64 const boosted = uint64(heal) * tier;
+        heal = boosted > uint64(std::numeric_limits<uint32>::max())
+            ? std::numeric_limits<uint32>::max() : uint32(boosted);
+    }
 
     // Bug report #8, 2026-08-22: "add 1000% damage multiplier to garrote bleed
     // effect." Done here rather than at the cast site so it holds for every

@@ -215,10 +215,16 @@ local WORLD_TRACKS = {
     },
     {
         name = "Movement",
+        -- Double Jump (910039) and Triple Jump (910040) were removed from this
+        -- track on 2026-08-22. They were advertised and earnable and did
+        -- nothing: on-foot extra jump is deliberately disabled because
+        -- ApplyLgMoveSpeed + KnockbackFrom crashed on the first tick, and the
+        -- wiki records "do not re-enable". Advertising a feature that is off on
+        -- purpose is worse than not listing it. Mounted Opener below is the
+        -- surviving jump perk and is unaffected -- it is mounted-only, which is
+        -- what steers around the crash.
         ticks = {
             { id = 910038, name = "Wayfarer", how = "Complete 100 quests. +40% movement speed (stacks).", bonus = 40 },
-            { id = 910039, name = "Double Jump", how = "Reach level 10. Jumps go twice as high and far. 10 sec cooldown. Boosted jumps grant +40% speed for 30 sec.", bonus = 0 },
-            { id = 910040, name = "Triple Jump", how = "Reach level 30. Jumps go three times as high and far. 10 sec cooldown. Boosted jumps grant +40% speed for 30 sec.", bonus = 0 },
             { id = 910104, name = "Mounted Opener", how = "Reach level 40. While mounted: jump while moving forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap.", bonus = 0 },
         },
     },

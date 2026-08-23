@@ -23,6 +23,7 @@
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "Spell.h"
+#include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
 #include "WorldPacket.h"
@@ -53,6 +54,22 @@ uint32 const SPELL_FISH_YIELD[] = { 910127, 910128, 910129 };
 uint32 const SPELL_FISH_REACH[] = { 910130, 910131, 910132 };
 uint32 const SPELL_ENG_YIELD[] = { 910133, 910134, 910135 };
 uint32 const SPELL_ENG_REACH[] = { 910136, 910137, 910138 };
+// Fishing track, 2026-08-22. These three were advertised in the panel and
+// earnable since the track was written, and read by nothing -- found by
+// tools/perk_audit.py rather than by another player report.
+//
+// Auto-CATCH already worked and was deliberately ungated (see TryAutoCatchFish).
+// What "Cast" actually promises is the other half: that fishing re-casts itself.
+uint32 const SPELL_FISH_AUTOCAST = 910043;
+uint32 const SPELL_FISH_POOLS = 910044;
+// "Speed" (910045) is implemented in LivingGear_Perks.cpp as
+// SPELL_FISH_BITE_SPEED, because cast time is set in OnSpellPrepare and that
+// file owns the spell hook. Deliberately not declared twice.
+float const FISH_POOL_RANGE = 25.0f;
+// How long to wait after a catch before casting again. Long enough to read as
+// a person deciding to cast, short enough not to feel like a hang.
+uint32 const FISH_RECAST_MS = 1200;
+
 uint32 const SPELL_SPARKLE_HERB = 910139;
 uint32 const SPELL_SPARKLE_MINE = 910140;
 uint32 const SPELL_SPARKLE_FISH = 910141;
@@ -653,6 +670,43 @@ GameObject* FindFishingBobber(Player* player)
     return go;
 }
 
+// The fishing ability the player last cast themselves. Recasting THAT is more
+// reliable than guessing a spell id: the castable Fishing spell differs by rank
+// and by what the character has actually trained, and a wrong id would silently
+// do nothing.
+std::unordered_map<uint32, uint32> g_lastFishSpell;
+
+void NoteFishingCast(Player* player, uint32 spellId)
+{
+    if (player && spellId)
+        g_lastFishSpell[player->GetGUID().GetCounter()] = spellId;
+}
+
+// Fishing track "Cast" (910043): after the catch, throw the line again.
+// Deferred rather than cast inline -- this runs from inside the bobber's own
+// Use(), and starting another cast on a player mid-way through one is the
+// reentrancy hazard the rest of this module already guards against.
+void QueueFishingRecast(Player* player)
+{
+    if (!player || !HasPerk(player, SPELL_FISH_AUTOCAST))
+        return;
+    uint32 const spellId = g_lastFishSpell[player->GetGUID().GetCounter()];
+    if (!spellId)
+        return;
+    ObjectGuid const guid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([guid, spellId]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(guid);
+        if (!p || !p->IsInWorld() || !p->IsAlive() || p->IsInCombat())
+            return;
+        // Do not stack casts: if they already started fishing again by hand,
+        // or are casting anything else, leave them alone.
+        if (p->IsNonMeleeSpellCast(false, false, true))
+            return;
+        p->CastSpell(p, spellId, false);
+    }, std::chrono::milliseconds(FISH_RECAST_MS));
+}
+
 void TryAutoCatchFish(Player* player)
 {
     // 2026-08-21: was incorrectly gated on ExtraReach(SPELL_FISH_REACH) > 0
@@ -671,6 +725,7 @@ void TryAutoCatchFish(Player* player)
     if (!bobber || bobber->getLootState() != GO_READY)
         return;
     bobber->Use(player); // same as a manual right-click on a biting bobber
+    QueueFishingRecast(player);
 }
 
 void ScanGather(Player* player)
@@ -692,6 +747,12 @@ void ScanGather(Player* player)
     range = std::max(range, GATHER_BASE_RANGE + ExtraReach(player, SPELL_FISH_REACH));
     range = std::max(range, GATHER_BASE_RANGE + ExtraReach(player, SPELL_ENG_REACH));
     range = std::max(range, GATHER_BASE_RANGE + ExtraReach(player, SPELL_SKIN_REACH));
+    // Fishing track "Pools" (910044) reaches further than any reach perk, and
+    // has to widen the scan itself -- otherwise the early return below skips
+    // the whole sweep for someone whose only fishing perk is this one.
+    bool const pools = HasPerk(player, SPELL_FISH_POOLS);
+    if (pools)
+        range = std::max(range, FISH_POOL_RANGE);
     if (range <= GATHER_BASE_RANGE + 0.01f)
         return;
 
@@ -718,8 +779,13 @@ void ScanGather(Player* player)
     {
         if (go->GetGoType() == GAMEOBJECT_TYPE_FISHINGHOLE)
         {
-            if (ExtraReach(player, SPELL_FISH_REACH) > 0.0f
-                && player->IsWithinDistInMap(go, GATHER_BASE_RANGE + ExtraReach(player, SPELL_FISH_REACH), true, false, false))
+            // Two ways to reach a pool now: the Fish Reach perks extend the
+            // normal gather radius, and Pools grants a flat 25 yards.
+            float reach = GATHER_BASE_RANGE + ExtraReach(player, SPELL_FISH_REACH);
+            if (pools)
+                reach = std::max(reach, FISH_POOL_RANGE);
+            if (reach > GATHER_BASE_RANGE
+                && player->IsWithinDistInMap(go, reach, true, false, false))
                 TryGatherFishHole(player, go);
             continue;
         }
@@ -767,8 +833,20 @@ public:
         PLAYERHOOK_ON_CREATE_ITEM,
         PLAYERHOOK_ON_USE_GAMEOBJECT,
         PLAYERHOOK_ON_UPDATE_GATHERING_SKILL,
-        PLAYERHOOK_ON_UPDATE_FISHING_SKILL
+        PLAYERHOOK_ON_UPDATE_FISHING_SKILL,
+        PLAYERHOOK_ON_SPELL_CAST
     }) { }
+
+    // Remember which fishing ability the player actually used, so the Fishing
+    // "Cast" perk can throw the same line again rather than guessing a rank.
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override
+    {
+        if (!player || !spell)
+            return;
+        SpellInfo const* info = spell->GetSpellInfo();
+        if (info && info->IsAbilityOfSkillType(SKILL_FISHING))
+            NoteFishingCast(player, info->Id);
+    }
 
     // Skill-up rate is boosted by CrossProfessionTier (see above) -- how far
     // your OTHER gathering professions are leveled, not this one. This is
@@ -816,6 +894,7 @@ public:
         if (!player)
             return;
         g_lastGatherScan.erase(player->GetGUID().GetCounter());
+        g_lastFishSpell.erase(player->GetGUID().GetCounter());
     }
 
     void OnPlayerUpdate(Player* player, uint32 /*diff*/) override

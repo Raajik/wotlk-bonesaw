@@ -39,6 +39,17 @@ MODULE = os.path.join("modules", "mod-living-gear")
 LUA = os.path.join(MODULE, "client_addon", "LivingGear", "LivingGear.lua")
 SRC_GLOB = os.path.join(MODULE, "src", "*.cpp")
 
+# Perks that are badges on purpose: the behaviour they describe is real and
+# implemented, it simply is not gated on the perk id. Listing them here rather
+# than leaving a permanent false alarm, because a checker that always fails is
+# a checker nobody reads. Each entry has to say why.
+KNOWN_BADGES = {
+    910107: "Riding -- account-wide riding works (g_accountRiding in "
+            "LivingGear_Next.cpp) and is granted unconditionally. Gating it on "
+            "the perk would risk taking riding away from anyone missing the row, "
+            "for no player-visible gain.",
+}
+
 # Lines that only declare or hand out a perk, rather than acting on one.
 GRANT = re.compile(r"(UnlockPerk|learnSpell)")
 DECL = re.compile(r"uint32 const \w+\s*(\[\])?\s*=")
@@ -136,9 +147,12 @@ def main():
     suspects = [pid for pid in advertised if not cpp.get(pid) and not lua_hits.get(pid)]
     auras, db_ok = aura_perks(suspects)
 
-    unwired = []
+    unwired, badges = [], []
     for pid in sorted(suspects):
         if pid in auras:
+            continue
+        if pid in KNOWN_BADGES:
+            badges.append(pid)
             continue
         unwired.append(pid)
 
@@ -151,6 +165,12 @@ def main():
         print("  NOTE: could not reach the database, so pure-aura perks may be")
         print("        reported below as unwired. Start ac-database for a clean run.")
     print()
+
+    if badges:
+        print("Badge-only by design (%d):" % len(badges))
+        for pid in badges:
+            print("  %-7d %s" % (pid, advertised.get(pid, "?")))
+        print()
 
     if not unwired:
         print("No unwired perks. Every advertised perk is read by something.")
