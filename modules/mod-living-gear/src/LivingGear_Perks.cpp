@@ -61,6 +61,7 @@ class Player;
 void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp); // LivingGear.cpp
 uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_SafeToCastOn(Player* player); // LivingGear_Support.cpp
 void LivingGear_DiagBump(Player* player, char const* key); // LivingGear_Support.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
@@ -1127,7 +1128,7 @@ static void ApplyShadowstepCooldown(Player* player)
 static void ShadowstepPickpocketImpl(ObjectGuid playerGuid)
 {
     Player* player = ObjectAccessor::FindPlayer(playerGuid);
-    if (!player || !player->IsInWorld() || GetClassPerk(player) != SPELL_SUBTLETY)
+    if (!LivingGear_SafeToCastOn(player) || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
 
     std::list<Unit*> around;
@@ -1162,7 +1163,7 @@ void ShadowstepPickpocket(Player* player)
 static void HemorrhageAoEImpl(ObjectGuid playerGuid)
 {
     Player* player = ObjectAccessor::FindPlayer(playerGuid);
-    if (!player || !player->IsInWorld() || GetClassPerk(player) != SPELL_SUBTLETY)
+    if (!LivingGear_SafeToCastOn(player) || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
     // Bug report #10, 2026-08-22: Hemorrhage applies a +500% Ambush and the
     // Garrote bleed to everything within 10 yards. Previously it spread Garrote
@@ -2012,6 +2013,11 @@ public:
 
     void OnPlayerUpdate(Player* player, uint32 diff) override
     {
+        // Nothing in this tick is worth a crash. Several of these cast auras on
+        // the player, and doing that after Player::CleanupsBeforeDelete asserts
+        // and takes the realm down.
+        if (!LivingGear_SafeToCastOn(player))
+            return;
         TickCooking(player, diff);
         TickFirstAidCleanse(player, g_aidCleanseTick[player->GetGUID().GetCounter()], diff);
         TickCurator(player, diff);

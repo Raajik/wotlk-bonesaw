@@ -40,6 +40,7 @@ bool IsAutolootEnabled(Player* player); // LivingGear_Vault.cpp
 
 class Player;
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_SafeToCastOn(Player* player); // LivingGear_Support.cpp
 void LivingGear_DiagBump(Player* player, char const* key); // LivingGear_Support.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
@@ -699,7 +700,7 @@ void QueueFishingRecast(Player* player)
     player->m_Events.AddEventAtOffset([guid, spellId]()
     {
         Player* p = ObjectAccessor::FindPlayer(guid);
-        if (!p || !p->IsInWorld() || !p->IsAlive() || p->IsInCombat())
+        if (!LivingGear_SafeToCastOn(p) || p->IsInCombat())
             return;
         // Do not stack casts: if they already started fishing again by hand,
         // or are casting anything else, leave them alone.

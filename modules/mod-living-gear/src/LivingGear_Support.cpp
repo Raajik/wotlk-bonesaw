@@ -360,13 +360,16 @@ void ShowDiagnostics(Player* player)
     uint32 const guid = player->GetGUID().GetCounter();
     uint32 const accountId = player->GetSession()->GetAccountId();
 
-    handler.PSendSysMessage("|cff66ccff[Diag]|r %s  char guid %u  account %u  level %u  class %u",
-        player->GetName().c_str(), guid, accountId, uint32(player->GetLevel()),
+    // PSendSysMessage is fmt, not printf. Using %s/%u here printed the format
+    // string literally to the player and lost every value -- which is exactly
+    // what happened the first time this was used in anger.
+    handler.PSendSysMessage("|cff66ccff[Diag]|r {}  char guid {}  account {}  level {}  class {}",
+        player->GetName(), guid, accountId, uint32(player->GetLevel()),
         uint32(player->getClass()));
 
     uint32 const classPerk = ::GetClassPerk(player);
     if (classPerk)
-        handler.PSendSysMessage("|cff66ccff[Diag]|r class perk selected: %u", classPerk);
+        handler.PSendSysMessage("|cff66ccff[Diag]|r class perk selected: {}", classPerk);
     else
         handler.SendSysMessage("|cff66ccff[Diag]|r class perk selected: NONE -- every spec-gated feature is off for you");
 
@@ -379,7 +382,7 @@ void ShowDiagnostics(Player* player)
     }
     handler.SendSysMessage("|cff66ccff[Diag]|r counters since this character logged in:");
     for (auto const& entry : found->second)
-        handler.PSendSysMessage("    %-28s %u", entry.first.c_str(), entry.second);
+        handler.PSendSysMessage("    {:<28} {}", entry.first, entry.second);
 }
 
 // Bug report #4, 2026-08-22: "wintergrasp should be queuable via the blue
@@ -642,6 +645,31 @@ bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg)
         return true;
     }
     return false;
+}
+
+// CRASH GUARD, 2026-08-22. Second "_AddAura / !m_cleanupDone" of the night,
+// this time on a Rogue logging out.
+//
+// Player::CleanupsBeforeDelete sets m_cleanupDone during logout, and adding any
+// aura after that asserts and takes the whole realm down. m_cleanupDone is
+// protected with no accessor, but WorldSession::PlayerLogout() is public and
+// covers the same window, and IsDuringRemoveFromWorld() covers the rest.
+//
+// This got much easier to hit in 0.1.54: cooking regen and Shadow Dance both
+// used to be raw stat modifiers and were rewritten as real auras cast from the
+// per-player update tick. That turned a rare race into a reachable one, because
+// there are now several self-casts per second per player rather than none.
+//
+// Anything in this module that casts on a player -- from a tick or from a
+// deferred event -- checks this first.
+bool LivingGear_SafeToCastOn(Player* player)
+{
+    if (!player || !player->IsInWorld() || !player->IsAlive())
+        return false;
+    if (player->IsDuringRemoveFromWorld())
+        return false;
+    WorldSession* session = player->GetSession();
+    return session && !session->PlayerLogout();
 }
 
 // Called from the instrumented paths across the module. Deliberately takes a

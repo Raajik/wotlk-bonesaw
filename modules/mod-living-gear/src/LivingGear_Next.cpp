@@ -38,6 +38,7 @@ class Player;
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
+bool LivingGear_SafeToCastOn(Player* player); // LivingGear_Support.cpp
 uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 
 namespace LivingGearNext
@@ -734,7 +735,7 @@ void CapQuestGoRespawn(GameObject* go)
 void PaladinSplashImpl(ObjectGuid playerGuid, ObjectGuid firstTarget, uint32 spellId, float range)
 {
     Player* player = ObjectAccessor::FindPlayer(playerGuid);
-    if (!player || !player->IsInWorld() || !player->IsAlive())
+    if (!LivingGear_SafeToCastOn(player))
         return;
     Unit* anchor = firstTarget ? ObjectAccessor::GetUnit(*player, firstTarget) : player;
     if (!anchor || !anchor->IsInWorld())
@@ -778,7 +779,7 @@ void DivineStormExtraHits(Player* player)
         player->m_Events.AddEventAtOffset([playerGuid]()
         {
             Player* p = ObjectAccessor::FindPlayer(playerGuid);
-            if (p && p->IsInWorld() && p->IsAlive())
+            if (LivingGear_SafeToCastOn(p))
                 p->CastSpell(p, SPELL_DIVINE_STORM, true);
         }, std::chrono::milliseconds(120 + i * 120));
     }
