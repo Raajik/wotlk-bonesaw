@@ -41,6 +41,22 @@ sessions ran against this repo without ever seeing any of it.
    are all right there. Use them. "I believe X" in a report must mean it
    was checked, and if it could not be checked, say so in the same breath.
 
+6. **Ask how it shares to alts.** The account is the player's persona.
+   Whenever a feature could sensibly be account-wide, the question gets
+   asked out loud in the design, and the answer gets written down --
+   even if the answer is "per character, on purpose".
+
+   This is not hypothetical bookkeeping. Perks are owned by the account
+   but spells are learned per character, and nobody asked which side of
+   that line each piece belonged on; the result was that only the FIRST
+   character on an account ever got a perk spell. One real account owned
+   70 perks whose five characters knew 20, 14, 11, 14 and 2 of them.
+   Bug reports #33, #36, #37, #39 and #40 were all that one unasked
+   question.
+
+   Progress on one character helping every other one is a reward for the
+   grind, not a leak to be plugged. Default to sharing.
+
 ## Where things are
 
 - Real module source: `modules/mod-living-gear/`. The `main` branch has only a
