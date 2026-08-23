@@ -201,8 +201,8 @@ struct PerkCfg
     uint32 questFloorPct = 4;
     bool softenImmunity = true;
     bool ignoreSpellReqs = true;
-    // See ReconcilePerkSpells. Off until someone has watched a login with it on.
-    bool reconcilePerkSpells = false;
+    // See ReconcilePerkSpells. Castable perks only, so the cost is bounded.
+    bool reconcilePerkSpells = true;
 };
 
 PerkCfg g_cfg;
@@ -386,13 +386,50 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg, bool learnSpell
         Say(player, msg);
 }
 
-// Perks that are deliberately owned without being learnable: they exist as
-// account flags with nothing to cast, so learning them would put a dead entry
-// in the spellbook. Kept in one place because the login reconciliation below
-// has to make the same exception UnlockPerk's learnSpellToo=false callers do.
-bool PerkHasNoCastableSpell(uint32 spellId)
+// The perks that are real, pressable abilities.
+//
+// Mirrors CASTABLE_SPELLS in tools/client-patch/build_patch.py, which is what
+// decides the matter: only these get a SkillLineAbility.dbc row, and without
+// one a learned spell does not appear in the spellbook at all. Everything else
+// in the 910xxx range is a badge -- a flag the module reads, with nothing to
+// press and nothing to see.
+//
+// That distinction is the whole reason reconciliation is worth doing at all.
+// Learning a badge produces a "you have learnt" packet and changes nothing a
+// player can observe, because HasPerk consults the account set anyway. Learning
+// one of these restores a button that is genuinely missing: *Quests - Finish
+// was absent from 894 characters, Auto-Mount from 733, Solo Queue from 723.
+bool PerkIsCastable(uint32 spellId)
 {
-    return spellId == SPELL_SHADOW_DANCE || spellId == SPELL_SHADOW_CLONE;
+    switch (spellId)
+    {
+        case 910001: // *Windblown -- opens the Account Perks window
+        case 910002: // *Mailbox
+        case 910003: // *Auction House
+        case 910004: // *Class Trainer
+        case 910005: // *Bank
+        case 910006: // *Stable
+        case 910007: // *Bind
+        case 910009: // *Flight Master
+        case 910042: // *Attune Backpack
+        case 910088: // *Quests - Find
+        case 910090: // *Quests - Finish
+        case 910091: // *Attuned Armory
+            return true;
+        // Autoloot (910008), Solo Queue (910092) and Auto-Mount (910105) are
+        // deliberately absent. They are STATE, not actions: casting one only
+        // flipped an account boolean that the Account Perks window already
+        // toggles, via ALSET / SOLOSET / AMSET, each of which has a server
+        // handler. A spellbook button duplicating a checkbox is a second
+        // source of truth for one switch, and they topped the missing-button
+        // list -- 733 characters had no Auto-Mount, 723 no Solo Queue --
+        // exactly because nobody needed to notice they were gone.
+        //
+        // They remain OWNED perks. HasPerk reads the account set, so every
+        // gate depending on them is untouched.
+        default:
+            return false;
+    }
 }
 
 // Repair pass, run at every login and re-sync.
@@ -407,18 +444,19 @@ bool PerkHasNoCastableSpell(uint32 spellId)
 // Reconciling here means the character's spellbook converges on what the
 // account owns no matter which of those paths got it there.
 //
-// OFF BY DEFAULT, deliberately. tools/perk_grant_audit.py says 100 perks are
-// currently unlearned across 951 characters, so the first login after this
-// ships would fire ~100 learnSpell calls, each sending SMSG_LEARNED_SPELL. I
-// could not establish whether the 3.3.5 client shows a "spell learned" alert
-// for a passive with no SkillLineAbility row, and a wall of those at login is
-// not something to inflict on a guess.
+// Restricted to castable perks on purpose, and that restriction is what makes
+// it safe to have on by default.
 //
-// It is not needed for correctness either: HasPerk now consults the account
-// set in every file, so an unlearned perk still reads as owned and its gate
-// still opens. This exists for the cosmetic half -- making the spellbook
-// match the account -- and can be turned on once someone has watched one
-// character log in with it enabled.
+// The first cut of this learned everything the account owned, which meant ~100
+// learnSpell calls on a character's first login. Player::learnSpell sends the
+// "you have learnt" packet whenever IsInWorld(), and OnPlayerLogin runs after
+// AddPlayerToMap (CharacterHandler.cpp:911 vs :1131), so every one of those
+// would have fired. For badges that buys nothing at all -- they have no
+// SkillLineAbility row, so they never appear in the spellbook, and HasPerk
+// consults the account set regardless.
+//
+// Bounded to the 15 castable perks, the cost is at most 15 packets once per
+// character, and the benefit is a button the player earned and could not see.
 void ReconcilePerkSpells(Player* player)
 {
     if (!player || !player->GetSession() || !g_cfg.reconcilePerkSpells)
@@ -432,7 +470,7 @@ void ReconcilePerkSpells(Player* player)
     uint32 learned = 0;
     for (uint32 spellId : owned)
     {
-        if (PerkHasNoCastableSpell(spellId) || player->HasSpell(spellId))
+        if (!PerkIsCastable(spellId) || player->HasSpell(spellId))
             continue;
         if (!sSpellMgr->GetSpellInfo(spellId))
             continue;   // already logged loudly by UnlockPerk
@@ -2770,7 +2808,7 @@ void LoadPerkConfig()
     g_cfg.dungeonScale = sConfigMgr->GetOption<bool>("LivingGear.ZoneScale.Dungeons", true);
     g_cfg.softenImmunity = sConfigMgr->GetOption<bool>("LivingGear.SoftenCreatureImmunity", true);
     g_cfg.ignoreSpellReqs = sConfigMgr->GetOption<bool>("LivingGear.IgnoreSpellRequirements", true);
-    g_cfg.reconcilePerkSpells = sConfigMgr->GetOption<bool>("LivingGear.ReconcilePerkSpells", false);
+    g_cfg.reconcilePerkSpells = sConfigMgr->GetOption<bool>("LivingGear.ReconcilePerkSpells", true);
     g_cfg.questScale = sConfigMgr->GetOption<bool>("LivingGear.QuestScale.Enable", true);
     g_cfg.questFloorPct = sConfigMgr->GetOption<uint32>("LivingGear.QuestScale.FloorPct", 4);
     if (g_cfg.questFloorPct > 100)

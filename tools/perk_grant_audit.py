@@ -28,9 +28,18 @@ database instead, which is the only place the answer actually lives.
 Exit code 1 if anything is unlearned, so this can gate a ship.
 Needs the ac-database container up.
 
-Two perks are expected to show as unlearned and are filtered out: 910102
-(Shadow Dance) and 910103 (Shadow Clone) are account flags with nothing to
-cast, and are unlocked with learnSpellToo = false on purpose.
+Only CASTABLE perks are counted. The first version of this reported all 100
+unlearned perks and that number was mostly noise: the badges have no
+SkillLineAbility row, so learning one puts nothing in the spellbook, and
+HasPerk reads the account set regardless. Under that heap sat the finding
+that actually mattered -- *Quests - Finish missing from 894 characters, and
+*Attuned Armory from 602. Those are buttons a player earned and cannot find.
+Counting only those keeps the number meaningful.
+
+Autoloot, Solo Queue and Auto-Mount used to head that list and are now
+deliberately not castable at all: they are state, toggled from the Account
+Perks window, and a spellbook button duplicating a checkbox was the reason
+nobody noticed they had gone missing.
 """
 from __future__ import annotations
 
@@ -41,9 +50,17 @@ import sys
 DB_CONTAINER = "ac-database"
 SEP = "\x1f"
 
-# Owned without being learnable, by design. Mirrors PerkHasNoCastableSpell()
-# in LivingGear_Perks.cpp -- keep the two in step.
-NOT_LEARNABLE = {910102, 910103}
+# The perks that are real, pressable abilities: the only ones with a
+# SkillLineAbility.dbc row, so the only ones that appear in the spellbook.
+# Mirrors PerkIsCastable() in LivingGear_Perks.cpp and CASTABLE_SPELLS in
+# tools/client-patch/build_patch.py -- keep all three in step.
+#
+# Everything else in the range is a badge: a flag the module reads, with
+# nothing to press and nothing to see. An unlearned badge is not a defect,
+# because HasPerk consults the account set. An unlearned CASTABLE perk is a
+# button the player earned and cannot find.
+CASTABLE = {910001, 910002, 910003, 910004, 910005, 910006, 910007,
+            910009, 910042, 910088, 910090, 910091}
 
 
 def run_sql(sql):
@@ -107,18 +124,21 @@ def main():
         return 2
 
     broken = [(pid, missing, total) for pid, missing, total, _ in perks
-              if missing and int(pid) not in NOT_LEARNABLE]
+              if missing and int(pid) in CASTABLE]
     broken.sort(key=lambda r: -r[1])
 
     if args.quiet:
         return 1 if broken else 0
 
     if not broken:
-        print("Every account-owned perk is learned on every character.")
+        print("Every castable account perk is learned on every character.")
+        print("(Badges are not checked: no spellbook entry, and HasPerk reads")
+        print("the account set, so an unlearned one is not a defect.)")
         return 0
 
-    print("%d perk(s) owned by an account but not learned by some of its characters"
+    print("%d CASTABLE perk(s) owned by an account but missing from some of its"
           % len(broken))
+    print("characters -- each is a button the player earned and cannot find.")
     print()
     print("  perk     unlearned / characters whose account owns it")
     for pid, missing, total in broken[:30]:
@@ -136,7 +156,8 @@ def main():
     print("Perks are owned by the account; spells are learned per character.")
     print("ReconcilePerkSpells() in LivingGear_Perks.cpp closes the gap at login,")
     print("so a non-empty list here means either that repair has not shipped yet")
-    print("or the affected characters have not logged in since it did.")
+    print("or the affected characters have not logged in since it did. Expect")
+    print("this to drain gradually rather than all at once.")
     return 1
 
 

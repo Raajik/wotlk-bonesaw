@@ -225,9 +225,18 @@ VISUAL_COPY = {
 
 # Usable abilities only. World-tab ticks stay in Spell.dbc for names but are not
 # added to SkillLineAbility, so they do not appear as spellbook skills.
+#
+# Autoloot (910008), Solo Queue (910092) and Auto-Mount (910105) were removed
+# on 2026-08-23. They are STATE, not actions: casting one only flipped an
+# account boolean that the Account Perks window already toggles, through
+# ALSET / SOLOSET / AMSET, all of which have server handlers. A spellbook
+# button that duplicates a checkbox is a second source of truth for the same
+# switch, and they were the three worst entries on the missing-button list
+# (733 and 723 characters had no Auto-Mount or Solo Queue button) precisely
+# because nobody needed to notice they were gone.
 CASTABLE_SPELLS = {
-    910001, 910002, 910003, 910004, 910005, 910006, 910007, 910008, 910009,
-    910042, 910088, 910090, 910091, 910092, 910105,
+    910001, 910002, 910003, 910004, 910005, 910006, 910007, 910009,
+    910042, 910088, 910090, 910091,
 }
 
 # Hidden HoT used by First Aid Instant. Not added to SkillLineAbility / spellbook.

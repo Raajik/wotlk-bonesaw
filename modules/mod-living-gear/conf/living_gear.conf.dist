@@ -95,18 +95,19 @@ LivingGear.SoftenCreatureImmunity = 1
 # errand. Creature casts are untouched; disarm still works. Core-patch 0020.
 LivingGear.IgnoreSpellRequirements = 1
 
-# Learn, at login, every perk spell the account owns that this character is
+# Learn, at login, any CASTABLE perk the account owns that this character is
 # missing. Perks belong to the account but spells are learned per character,
-# and for a long time only the FIRST character on an account ever got them --
-# tools/perk_grant_audit.py counted 100 perks unlearned across 951 characters.
+# and for a long time only the first character on an account ever got them --
+# *Quests - Finish was missing from 894 characters, Auto-Mount from 733,
+# Solo Queue from 723. Those are real buttons the player earned and could not
+# see.
 #
-# Off by default on purpose. Turning it on makes the next login for each
-# character fire around a hundred learnSpell calls, and it is not established
-# whether the 3.3.5 client pops a "spell learned" alert for a passive with no
-# SkillLineAbility row. Watch one character log in with it on before leaving
-# it on. Nothing is broken while it is off: HasPerk consults the account set
-# in every file now, so an unlearned perk still reads as owned.
-LivingGear.ReconcilePerkSpells = 0
+# Castable only, deliberately. The rest of the 910xxx range is badges with no
+# SkillLineAbility row, so learning one puts nothing in the spellbook and
+# changes no behaviour -- HasPerk reads the account set either way. Learning
+# all of them would just mean ~100 "you have learnt" packets per login for
+# nothing. Bounded to the 15 castable perks it is at most 15, once.
+LivingGear.ReconcilePerkSpells = 1
 
 # Kill XP floor (bug report #11). Every kill is worth at least this percentage
 # of the current level's XP bar, so trash far below you still pays something.
