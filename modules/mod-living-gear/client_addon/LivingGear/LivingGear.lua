@@ -1057,23 +1057,9 @@ local function SetWorldTip(text)
     end
 end
 
-local function PaintTick(btn, on)
-    if on then
-        btn._ir, btn._ig, btn._ib = 0.12, 0.34, 0.16
-        if btn.mark then
-            btn.mark:SetText("x")
-            btn.mark:SetTextColor(0.55, 0.95, 0.6, 1)
-        end
-    else
-        btn._ir, btn._ig, btn._ib = 0.11, 0.11, 0.11
-        if btn.mark then
-            btn.mark:SetText("")
-        end
-    end
-    if btn.bg then
-        Solid(btn.bg, btn._ir, btn._ig, btn._ib, 1)
-    end
-end
+-- PaintTick was removed 2026-08-22 with the per-tier tick buttons. The tier
+-- bar in the PROGRESSION cards colours its own segments (see LayoutWorld),
+-- so there is nothing left for it to paint.
 
 local function ShowTab(name)
     if name == "quest" then
@@ -1856,23 +1842,24 @@ local function LayoutWorld()
             end
         end
         row.count:SetText(got .. " / " .. total)
-        local pct = total > 0 and (got / total) or 0
-        row.barFill:SetWidth(math.max(1, 150 * pct))
+        -- Each segment is coloured by whether THAT tier is held, not by
+        -- overall progress, so a track earned out of order still reads
+        -- correctly -- which is the one thing the old tick marks did that a
+        -- plain percentage bar could not.
+        for i = 1, #row.segs do
+            local info = track.ticks[i]
+            if info and PerkKnown(info.id) then
+                Solid(row.segs[i], 0.28, 0.62, 0.32, 1)
+            else
+                Solid(row.segs[i], 0.07, 0.07, 0.08, 1)
+            end
+        end
         if nextHow then
             row.next:SetText("Next: " .. nextHow)
+            row.next:SetTextColor(0.52, 0.52, 0.58, 1)
         else
             row.next:SetText("Complete.")
-        end
-        for i = 1, #row.ticks do
-            local tick = row.ticks[i]
-            local info = track.ticks[i]
-            if info then
-                tick:Show()
-                tick.tip = info.name .. " - " .. info.how
-                PaintTick(tick, PerkKnown(info.id))
-            else
-                tick:Hide()
-            end
+            row.next:SetTextColor(0.42, 0.62, 0.45, 1)
         end
     end
     if ui.jumpBtns then
@@ -3290,16 +3277,20 @@ function LG2.BuildWorldPanel(f)
         end
     end
     actionRows = math.ceil(actionRows / 4)
-    local CARD_H = 44
-    local trackY = ui.worldActionTop - actionRows * 22 - 26
+    -- 56 rather than 44: the "Next" line gets two lines to itself now instead
+    -- of being truncated mid-sentence.
+    local CARD_H = 56
+    local BAR_X, BAR_W, BAR_H = 204, 150, 10
+    local trackY = ui.worldActionTop - actionRows * 22 - 34
 
-    ui.worldSectionProgress = Font(content, 10, 0.5, 0.68, 0.92)
-    ui.worldSectionProgress:SetPoint("TOPLEFT", 6, trackY + 16)
-    ui.worldSectionProgress:SetText("PROGRESSION")
+    -- Rule sits ABOVE the heading, not below it. They were the wrong way round.
     local rule2 = content:CreateTexture(nil, "ARTWORK")
-    rule2:SetPoint("TOPLEFT", 6, trackY + 34)
+    rule2:SetPoint("TOPLEFT", 6, trackY + 38)
     rule2:SetSize(500, 1)
     Solid(rule2, 0.26, 0.26, 0.3, 1)
+    ui.worldSectionProgress = Font(content, 10, 0.5, 0.68, 0.92)
+    ui.worldSectionProgress:SetPoint("TOPLEFT", 6, trackY + 22)
+    ui.worldSectionProgress:SetText("PROGRESSION")
 
     for t = 1, #WORLD_TRACKS do
         local track = WORLD_TRACKS[t]
@@ -3310,52 +3301,43 @@ function LG2.BuildWorldPanel(f)
         row.bg:SetAllPoints(row)
         Solid(row.bg, 0.105, 0.105, 0.115, 1)
         row.head = Font(row, 11, 0.55, 0.85, 1)
-        row.head:SetPoint("TOPLEFT", 8, -4)
+        row.head:SetPoint("TOPLEFT", 8, -5)
         row.head:SetWidth(190)
-        -- Progress bar: two flat textures rather than a StatusBar, so a reskin
-        -- cannot swap the texture out from under it.
-        row.barBg = row:CreateTexture(nil, "ARTWORK")
-        row.barBg:SetPoint("TOPLEFT", 204, -6)
-        row.barBg:SetSize(150, 8)
-        Solid(row.barBg, 0.07, 0.07, 0.08, 1)
-        row.barFill = row:CreateTexture(nil, "OVERLAY")
-        row.barFill:SetPoint("TOPLEFT", 204, -6)
-        row.barFill:SetSize(1, 8)
-        Solid(row.barFill, 0.28, 0.62, 0.32, 1)
-        row.count = Font(row, 10, 0.6, 0.6, 0.66)
-        row.count:SetPoint("TOPLEFT", 362, -5)
-        -- The line the old design could only show for one track at a time, in
-        -- a footer. Now every track carries its own.
-        row.next = Font(row, 9, 0.52, 0.52, 0.58)
-        row.next:SetPoint("TOPLEFT", 8, -22)
-        row.next:SetWidth(490)
-        row.next:SetHeight(16)
-        row.ticks = {}
-        local n = #track.ticks
+
+        -- The bar IS the tier display now. One segment per tier, filled if that
+        -- tier is held. The separate row of tick marks is gone: it sat on top
+        -- of the Next line and collided with it, and it was saying the same
+        -- thing this already says. Segments also mean an empty track draws as
+        -- empty boxes rather than the 1px sliver a zero-width fill left behind.
+        --
+        -- Kept as individual textures rather than a StatusBar so a reskin
+        -- cannot swap the texture out from under it, and so out-of-order
+        -- unlocks stay visible -- which is the one thing the ticks did that a
+        -- plain percentage bar cannot.
+        local n = math.max(1, #track.ticks)
+        local gap = n > 1 and 2 or 0
+        local segW = math.max(2, math.floor((BAR_W - gap * (n - 1)) / n))
+        row.segs = {}
         for i = 1, n do
-            local tick = CreateFrame("Button", nil, row)
-            tick:SetSize(10, 10)
-            tick:SetPoint("TOPLEFT", 204 + (i - 1) * 13, -20)
-            tick.bg = tick:CreateTexture(nil, "BACKGROUND")
-            tick.bg:SetAllPoints(tick)
-            Solid(tick.bg, 0.11, 0.11, 0.11, 1)
-            tick.mark = Font(tick, 8, 0.55, 0.95, 0.6)
-            tick.mark:SetPoint("CENTER", 0, 0)
-            tick.mark:SetJustifyH("CENTER")
-            tick:SetScript("OnEnter", function(self)
-                PaintTick(self, PerkKnown(track.ticks[i].id))
-                Solid(self.bg, math.min(1, self._ir + 0.08), math.min(1, self._ig + 0.08), math.min(1, self._ib + 0.08), 1)
-                SetWorldTip(self.tip)
-            end)
-            tick:SetScript("OnLeave", function(self)
-                PaintTick(self, PerkKnown(track.ticks[i].id))
-                SetWorldTip()
-            end)
-            row.ticks[i] = tick
+            local seg = row:CreateTexture(nil, "ARTWORK")
+            seg:SetPoint("TOPLEFT", BAR_X + (i - 1) * (segW + gap), -6)
+            seg:SetSize(segW, BAR_H)
+            Solid(seg, 0.07, 0.07, 0.08, 1)
+            row.segs[i] = seg
         end
+
+        row.count = Font(row, 10, 0.6, 0.6, 0.66)
+        row.count:SetPoint("TOPLEFT", BAR_X + BAR_W + 8, -5)
+        -- Full card width and two lines. Nothing is drawn over this any more.
+        row.next = Font(row, 9, 0.52, 0.52, 0.58)
+        row.next:SetPoint("TOPLEFT", 8, -24)
+        row.next:SetWidth(486)
+        row.next:SetHeight(26)
+        row.next:SetJustifyV("TOP")
         ui.worldTracks[t] = row
         trackY = trackY - CARD_H
     end
+
 
     ui.jumpLabel = Font(content, 10, 0.7, 0.7, 0.7)
     ui.jumpLabel:SetPoint("TOPLEFT", 6, trackY - 4)
