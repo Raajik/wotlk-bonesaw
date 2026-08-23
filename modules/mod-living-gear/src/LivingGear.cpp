@@ -528,6 +528,101 @@ static float AbsorbPctForLevel(uint16 level)
 // AbsorbPctForLevel) into the account's lg_absorb ratchet for that entry.
 // Never destroys anything -- called automatically on every level-up (see
 // AddItemXpAndBank) rather than as a manual one-time sacrifice.
+// Milestones that raise the attunement rate.
+//
+// Every id was read out of var/mmap-output/dbc/Achievement.dbc, anchoring on a
+// known title to find the name field (index 4 in this build) before trusting
+// anything -- the same method that caught a wrong Hemorrhage rank earlier.
+// None came from memory or a website.
+//
+// Two of the intended entries are absent from WotLK and are deliberately not
+// faked: "Salty" and "Iron Chef" do not exist as achievements in this client.
+// Accomplished Angler and Chef de Cuisine are the closest real equivalents and
+// are used in their place.
+//
+// Faction-split achievements are listed as pairs; earning either counts.
+uint32 AttuneRateFor(uint32 accountId);
+static void RefreshStats(Player* player, bool includeBags = false);
+
+struct AttuneMilestone { uint32 id; char const* label; };
+AttuneMilestone const ATTUNE_MILESTONES[] =
+{
+    // Tier 1 -- the first week
+    {  457, "Realm First! Level 80" },            // any level 80 is the entry fee
+    { 1288, "Northrend Dungeonmaster" },          // every WotLK normal dungeon
+    { 1516, "Accomplished Angler" },              // stands in for Salty
+
+    // Tier 2 -- committed
+    { 1289, "Northrend Dungeon Hero" },           // every WotLK heroic
+    { 1010, "Northrend Vanguard" },               // WotLK factions
+    { 1799, "Chef de Cuisine" },                  // stands in for Iron Chef
+    {  945, "The Argent Champion" },
+
+    // Tier 3 -- dedicated
+    { 1285, "Classic Raider" },
+    { 1286, "Outland Raider" },
+    { 1287, "Outland Dungeon Hero" },
+    {  948, "Ambassador of the Alliance" },
+    {  762, "Ambassador of the Horde" },
+    {   42, "Explore Eastern Kingdoms" },
+    {   43, "Explore Kalimdor" },
+    {   44, "Explore Outland" },
+    {   45, "Explore Northrend" },
+
+    // Tier 4 -- the long haul and the wild ones
+    { 2137, "Glory of the Raider (10 player)" },
+    { 2138, "Glory of the Raider (25 player)" },
+    { 2136, "Glory of the Hero" },
+    { 2903, "Champion of Ulduar" },
+    { 1658, "Champion of the Frozen Wastes" },
+    { 2143, "Leading the Cavalry" },              // 100 mounts
+    { 1681, "The Loremaster (Alliance)" },
+    { 1682, "The Loremaster (Horde)" },
+    { 2336, "Insane in the Membrane" },           // The Insane
+    {  230, "Battlemaster" },
+    {  907, "The Justicar" },
+    {  714, "The Conqueror" },
+};
+
+// Award any milestone the account has earned but not yet banked.
+//
+// Each one raises the rate on everything ALREADY attuned, which is the whole
+// snowball: collect broadly early, then every clear retroactively multiplies
+// the lot. Checked on login and on achievement earned.
+static void CheckAttuneMilestones(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    uint32 gained = 0;
+    for (AttuneMilestone const& m : ATTUNE_MILESTONES)
+    {
+        if (!player->HasAchieved(m.id))
+            continue;
+        if (QueryResult have = CharacterDatabase.Query(
+            "SELECT 1 FROM `lg_attune_milestone` WHERE `account_id` = {} AND `milestone` = {}",
+            accountId, m.id))
+            continue;
+        CharacterDatabase.DirectExecute(
+            "INSERT IGNORE INTO `lg_attune_milestone` (`account_id`, `milestone`, `earned_at`) "
+            "VALUES ({}, {}, UNIX_TIMESTAMP())", accountId, m.id);
+        ++gained;
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cff66ccff[Attune]|r Milestone earned: {}. Every attuned item is now worth more.",
+            m.label);
+    }
+    if (!gained)
+        return;
+    // Raise the rate on everything already banked. This is one UPDATE precisely
+    // because lg_absorb stores full stats and a percentage -- the reason the
+    // schema was built that way.
+    uint32 const rate = AttuneRateFor(accountId);
+    CharacterDatabase.DirectExecute(
+        "UPDATE `lg_absorb` SET `attune_pct` = {} WHERE `account_id` = {} AND `attune_pct` < {}",
+        rate, accountId, rate);
+    RefreshStats(player, true);
+}
+
 // Rate per attuned item, as a percentage of that item's stats.
 //
 // Base 5, plus 5 for every milestone the account has earned, capped at 100.
@@ -1107,7 +1202,7 @@ static bool HandleTipRequest(Player* player, std::string const& raw)
     return true;
 }
 
-static void RefreshStats(Player* player, bool includeBags = false)
+static void RefreshStats(Player* player, bool includeBags)
 {
     if (!player || !g_cfg.enabled)
         return;
@@ -1569,6 +1664,7 @@ class LivingGearPlayer : public PlayerScript
 public:
     LivingGearPlayer() : PlayerScript("LivingGearPlayer", {
         PLAYERHOOK_ON_LOGIN,
+        PLAYERHOOK_ON_ACHI_COMPLETE,
         PLAYERHOOK_ON_LOGOUT,
         PLAYERHOOK_ON_CREATURE_KILL,
         PLAYERHOOK_ON_CREATURE_KILLED_BY_PET,
@@ -1588,7 +1684,16 @@ public:
             return;
         if (!player->HasSpell(SPELL_WINDBLOWN))
             player->learnSpell(SPELL_WINDBLOWN);
+        // Before RefreshStats, so a milestone earned offline (or on another
+        // character) is already reflected in the stats applied on login.
+        CheckAttuneMilestones(player);
         RefreshStats(player, true);
+    }
+
+    void OnPlayerAchievementComplete(Player* player, AchievementEntry const* /*achievement*/) override
+    {
+        if (g_cfg.enabled)
+            CheckAttuneMilestones(player);
     }
 
     void OnPlayerLogout(Player* player) override
