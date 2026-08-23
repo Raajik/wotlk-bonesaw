@@ -381,6 +381,58 @@ void TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
         VaultAdd(accountId, 0, VAULT_REAGENT, itemId, taken - stored); // bag full -- put the remainder back
 }
 
+// Called from a core patch in Spell::CheckItems (Spell.cpp), just before the
+// engine's own tool check.
+//
+// The other half of bug report #29. Tool requirements are NOT reagents: they
+// live in SpellInfo::TotemCategory[] and are tested with
+// HasItemTotemCategory(), which walks real inventory only. TopUpReagentFromVault
+// covers Reagent[] and does nothing for these, so a Blacksmith Hammer sitting
+// in the reagent bank left every blacksmithing recipe insisting you needed a
+// hammer -- the item was banked, visible, and useless.
+//
+// Unlike a reagent, a tool is not consumed, so this hands it back permanently
+// rather than topping up per cast: after the first craft the player is simply
+// holding their hammer again, which is where a tool wants to be.
+void TopUpToolFromVault(Player* player, uint32 totemCategory)
+{
+    if (!player || !player->GetSession() || !totemCategory)
+        return;
+    if (player->HasItemTotemCategory(totemCategory))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadVault(accountId);
+
+    // Copy the candidate ids out before touching the vault: VaultRemove
+    // mutates the very map being walked.
+    std::vector<uint32> candidates;
+    for (auto const& [key, count] : g_vaults[accountId])
+    {
+        if (key.kind != VAULT_REAGENT || !count)
+            continue;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(key.itemEntry);
+        if (proto && player->IsTotemCategoryCompatiableWith(proto, totemCategory))
+            candidates.push_back(key.itemEntry);
+    }
+
+    for (uint32 itemEntry : candidates)
+    {
+        if (!VaultRemove(accountId, 0, VAULT_REAGENT, itemEntry, 1))
+            continue;
+        if (StoreFromVault(player, itemEntry, 1))
+        {
+            SendLine(player, Acore::StringFormat("VLT|{}|{}|{}|{}",
+                uint32(VAULT_REAGENT), itemEntry,
+                VaultCount(accountId, 0, VAULT_REAGENT, itemEntry),
+                sObjectMgr->GetItemTemplate(itemEntry)
+                    ? sObjectMgr->GetItemTemplate(itemEntry)->Name1 : "Item"));
+            return;
+        }
+        // Bags were full -- put it back rather than deleting the only tool.
+        VaultAdd(accountId, 0, VAULT_REAGENT, itemEntry, 1);
+    }
+}
+
 // Every item id any quest anywhere references: objective items, the source
 // items a quest hands out, and quest-starting items. Built once at startup
 // (VaultWorld::OnStartup) from the loaded quest templates.
@@ -782,6 +834,29 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
     // stay in the bag like anything else -- IsQuestItem(proto, player) is
     // still used (via IsReagentItem's exclusion check below) to keep them
     // out of the reagent vault, just no longer routed anywhere itself.
+    // Bug report #29, 2026-08-22: "Bought a blacksmith hammer, didn't go into
+    // inventory or into reagent bank, need it for crafting."
+    //
+    // Tools are reagent-vault material by IsReagentItem, so every one a player
+    // acquired was pulled straight out of the bag the instant it arrived. On
+    // the bot accounts that produced 30-75 Blacksmith Hammers apiece in a
+    // single vault -- the bank was acting as an unbounded tool sink rather
+    // than a convenience.
+    //
+    // Bank the first one, because a tool you own on one character should be
+    // reachable from all of them. Leave every copy after that in the bag,
+    // where it is visibly yours and immediately usable. Combined with
+    // TopUpToolFromVault (which hands the banked one back the moment a recipe
+    // needs it), the player always ends up holding a tool rather than
+    // wondering where it went.
+    if (IsToolItem(proto))
+    {
+        uint32 const accountId =
+            player && player->GetSession() ? player->GetSession()->GetAccountId() : 0;
+        if (accountId && VaultCount(accountId, 0, VAULT_REAGENT, proto->ItemId) > 0)
+            return ACT_BAG;
+        return ACT_REAGENT_VAULT;
+    }
     if (IsReagentItem(proto, player))
         return ACT_REAGENT_VAULT;
     if (proto->Quality == ITEM_QUALITY_POOR)
@@ -1577,6 +1652,14 @@ bool LivingGear_TryAutolootPickpocket(Player* player, Unit* target)
 void LivingGear_TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
 {
     LivingGearVault::TopUpReagentFromVault(player, itemId, needed);
+}
+
+// Bug report #29: profession tools live in SpellInfo::TotemCategory[], not
+// Reagent[], so the reagent top-up above never covered them and a banked
+// hammer could not satisfy a blacksmithing recipe.
+void LivingGear_TopUpToolFromVault(Player* player, uint32 totemCategory)
+{
+    LivingGearVault::TopUpToolFromVault(player, totemCategory);
 }
 
 // Addon-command entry point, called by the dispatcher in LivingGear.cpp.

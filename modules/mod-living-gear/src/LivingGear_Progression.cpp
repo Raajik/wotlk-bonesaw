@@ -20,6 +20,7 @@
 #include "Chat.h"
 #include "DatabaseEnv.h"
 #include "DBCStructure.h"
+#include "Log.h"
 #include "Player.h"
 #include "ReputationMgr.h"
 #include "ScriptMgr.h"
@@ -161,8 +162,28 @@ bool HasPerk(Player* player, uint32 spellId)
 
 void UnlockPerk(Player* player, uint32 spellId, char const* msg = nullptr)
 {
-    if (!player || !player->GetSession() || !sSpellMgr->GetSpellInfo(spellId))
+    if (!player || !player->GetSession())
         return;
+    // Bug report #22, 2026-08-22: "Do not have the leveling perk for having a
+    // level 80 despite being on a level 80 currently."
+    //
+    // The perk logic was correct and the account genuinely qualified. Spells
+    // 910053-910062 had no spell_dbc row, so this returned here and did it in
+    // total silence -- not one account on the realm had ever earned a Leveling
+    // perk. Forty of the 139 advertised perks were in that state; see
+    // tools/perk_spell_audit.py, which now checks for it.
+    //
+    // Still refuse to proceed, because learnSpell on a missing spell is not
+    // survivable, but say so. A perk that cannot be granted is a data bug and
+    // should look like one instead of like a player being wrong about their
+    // own character.
+    if (!sSpellMgr->GetSpellInfo(spellId))
+    {
+        LOG_ERROR("module.livinggear",
+            "Living Gear: perk {} is advertised but has no spell_dbc row, so it can never "
+            "be granted. Run tools/perk_spell_audit.py.", spellId);
+        return;
+    }
     uint32 const acc = player->GetSession()->GetAccountId();
     LoadPerks(acc);
     if (!g_perks[acc].insert(spellId).second)
