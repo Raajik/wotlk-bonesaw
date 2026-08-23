@@ -193,11 +193,84 @@ stored stats as the item's full value.
 The alternative — recomputing everyone under the new formula — silently reduces
 stats people already have. Being generous to 96 accounts is the cheaper mistake.
 
+## Alts ride the snowball, on purpose
+
+Attunement is keyed on `account_id`, so it already works this way — a new
+character inherits the whole collection the moment it is created. Recorded here
+as **intent** rather than an accident, because it is the reward for the grind:
+progress on one character helping every other one is the point, not a leak.
+
+This is also the honest answer to "rough at the start". The rough start is a
+thing you experience **once, per account**. An alt on an established account
+should feel enormously powerful immediately, and that is correct.
+
+## The milestone list
+
+Base rate 5% per attuned item. Each milestone below adds **+5%**, to a ceiling
+of 100%.
+
+That ceiling is not arbitrary: 100% per item is exactly what the *current*
+continuous system already grants an item that reaches level 25. So a
+fully-decorated account ends up where today's ceiling already sits — what
+changes is that you get there by clearing content rather than by grinding every
+individual item up a curve.
+
+### Tier 1 — the first week
+
+| Milestone | Why |
+|---|---|
+| Reach level 80 on any character | The obvious entry fee |
+| Clear every WotLK normal dungeon | Teaches the dungeon set |
+| Attune 50 distinct items | Rewards the system's own loop |
+| Max any one gathering profession | Cheap, and it pairs with the reagent bank |
+
+### Tier 2 — committed
+
+| Milestone | Why |
+|---|---|
+| Clear every WotLK heroic dungeon | The named one; the natural next rung |
+| Attune 150 distinct items | Breadth is the main axis, so it earns a rung |
+| Max two crafting professions | Gives crafting the pull it lost with copy-counting |
+| Exalted with every WotLK faction | Long but never blocked |
+| Level a single item to 50 | Makes the other half of the redesign matter |
+
+### Tier 3 — dedicated
+
+| Milestone | Why |
+|---|---|
+| Clear every WotLK 10-man raid | The named one |
+| Clear every Classic raid (MC, BWL, AQ40, Naxx40) | Old content becomes worth entering |
+| Clear every TBC raid | Same |
+| Attune 300 distinct items | The point where the collection is genuinely deep |
+| Ambassador — every capital exalted | Classic time sink, no skill wall |
+| Explore Azeroth, Outland and Northrend | Pure time, zero difficulty, pleasant |
+
+### Tier 4 — the long haul, and the wild ones
+
+| Milestone | Why |
+|---|---|
+| Clear every WotLK 25-man raid | The real end of the PvE ladder |
+| Every battleground reputation exalted | Brutal, and it drags PvP into the system |
+| Salty | Fishing title; absurd, beloved, entirely doable |
+| The Insane | The signature "you did WHAT" achievement |
+| Collect 100 mounts | Broad, slow, touches everything |
+| Loremaster | The largest quest grind in the game |
+| Glory of the Raider, any tier | Skill rather than time, unlike most of this list |
+
+Twenty-two milestones at +5% reaches 115%, so the 100% ceiling means the last
+few are for pride rather than power. That is deliberate — a player should be
+able to skip the two or three they hate.
+
+**Design note on the mix.** Most of these are *time*, not *skill*, on purpose:
+the fantasy is a snowball you can see coming, not a wall. Glory of the Raider is
+the one real skill check and it sits at the very end where it is optional.
+
 ## Open questions
 
-- **Where the bulk attune lives.** A button in the Armory tab is cheapest and
-  needs no world object; an NPC or altar matches Peloria and reads better but is
-  another errand. Still undecided.
-- **Which milestones, and in what order.** "All WotLK heroics" and "all 10-man
-  raids" are the two named so far. Needs a full list before building, since each
-  one is an achievement-ID lookup.
+- **Armory redesign.** Bulk attune belongs on the first page of the Armory,
+  since it will be used constantly. The Armory's current first page was not laid
+  out with a primary action button in mind, so this needs a pass — probably the
+  same treatment the perks panel got.
+- **Achievement IDs.** Every milestone above is an achievement lookup and none of
+  the IDs are gathered yet. They come from `achievement_dbc` / the DBC, and per
+  the rank-id lesson they get read out of the data rather than recalled.
