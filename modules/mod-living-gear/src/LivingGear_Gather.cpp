@@ -40,6 +40,7 @@ bool IsAutolootEnabled(Player* player); // LivingGear_Vault.cpp
 
 class Player;
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+void LivingGear_DiagBump(Player* player, char const* key); // LivingGear_Support.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
 namespace LivingGearGather
@@ -533,6 +534,7 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
     // chest reaching autoloot via the new path, key or skill alike --
     // exactly why "Solid Chest" kept refusing to autoloot even after
     // being successfully unlocked.
+    LivingGear_DiagBump(player, "chest.try");
     Loot* loot = &go->loot;
     loot->clear();
     if (uint32 lootId = go->GetGOInfo()->GetLootId())

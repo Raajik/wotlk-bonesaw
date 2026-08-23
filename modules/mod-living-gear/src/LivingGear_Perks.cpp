@@ -61,6 +61,7 @@ class Player;
 void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp); // LivingGear.cpp
 uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+void LivingGear_DiagBump(Player* player, char const* key); // LivingGear_Support.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
 namespace LivingGearPerks
@@ -1169,6 +1170,7 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
     if (SpellInfo const* ambushInfo = sSpellMgr->GetSpellInfo(ambush))
         dmg = int32(float(std::max(1, ambushInfo->Effects[EFFECT_0].CalcValue(player))) * HEMO_AMBUSH_MULT);
 
+    LivingGear_DiagBump(player, "hemo.impl");
     std::list<Unit*> around;
     Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, HEMO_RADIUS);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
@@ -1177,6 +1179,7 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
     {
         if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
             continue;
+        LivingGear_DiagBump(player, "hemo.hit");
         player->CastCustomSpell(u, ambush, &dmg, nullptr, nullptr, true);
         // The bleed's 1000% multiplier is NOT applied here -- it lives in
         // ModifyPeriodicDamageAurasTick so it covers every Garrote equally.
@@ -2178,12 +2181,18 @@ public:
             g_lastMount[player->GetGUID().GetCounter()] = info->Id;
         if (info->Id == SPELL_SHADOWSTEP && GetClassPerk(player) == SPELL_SUBTLETY)
         {
+            LivingGear_DiagBump(player, "sstep.hook");
             ApplyShadowstepCooldown(player);
             ShadowstepPickpocket(player);
         }
+        if (sSpellMgr->GetFirstSpellInChain(info->Id) == SPELL_HEMORRHAGE)
+            LivingGear_DiagBump(player, "hemo.cast");
         if (GetClassPerk(player) == SPELL_SUBTLETY
             && sSpellMgr->GetFirstSpellInChain(info->Id) == SPELL_HEMORRHAGE)
+        {
+            LivingGear_DiagBump(player, "hemo.hook");
             ApplyHemorrhageAoE(player);
+        }
         // Shadow Clone pet dropped 2026-08-21 -- the SUMMON_PET rework
         // (real pet frame, stance buttons) didn't play the way the user
         // wanted. SummonClone()/npc_lg_shadow_clone are kept but now

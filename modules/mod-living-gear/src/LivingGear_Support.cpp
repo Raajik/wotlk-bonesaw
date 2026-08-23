@@ -49,6 +49,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -56,6 +57,7 @@
 class Player;
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
 bool LivingGear_PlayerNeedsItemForQuest(Player const* player, uint32 itemId); // LivingGear_Vault.cpp
+uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 
 namespace LivingGearSupport
 {
@@ -89,6 +91,25 @@ uint32 g_killXpFloorPct = 1;
 bool g_wgSiegeScale = true;
 uint32 g_wgFullRoster = 20;
 float g_wgMaxSiegeMult = 10.0f;
+
+// ---------------------------------------------------------------------
+// Live diagnostics (.lg diag)
+// ---------------------------------------------------------------------
+//
+// Three reports in a row -- #15 solid chests, #20 profession skill-ups, #23
+// Hemorrhage -- read correctly in the source and did not work in game. Every
+// one cost a round of static analysis that proved nothing, because the thing
+// worth knowing is not "is the code right" but "did this line actually run for
+// THIS player". That is not answerable by reading.
+//
+// So: cheap named counters, bumped at the points that matter, dumped on
+// request. A count of 0 next to "hemo.hook" is a different bug from a count of
+// 12 next to it and 0 next to "hemo.hit", and telling those apart is the whole
+// job.
+//
+// Costs one hash lookup and an increment on paths that already do far more,
+// and nothing at all until someone types the command.
+std::unordered_map<uint32, std::map<std::string, uint32>> g_diag;
 
 std::unordered_map<uint32, uint32> g_lastBugAt;      // account id -> unix seconds
 std::unordered_map<uint32, uint32> g_questCooldown;  // character guid -> unix seconds
@@ -331,6 +352,36 @@ void SendQuestCompleteState(Player* player)
 // Wintergrasp: join from anywhere
 // ---------------------------------------------------------------------
 
+void ShowDiagnostics(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    ChatHandler handler(player->GetSession());
+    uint32 const guid = player->GetGUID().GetCounter();
+    uint32 const accountId = player->GetSession()->GetAccountId();
+
+    handler.PSendSysMessage("|cff66ccff[Diag]|r %s  char guid %u  account %u  level %u  class %u",
+        player->GetName().c_str(), guid, accountId, uint32(player->GetLevel()),
+        uint32(player->getClass()));
+
+    uint32 const classPerk = ::GetClassPerk(player);
+    if (classPerk)
+        handler.PSendSysMessage("|cff66ccff[Diag]|r class perk selected: %u", classPerk);
+    else
+        handler.SendSysMessage("|cff66ccff[Diag]|r class perk selected: NONE -- every spec-gated feature is off for you");
+
+    auto const found = g_diag.find(guid);
+    if (found == g_diag.end() || found->second.empty())
+    {
+        handler.SendSysMessage("|cff66ccff[Diag]|r no counters recorded yet this session.");
+        handler.SendSysMessage("|cff66ccff[Diag]|r Use the ability you are reporting, then run this again.");
+        return;
+    }
+    handler.SendSysMessage("|cff66ccff[Diag]|r counters since this character logged in:");
+    for (auto const& entry : found->second)
+        handler.PSendSysMessage("    %-28s %u", entry.first.c_str(), entry.second);
+}
+
 // Bug report #4, 2026-08-22: "wintergrasp should be queuable via the blue
 // button on the battlegrounds queue tab (the built-in blizzard ui one)".
 //
@@ -517,7 +568,10 @@ public:
     void OnPlayerLogout(Player* player) override
     {
         if (player)
+        {
             g_questCooldown.erase(player->GetGUID().GetCounter());
+            g_diag.erase(player->GetGUID().GetCounter());
+        }
     }
 };
 
@@ -588,6 +642,21 @@ bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg)
         return true;
     }
     return false;
+}
+
+// Called from the instrumented paths across the module. Deliberately takes a
+// plain literal rather than a formatted string: this runs on hot paths, and a
+// counter name that needs building is a counter name not worth having.
+void LivingGear_DiagBump(Player* player, char const* key)
+{
+    if (!player || !key)
+        return;
+    ++LivingGearSupport::g_diag[player->GetGUID().GetCounter()][key];
+}
+
+void LivingGear_ShowDiagnostics(Player* player)
+{
+    LivingGearSupport::ShowDiagnostics(player);
 }
 
 void AddSC_LivingGearSupport()

@@ -37,6 +37,10 @@ class Player;
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 
+// File scope on purpose: inside the namespace this mangles as
+// LivingGearProgression::LivingGear_DiagBump and fails to link.
+void LivingGear_DiagBump(Player* player, char const* key); // LivingGear_Support.cpp
+
 namespace LivingGearProgression
 {
 // ---------------------------------------------------------------------
@@ -542,6 +546,7 @@ public:
                 player->GetName(), skill->SkillLine);
             return;
         }
+        LivingGear_DiagBump(player, "trade.skillup");
         CheckTradeMilestones(player);
         float const mult = TradePerkMultiplier(player);
         uint32 const before = gain;

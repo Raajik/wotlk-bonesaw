@@ -55,6 +55,7 @@ bool LivingGear_HandlePerksCommand(Player* player, std::string const& msg); // L
 bool LivingGear_HandleClassPerksCommand(Player* player, std::string const& msg); // LivingGear_ClassPerks.cpp
 bool LivingGear_HandleNextCommand(Player* player, std::string const& msg); // LivingGear_Next.cpp
 bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg); // LivingGear_Support.cpp
+void LivingGear_ShowDiagnostics(Player* player); // LivingGear_Support.cpp
 
 // Login-time state pushes, reused to answer a client REQ. See SendAddonSync.
 void LivingGear_SendPerksSync(Player* player); // LivingGear_Perks.cpp
@@ -1424,12 +1425,27 @@ public:
             { "givexp", HandleGiveXp, rbac::RBAC_PERM_COMMAND_GM, Console::No },
             { "attune", HandleAttune, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
             { "reset",  HandleReset,  rbac::RBAC_PERM_COMMAND_GM, Console::No },
+            { "diag",   HandleDiag,   rbac::RBAC_PERM_COMMAND_HELP, Console::No },
         };
         static ChatCommandTable commandTable =
         {
             { "lg", lgTable }
         };
         return commandTable;
+    }
+
+    // Answers "did this code actually run for me", which is the one question
+    // reading the source cannot answer and the one that three consecutive bug
+    // reports turned on. Deliberately available to players, not GM-only: the
+    // person who can reproduce the bug is the person who should be able to
+    // read the counters.
+    static bool HandleDiag(ChatHandler* handler)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+        ::LivingGear_ShowDiagnostics(player);
+        return true;
     }
 
     static bool HandleStatus(ChatHandler* handler)
