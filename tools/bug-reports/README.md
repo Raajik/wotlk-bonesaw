@@ -28,6 +28,15 @@ python tools/bug-reports/bug_digest.py --test     # post a test message only
 
 ### The scheduled task
 
+The task calls `run_digest_hidden.vbs`, not `run_digest.cmd` directly. That
+shim exists purely to launch the batch file with window style 0 -- calling the
+`.cmd` straight from the task threw a console window into the foreground every
+fifteen minutes, on top of whatever was on screen. The task has to stay
+"Interactive only" (the digest reaches the database through `docker exec`, so
+it cannot work when nobody is logged on), and an interactive task showing a
+console is Windows behaving as designed. The shim is the fix; do not repoint
+the task back at the `.cmd`.
+
 A Windows scheduled task named **`Bonesaw Bug Digest`** runs
 `run_digest.cmd` every 15 minutes. That wrapper exists so the task has one
 stable thing to call and so every run is logged to `bug_digest.log` beside
