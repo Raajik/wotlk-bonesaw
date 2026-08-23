@@ -5396,7 +5396,14 @@ local function BuildQuestCompleteBtn()
     --
     -- Strata and level are raised for the same reason: a reskin that draws a
     -- backdrop over the region should still not end up on top of the button.
-    questCompleteBtn:SetPoint("TOP", QuestLogFrame, "BOTTOM", 0, 78)
+    --
+    -- 2026-08-23: the offset was +78, which is UP from the bottom edge -- so
+    -- despite the paragraph above, the button was sitting back inside the
+    -- window, over the quest list. On ElvUI that lands squarely in the middle
+    -- of the entries (screenshot: overlapping "Shadowsward Fragments"). A
+    -- positive Y here means "above the anchor", so anything that is supposed
+    -- to hang BELOW the frame has to be zero or negative.
+    questCompleteBtn:SetPoint("TOP", QuestLogFrame, "BOTTOM", 0, -2)
     questCompleteBtn:SetFrameStrata("HIGH")
     questCompleteBtn:SetFrameLevel((QuestLogFrame:GetFrameLevel() or 0) + 10)
     questCompleteBtn:SetToplevel(true)

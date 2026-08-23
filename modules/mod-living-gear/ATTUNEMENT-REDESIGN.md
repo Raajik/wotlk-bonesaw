@@ -254,7 +254,7 @@ individual item up a curve.
 | Salty | Fishing title; absurd, beloved, entirely doable |
 | The Insane | The signature "you did WHAT" achievement |
 | Collect 100 mounts | Broad, slow, touches everything |
-| Loremaster | The largest quest grind in the game |
+| Loremaster | The largest quest grind in the game, and safe to demand here: the Complete Quest button means a bugged quest can never brick it |
 | Glory of the Raider, any tier | Skill rather than time, unlike most of this list |
 
 Twenty-two milestones at +5% reaches 115%, so the 100% ceiling means the last
