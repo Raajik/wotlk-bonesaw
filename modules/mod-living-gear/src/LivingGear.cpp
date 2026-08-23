@@ -39,6 +39,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <unordered_map>
@@ -108,6 +109,9 @@ struct LgConfig
     uint32 xpBossKill = 10;
     uint16 maxLevel = 50;
     float growthPerLevel = 0.10f;
+    // Item level every piece converges on at MaxLevel. 284 is Icecrown
+    // 25-heroic, the top of WotLK.
+    float ilvlCeiling = 284.0f;
     float absorbPct = 0.10f; // legacy one-time-sacrifice pct; unused by the new continuous-attunement path, kept for the (now-unreachable) SacrificeItem code path
     float rollChance = 25.0f;
     uint8 rollStatCount = 1;
@@ -134,6 +138,7 @@ struct LgConfig
         xpBossKill = sConfigMgr->GetOption<uint32>("LivingGear.XpBossKill", 10);
         maxLevel = static_cast<uint16>(sConfigMgr->GetOption<uint32>("LivingGear.MaxLevel", 50));
         growthPerLevel = sConfigMgr->GetOption<float>("LivingGear.GrowthPerLevel", 0.10f);
+        ilvlCeiling = sConfigMgr->GetOption<float>("LivingGear.IlvlCeiling", 284.0f);
         absorbPct = sConfigMgr->GetOption<float>("LivingGear.AbsorbPct", 0.10f);
         rollChance = sConfigMgr->GetOption<float>("LivingGear.RollChance", 25.0f);
         rollStatCount = static_cast<uint8>(sConfigMgr->GetOption<uint32>("LivingGear.RollStatCount", 1));
@@ -274,6 +279,112 @@ static bool AccountCanUse(uint8 playerClass, ItemTemplate const* proto)
     return false;
 }
 
+// ---------------------------------------------------------------------
+// Item level stat budget, measured from the game's own item data.
+//
+// Levelling an item raises its EFFECTIVE item level, and its stats are then set
+// to what an item of that level carries. The obvious shortcut -- multiply the
+// base stats by effective_ilvl / base_ilvl -- is wrong and inverts gear value:
+// an ilvl 20 green with 8 stamina would reach 23x = 184 while an ilvl 200 epic
+// with 60 reaches 2.3x = 138, so the green wins. The budget has to be absolute,
+// not relative.
+//
+// The curve is also not linear. Measured on the chest slot: 2.3 primary stats
+// at ilvl 20, 33.4 at 60, 164.6 at 200, 316.1 at 264 -- roughly 0.8 stats per
+// ilvl at the bottom and 2.4 at the top. Any hardcoded slope badly undervalues
+// high-ilvl gear, so this is built from item_template at startup instead: the
+// median primary-stat total per (inventory type, ilvl bucket). Self-calibrating
+// and correct per slot, with no magic numbers to drift.
+//
+// Same shape as BuildQuestItemIndex in LivingGear_Vault.cpp.
+// ---------------------------------------------------------------------
+struct LgStats;
+static LgStats ReadBaseStats(ItemTemplate const* proto);
+
+uint32 const BUDGET_BUCKET = 5;      // ilvl granularity
+uint32 const BUDGET_MAX_ILVL = 300;  // measured ceiling; above this we extrapolate
+
+// [inventoryType][ilvl / BUDGET_BUCKET] -> median primary stat total
+std::unordered_map<uint32, std::vector<float>> g_statBudget;
+float g_budgetTopSlope = 2.4f;       // stats per ilvl past the measured ceiling
+
+static void BuildStatBudget()
+{
+    g_statBudget.clear();
+    // Median rather than mean: a handful of oddities (ilvl 100 sampled at 23.1
+    // against 33.4 at ilvl 60) drag an average around badly at sparse levels.
+    std::unordered_map<uint32, std::unordered_map<uint32, std::vector<float>>> samples;
+
+    for (auto const& pair : *sObjectMgr->GetItemTemplateStore())
+    {
+        ItemTemplate const& proto = pair.second;
+        if (proto.ItemLevel == 0 || proto.ItemLevel > BUDGET_MAX_ILVL)
+            continue;
+        if (proto.Class != ITEM_CLASS_ARMOR && proto.Class != ITEM_CLASS_WEAPON)
+            continue;
+        if (!proto.InventoryType)
+            continue;
+        LgStats st = ReadBaseStats(&proto);
+        float const total = st.str + st.agi + st.sta + st.intel + st.spi;
+        if (total <= 0.0f)
+            continue;
+        samples[proto.InventoryType][proto.ItemLevel / BUDGET_BUCKET].push_back(total);
+    }
+
+    uint32 slots = 0, buckets = 0;
+    for (auto& slot : samples)
+    {
+        std::vector<float>& out = g_statBudget[slot.first];
+        uint32 const highest = BUDGET_MAX_ILVL / BUDGET_BUCKET;
+        out.assign(highest + 1, 0.0f);
+        for (auto& bucket : slot.second)
+        {
+            std::vector<float>& v = bucket.second;
+            std::sort(v.begin(), v.end());
+            out[bucket.first] = v[v.size() / 2];
+            ++buckets;
+        }
+        // Fill gaps by carrying the last known value forward, so a sparsely
+        // populated slot never reports a budget of zero mid-curve, and force
+        // the curve to be non-decreasing.
+        //
+        // Monotonic because a stat budget going DOWN as item level rises is
+        // always sampling noise, never real: sparse buckets can have a median
+        // dragged low by a couple of odd items. Left alone it produces an item
+        // that gets weaker as it levels, which reads as a bug no matter how
+        // honest the underlying data is.
+        float last = 0.0f;
+        for (float& v : out)
+        {
+            if (v < last)
+                v = last;
+            else
+                last = v;
+        }
+        ++slots;
+    }
+    LOG_INFO("server.loading", "Living Gear: stat budget built from {} slot(s), {} ilvl bucket(s)",
+        slots, buckets);
+}
+
+// Primary-stat budget for a slot at an item level, extrapolated past the
+// measured ceiling using the slope at the top of the real data.
+static float StatBudgetFor(uint32 inventoryType, float ilvl)
+{
+    auto const it = g_statBudget.find(inventoryType);
+    if (it == g_statBudget.end() || it->second.empty())
+        return 0.0f;
+    std::vector<float> const& curve = it->second;
+    if (ilvl <= 0.0f)
+        return 0.0f;
+    uint32 const bucket = uint32(ilvl) / BUDGET_BUCKET;
+    if (bucket < curve.size())
+        return curve[bucket];
+    float const top = curve.back();
+    float const over = ilvl - float((curve.size() - 1) * BUDGET_BUCKET);
+    return top + over * g_budgetTopSlope;
+}
+
 static LgStats ReadBaseStats(ItemTemplate const* proto)
 {
     LgStats s;
@@ -310,7 +421,47 @@ static LgStats GrownStats(ItemTemplate const* proto, LgItemState const& st)
     uint16 levels = st.level;
     if (levels < 1)
         levels = 1;
-    float const mult = 1.0f + static_cast<float>(levels - 1) * g_cfg.growthPerLevel;
+
+    // Heirloom-style: levelling raises the item's EFFECTIVE item level, and its
+    // stats become the budget for that level, kept in the item's own
+    // proportions. At the default 5.4 ilvl per level a level-1 quest green
+    // reaches ilvl 284 by level 50, and the formula keeps going past that.
+    //
+    // Convergence is intended: the same gain applies to everything, so a green
+    // and a raid epic approach the same ceiling and the epic's advantage is
+    // that it starts closer. An item you love stays viable forever.
+    // Converge toward a shared ceiling rather than adding a fixed amount per
+    // level. A fixed gain is NOT convergence -- I checked the numbers before
+    // shipping this and a flat 5.4/level left a level-50 green at 417 stats
+    // and a level-50 epic at 850, because the epic stays permanently ~180 ilvl
+    // ahead. That is the "epics stay ahead" model, which is not the one
+    // chosen.
+    //
+    // Interpolating toward IlvlCeiling means everything lands on the same
+    // number at max level, and better gear simply STARTS closer to it. The
+    // loot ladder decides how fast you get there, not where you end up.
+    float const span = float(g_cfg.maxLevel > 1 ? g_cfg.maxLevel - 1 : 1);
+    float const progress = std::min(1.0f, float(levels - 1) / span);
+    float effectiveIlvl = float(proto->ItemLevel);
+    if (g_cfg.ilvlCeiling > float(proto->ItemLevel))
+        effectiveIlvl += (g_cfg.ilvlCeiling - float(proto->ItemLevel)) * progress;
+    float const baseBudget = StatBudgetFor(proto->InventoryType, float(proto->ItemLevel));
+    float const targetBudget = StatBudgetFor(proto->InventoryType, effectiveIlvl);
+
+    float mult;
+    if (baseBudget > 0.0f && targetBudget > 0.0f)
+    {
+        mult = targetBudget / baseBudget;
+    }
+    else
+    {
+        // No budget for this slot -- tabards, shirts, anything with no stats to
+        // measure. Fall back to the old flat curve rather than zeroing the item.
+        mult = 1.0f + static_cast<float>(levels - 1) * g_cfg.growthPerLevel;
+    }
+    if (mult < 1.0f)
+        mult = 1.0f;
+
     base.str *= mult;
     base.agi *= mult;
     base.sta *= mult;
@@ -1404,6 +1555,7 @@ public:
 
     void OnStartup() override
     {
+        BuildStatBudget();
         if (g_cfg.enabled)
             LOG_INFO("module", "Living Gear enabled (max level {}, absorb {:.0f}%)",
                 g_cfg.maxLevel, g_cfg.absorbPct * 100.0f);

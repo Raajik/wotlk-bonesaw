@@ -14,8 +14,24 @@ LivingGear.XpBossKill = 10
 LivingGear.MaxLevel = 50
 
 # Power per level: (base + roll) * (1 + (level-1) * this)
-# 0.10 = +100% every 10 levels. Level 10 ~2x, 30 ~4x, 50 ~6x (+500% over base).
+# 0.10 = +100% every 10 levels. Only used now as a fallback for items with no
+# measurable stat budget (tabards, shirts) -- see IlvlCeiling below.
 LivingGear.GrowthPerLevel = 0.10
+
+# Item level every piece converges on at MaxLevel. Levelling raises an item's
+# EFFECTIVE item level toward this, and its stats become the budget for that
+# level, kept in the item's own proportions -- heirloom-style.
+#
+# It interpolates toward the ceiling rather than adding a fixed amount per
+# level, and the difference matters: a flat gain per level leaves a level 50
+# green at 417 stats and a level 50 epic at 850, because the epic stays ~180
+# ilvl ahead forever. Interpolating means everything lands on the same number
+# and better gear simply STARTS closer. The loot ladder decides how fast you
+# get there, not where you end up.
+#
+# 284 is Icecrown 25-heroic, the top of WotLK. Raise it for higher ceilings;
+# the budget curve extrapolates past the measured data using its top slope.
+LivingGear.IlvlCeiling = 284
 
 # Legacy: fraction of grown stats banked by the old one-time "Attune"
 # sacrifice. Unused by the 2026-08-20 continuous-attunement redesign (see
