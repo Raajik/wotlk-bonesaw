@@ -5337,6 +5337,9 @@ end
 -- ---------------------------------------------------------------------
 local questCompleteBtn
 local questCompleteReadyAt = 0
+-- Copper the server will charge to skip the remaining wait, pushed alongside
+-- the cooldown so the two can never disagree.
+local questCompleteCost = 0
 
 local function SelectedQuestId()
     local index = GetQuestLogSelection()
@@ -5357,6 +5360,16 @@ local function UpdateQuestCompleteBtn()
     end
     local left = questCompleteReadyAt - GetTime()
     if left > 0 then
+        -- On cooldown the button becomes the buyout instead of going dead.
+        -- The server sends the current price with the cooldown, so the label
+        -- never has to model the escalation curve itself -- and it cannot
+        -- disagree with what will actually be charged.
+        if questCompleteCost and questCompleteCost > 0 and SelectedQuestId() then
+            questCompleteBtn:Enable()
+            questCompleteBtn:SetText(string.format("Skip Wait (%dg)",
+                math.floor(questCompleteCost / 10000)))
+            return
+        end
         questCompleteBtn:Disable()
         questCompleteBtn:SetText(string.format("Complete (%d:%02d)",
             math.floor(left / 60), math.floor(left % 60)))
@@ -5371,8 +5384,9 @@ local function UpdateQuestCompleteBtn()
     end
 end
 
-function LG2.SetQuestCompleteCooldown(seconds)
+function LG2.SetQuestCompleteCooldown(seconds, cost)
     seconds = tonumber(seconds) or 0
+    questCompleteCost = tonumber(cost) or 0
     questCompleteReadyAt = seconds > 0 and (GetTime() + seconds) or 0
     UpdateQuestCompleteBtn()
 end
@@ -5414,7 +5428,14 @@ local function BuildQuestCompleteBtn()
             DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Quest]|r Select a quest in the log first.")
             return
         end
-        SendLine("QDONE|" .. id)
+        if questCompleteReadyAt - GetTime() > 0 then
+            -- Paying is always a second, explicit press: the button has
+            -- already relabelled itself with the price, so this click is the
+            -- player accepting it rather than being surprised by a charge.
+            SendLine("QDONEBUY|" .. id)
+        else
+            SendLine("QDONE|" .. id)
+        end
     end)
     questCompleteBtn:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")

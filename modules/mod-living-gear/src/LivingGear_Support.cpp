@@ -71,6 +71,13 @@ uint32 const BUG_MIN_LENGTH = 5;
 // Quest Complete's cooldown. Persisted, so relogging does not reset it.
 uint32 const QUEST_COMPLETE_COOLDOWN = 600;
 
+// Gold buyout for the cooldown. Read from config in LivingGear_SupportConfig().
+// 50g base: enough that a levelling character notices, trivial to a rich one --
+// which is what the escalation is for.
+uint32 g_questBypassBase = 500000;      // copper
+float  g_questBypassMult = 2.0f;        // per buyout inside the window
+uint32 g_questBypassWindow = 3600;      // window length, seconds
+
 // Bug report #12: quest items always drop. Bug report #11: every kill is worth
 // something. Both are config-gated so they can be turned off without a rebuild.
 bool g_questDropAlways = true;
@@ -215,18 +222,92 @@ bool RecordBugReport(Player* player, std::string const& description)
 // Quest Complete
 // ---------------------------------------------------------------------
 
+// Keyed on the ACCOUNT, not the character.
+//
+// I argued for per-character on the grounds that this is a repair tool and an
+// account-wide cooldown just means fixing a quest on your main blocks your alt.
+// That was the wrong read, and the user's is better: it is not only a repair
+// tool, it is also "skip the escort quest I genuinely hate", and that half has
+// to be a scarce account resource or ten minutes stops meaning anything.
+// Rationing it per account is the point.
+uint32 QuestAccountOf(Player* player)
+{
+    return player && player->GetSession() ? player->GetSession()->GetAccountId() : 0;
+}
+
 uint32 LastQuestComplete(Player* player)
 {
-    uint32 const guid = player->GetGUID().GetCounter();
-    auto const cached = g_questCooldown.find(guid);
+    uint32 const acc = QuestAccountOf(player);
+    auto const cached = g_questCooldown.find(acc);
     if (cached != g_questCooldown.end())
         return cached->second;
     uint32 last = 0;
     if (QueryResult result = CharacterDatabase.Query(
-        "SELECT `last_used` FROM `lg_quest_complete` WHERE `guid` = {}", guid))
+        "SELECT `last_used` FROM `lg_quest_complete` WHERE `account_id` = {}", acc))
         last = (*result)[0].Get<uint32>();
-    g_questCooldown[guid] = last;
+    g_questCooldown[acc] = last;
     return last;
+}
+
+// What it costs to skip the rest of the wait.
+//
+// Requested as a "lazy man's gold sink", and a flat fee is not one -- it is
+// rounding error to anyone who has been playing a while, and gold is pooled
+// account-wide here. So the price escalates with every buyout inside a rolling
+// window and decays back to base once the player stops leaning on it. Without
+// that decay the price would ratchet upward forever and the feature would be
+// dead after one bad afternoon.
+//
+// It also scales with the time actually being skipped, which is the part that
+// makes it feel fair: buying out nine minutes should not cost the same as
+// buying out twenty seconds.
+uint32 QuestBypassCost(Player* player, uint32 secondsLeft)
+{
+    if (!secondsLeft)
+        return 0;
+    uint32 const acc = QuestAccountOf(player);
+    uint32 count = 0, windowStart = 0;
+    if (QueryResult r = CharacterDatabase.Query(
+        "SELECT `bypass_count`, `window_start` FROM `lg_quest_complete` WHERE `account_id` = {}", acc))
+    {
+        count = (*r)[0].Get<uint32>();
+        windowStart = (*r)[1].Get<uint32>();
+    }
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    if (!windowStart || now - windowStart >= g_questBypassWindow)
+        count = 0;      // window lapsed, price is back to base
+
+    double cost = double(g_questBypassBase);
+    cost *= double(secondsLeft) / double(QUEST_COMPLETE_COOLDOWN);
+    for (uint32 i = 0; i < count && i < 16; ++i)   // clamped: 2^16 is already absurd
+        cost *= g_questBypassMult;
+    if (cost < 1.0)
+        cost = 1.0;
+    if (cost > double(std::numeric_limits<uint32>::max()))
+        return std::numeric_limits<uint32>::max();
+    return uint32(cost);
+}
+
+void NoteQuestBypass(Player* player)
+{
+    uint32 const acc = QuestAccountOf(player);
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    uint32 count = 0, windowStart = 0;
+    if (QueryResult r = CharacterDatabase.Query(
+        "SELECT `bypass_count`, `window_start` FROM `lg_quest_complete` WHERE `account_id` = {}", acc))
+    {
+        count = (*r)[0].Get<uint32>();
+        windowStart = (*r)[1].Get<uint32>();
+    }
+    if (!windowStart || now - windowStart >= g_questBypassWindow)
+    {
+        count = 0;
+        windowStart = now;
+    }
+    CharacterDatabase.Execute(
+        "INSERT INTO `lg_quest_complete` (`account_id`, `last_used`, `bypass_count`, `window_start`) "
+        "VALUES ({}, 0, {}, {}) ON DUPLICATE KEY UPDATE `bypass_count` = {}, `window_start` = {}",
+        acc, count + 1, windowStart, count + 1, windowStart);
 }
 
 // Mirrors the GM ".quest complete" command (cs_quest.cpp) step for step:
@@ -323,16 +404,71 @@ bool ForceCompleteQuest(Player* player, uint32 questId)
 
     player->CompleteQuest(questId);
 
-    g_questCooldown[player->GetGUID().GetCounter()] = now;
+    g_questCooldown[QuestAccountOf(player)] = now;
     CharacterDatabase.Execute(
-        "REPLACE INTO `lg_quest_complete` (`guid`, `last_used`) VALUES ({}, {})",
-        player->GetGUID().GetCounter(), now);
+        "INSERT INTO `lg_quest_complete` (`account_id`, `last_used`) VALUES ({}, {}) "
+        "ON DUPLICATE KEY UPDATE `last_used` = {}",
+        QuestAccountOf(player), now, now);
 
     handler.PSendSysMessage("|cff66ccff[Quest]|r Completed that quest. Turn it in as normal.");
     LOG_INFO("module.livinggear", "Quest Complete used by {} on quest {}", player->GetName(), questId);
 
     SendLine(player, Acore::StringFormat("QDONECD|{}", QUEST_COMPLETE_COOLDOWN));
     return true;
+}
+
+// Pay gold to skip the rest of the cooldown, then complete the quest.
+//
+// The money is taken BEFORE the completion is attempted and refunded if that
+// attempt fails, rather than the other way round -- ForceCompleteQuest has a
+// dozen reasons to refuse (quest not in the log, already complete, and so on)
+// and charging for a no-op would be the worst possible bug in a feature whose
+// entire job is taking gold.
+void BuyOutQuestCooldown(Player* player, uint32 questId)
+{
+    if (!player || !player->GetSession())
+        return;
+    ChatHandler handler(player->GetSession());
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    uint32 const last = LastQuestComplete(player);
+    uint32 const left = (last && now - last < QUEST_COMPLETE_COOLDOWN)
+        ? QUEST_COMPLETE_COOLDOWN - (now - last) : 0;
+    if (!left)
+    {
+        handler.SendSysMessage("|cff66ccff[Quest]|r Complete Quest is already off cooldown -- no need to pay.");
+        return;
+    }
+
+    uint32 const cost = QuestBypassCost(player, left);
+    if (player->GetMoney() < cost)
+    {
+        handler.PSendSysMessage("|cff66ccff[Quest]|r Skipping the remaining {}m {}s costs {}g {}s. You do not have it.",
+            left / 60, left % 60, cost / 10000, (cost % 10000) / 100);
+        return;
+    }
+
+    player->ModifyMoney(-int32(cost));
+    // Clear the cooldown so ForceCompleteQuest's own check passes, then let it
+    // set a fresh one on success exactly as a normal use would.
+    g_questCooldown[QuestAccountOf(player)] = 0;
+    CharacterDatabase.Execute(
+        "INSERT INTO `lg_quest_complete` (`account_id`, `last_used`) VALUES ({}, 0) "
+        "ON DUPLICATE KEY UPDATE `last_used` = 0", QuestAccountOf(player));
+
+    if (!ForceCompleteQuest(player, questId))
+    {
+        player->ModifyMoney(int32(cost));      // refund; it told the player why
+        g_questCooldown[QuestAccountOf(player)] = last;
+        CharacterDatabase.Execute(
+            "INSERT INTO `lg_quest_complete` (`account_id`, `last_used`) VALUES ({}, {}) "
+            "ON DUPLICATE KEY UPDATE `last_used` = {}", QuestAccountOf(player), last, last);
+        return;
+    }
+
+    NoteQuestBypass(player);
+    handler.PSendSysMessage("|cff66ccff[Quest]|r Paid {}g to skip the wait.", cost / 10000);
+    LOG_INFO("module.livinggear", "Quest Complete cooldown bought out by {} for {} copper (quest {})",
+        player->GetName(), cost, questId);
 }
 
 // Pushed at login and on request so the quest log button starts out showing
@@ -345,7 +481,9 @@ void SendQuestCompleteState(Player* player)
     uint32 const last = LastQuestComplete(player);
     uint32 const left = (last && now - last < QUEST_COMPLETE_COOLDOWN)
         ? QUEST_COMPLETE_COOLDOWN - (now - last) : 0;
-    SendLine(player, Acore::StringFormat("QDONECD|{}", left));
+    // Second field is what a buyout would cost right now, so the client can
+    // label the button without having to model the price curve itself.
+    SendLine(player, Acore::StringFormat("QDONECD|{}|{}", left, QuestBypassCost(player, left)));
 }
 
 // ---------------------------------------------------------------------
@@ -639,6 +777,13 @@ bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg)
         LivingGearSupport::SendQuestCompleteState(player);
         return true;
     }
+    if (msg.rfind("QDONEBUY|", 0) == 0)
+    {
+        uint32 questId = 0;
+        if (sscanf(msg.c_str(), "QDONEBUY|%u", &questId) == 1 && questId)
+            LivingGearSupport::BuyOutQuestCooldown(player, questId);
+        return true;
+    }
     if (msg == "WGJOIN")
     {
         LivingGearSupport::JoinWintergrasp(player);
@@ -691,6 +836,12 @@ void AddSC_LivingGearSupport()
 {
     LivingGearSupport::g_questDropAlways =
         sConfigMgr->GetOption<bool>("LivingGear.QuestDropAlways", true);
+    LivingGearSupport::g_questBypassBase =
+        sConfigMgr->GetOption<uint32>("LivingGear.QuestBypass.BaseCost", 500000);
+    LivingGearSupport::g_questBypassMult =
+        sConfigMgr->GetOption<float>("LivingGear.QuestBypass.Multiplier", 2.0f);
+    LivingGearSupport::g_questBypassWindow =
+        sConfigMgr->GetOption<uint32>("LivingGear.QuestBypass.WindowSeconds", 3600);
     LivingGearSupport::g_killXpFloorEnabled =
         sConfigMgr->GetOption<bool>("LivingGear.KillXpFloor.Enable", true);
     LivingGearSupport::g_killXpFloorPct =

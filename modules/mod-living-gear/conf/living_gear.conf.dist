@@ -109,6 +109,20 @@ LivingGear.IgnoreSpellRequirements = 1
 # nothing. Bounded to the 15 castable perks it is at most 15, once.
 LivingGear.ReconcilePerkSpells = 1
 
+# Paying gold to skip the Complete Quest cooldown -- a deliberate gold sink.
+#
+# Cost = BaseCost * (seconds left / 600) * Multiplier ^ (buyouts this window).
+# It scales with the time actually being skipped, so buying out nine minutes
+# costs more than buying out twenty seconds, and it escalates with repeated
+# use so it stays meaningful to a rich account. WindowSeconds is how long
+# before the price decays back to base -- without it the price would ratchet
+# upward forever and the feature would be dead after one bad afternoon.
+#
+# BaseCost is copper. 500000 = 50 gold.
+LivingGear.QuestBypass.BaseCost = 500000
+LivingGear.QuestBypass.Multiplier = 2.0
+LivingGear.QuestBypass.WindowSeconds = 3600
+
 # Kill XP floor (bug report #11). Every kill is worth at least this percentage
 # of the current level's XP bar, so trash far below you still pays something.
 # Zone scaling still governs anything worth more than the floor. Quest XP has
