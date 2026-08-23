@@ -2972,6 +2972,49 @@ function LG2.BuildArmoryPanel(f)
     armClose:SetScript("OnClick", function()
         arm:Hide()
     end)
+
+    -- Attune All lives on the Armory's first page because it is the action
+    -- players will use most, and attunement is now deliberate: it consumes the
+    -- items, so there is no automatic path any more.
+    --
+    -- Two presses, never one. The first asks, the second does it. This
+    -- destroys gear -- a single mis-click on a button that eats your bags
+    -- would be indefensible, and no amount of tooltip makes that acceptable.
+    local attuneAll = CreateFrame("Button", nil, arm)
+    attuneAll:SetSize(96, 18)
+    attuneAll:SetPoint("TOPRIGHT", armClose, "TOPLEFT", -6, 0)
+    StyleBtn(attuneAll, 0.14, 0.24, 0.14)
+    attuneAll.label = Font(attuneAll, 10, 0.85, 0.95, 0.85)
+    attuneAll.label:SetPoint("CENTER", 0, 0)
+    attuneAll.label:SetJustifyH("CENTER")
+    attuneAll.label:SetText("Attune All")
+    attuneAll._armed = 0
+    attuneAll:SetScript("OnClick", function(self)
+        if GetTime() - (self._armed or 0) < 6 then
+            self._armed = 0
+            self.label:SetText("Attune All")
+            SendLine("ATTUNEALL")
+            return
+        end
+        self._armed = GetTime()
+        self.label:SetText("Sure?")
+    end)
+    attuneAll:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("Attune All")
+        GameTooltip:AddLine("Consumes every attunable item in your bags and banks a permanent share of its stats to your account.", 1, 1, 1, true)
+        GameTooltip:AddLine("Each item counts once. Duplicates and anything already attuned are left alone.", 0.7, 0.7, 0.7, true)
+        GameTooltip:AddLine("Equipped gear is never touched.", 0.6, 0.9, 0.6, true)
+        GameTooltip:Show()
+    end)
+    attuneAll:SetScript("OnLeave", function(self)
+        GameTooltip:Hide()
+        if GetTime() - (self._armed or 0) >= 6 then
+            self._armed = 0
+            self.label:SetText("Attune All")
+        end
+    end)
+    ui.attuneAllBtn = attuneAll
     ui.armTypeBtns = {}
     local typeX = 10
     for i = 1, #ARM_TYPES do

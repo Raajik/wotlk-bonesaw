@@ -528,6 +528,57 @@ static float AbsorbPctForLevel(uint16 level)
 // AbsorbPctForLevel) into the account's lg_absorb ratchet for that entry.
 // Never destroys anything -- called automatically on every level-up (see
 // AddItemXpAndBank) rather than as a manual one-time sacrifice.
+// Rate per attuned item, as a percentage of that item's stats.
+//
+// Base 5, plus 5 for every milestone the account has earned, capped at 100.
+// The milestones are the accelerator: each one raises the rate on everything
+// ALREADY banked, so clearing content retroactively multiplies the whole
+// collection. That is the snowball, and it is why milestone pacing rather than
+// the base 5 is the tuning dial.
+uint32 AttuneRateFor(uint32 accountId)
+{
+    uint32 rate = 5;
+    if (QueryResult r = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM `lg_attune_milestone` WHERE `account_id` = {}", accountId))
+        rate += uint32((*r)[0].Get<uint64>()) * 5;
+    return rate > 100 ? 100 : rate;
+}
+
+// Attune one item entry for an account. Returns false if the account already
+// has it -- each unique item credits exactly once, which is the whole point:
+// nothing is ever unfinishable and there is no farming treadmill.
+bool AttuneItemEntry(Player* player, uint32 itemEntry)
+{
+    if (!player || !player->GetSession())
+        return false;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
+    if (!proto)
+        return false;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+
+    if (QueryResult prev = CharacterDatabase.Query(
+        "SELECT 1 FROM `lg_absorb` WHERE `account_id` = {} AND `item_entry` = {}",
+        accountId, itemEntry))
+        return false;
+
+    // Full stats are stored; the account receives stats * attune_pct / 100 at
+    // apply time. Storing the full value means a milestone raising the rate is
+    // one global change rather than a rewrite of every row.
+    LgStats full = ReadBaseStats(proto);
+    if (full.Total() <= 0.0f)
+        return false;
+
+    CharacterDatabase.DirectExecute(
+        "REPLACE INTO `lg_absorb` (`account_id`, `item_entry`, `str`, `agi`, `sta`, "
+        "`intel`, `spi`, `armor`, `item_level`, `attune_pct`) "
+        "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        accountId, itemEntry, full.str, full.agi, full.sta, full.intel, full.spi,
+        full.armor, proto->ItemLevel, AttuneRateFor(accountId));
+
+    ::LivingGear_SendAddonLine(player, Acore::StringFormat("ATT|{}", itemEntry));
+    return true;
+}
+
 static void BankAttunement(Player* player, uint32 itemEntry, LgItemState const& st)
 {
     if (!player || !player->GetSession())
@@ -594,7 +645,11 @@ static bool AddItemXpAndBank(Player* player, uint32 itemLevel, uint32 xp, LgItem
         st.xp -= XpForNextLevel(st.level, itemLevel);
         ++st.level;
         leveled = true;
-        BankAttunement(player, st.itemEntry, st);
+        // Levelling no longer banks attunement. Item level WAS the attunement
+        // clock, which is why "wear it or file it" had no clean answer -- one
+        // action did both jobs. Levelling now only makes the worn piece
+        // stronger; attunement is earned by spending items. See
+        // ATTUNEMENT-REDESIGN.md.
     }
     return leveled;
 }
@@ -742,7 +797,7 @@ static LgStats LoadAbsorbForPlayer(Player* player)
     uint8 const level = player->GetLevel();
 
     QueryResult result = CharacterDatabase.Query(
-        "SELECT `item_entry`, `str`, `agi`, `sta`, `intel`, `spi`, `armor` "
+        "SELECT `item_entry`, `str`, `agi`, `sta`, `intel`, `spi`, `armor`, `attune_pct` "
         "FROM `lg_absorb` WHERE `account_id` = {}", accountId);
     if (!result)
         return total;
@@ -757,6 +812,11 @@ static LgStats LoadAbsorbForPlayer(Player* player)
         if (proto && proto->RequiredLevel > level)
             continue;
 
+        // Stored values are the item's FULL stats; the account receives the
+        // attuned percentage of them. Keeping the full value in the row is what
+        // lets a milestone raise the rate on everything already banked with a
+        // single UPDATE instead of a twenty-thousand-row rewrite.
+        float const pct = float(f[7].Get<uint16>()) / 100.0f;
         LgStats row;
         row.str = f[1].Get<float>();
         row.agi = f[2].Get<float>();
@@ -764,6 +824,12 @@ static LgStats LoadAbsorbForPlayer(Player* player)
         row.intel = f[4].Get<float>();
         row.spi = f[5].Get<float>();
         row.armor = f[6].Get<float>();
+        row.str *= pct;
+        row.agi *= pct;
+        row.sta *= pct;
+        row.intel *= pct;
+        row.spi *= pct;
+        row.armor *= pct;
         total += row;
     } while (result->NextRow());
 
@@ -1237,6 +1303,58 @@ static bool HandleAttuneMessage(Player* player, std::string const& raw)
     std::string msg = raw;
     if (msg.rfind("LG\t", 0) == 0)
         msg = msg.substr(3);
+    // Bulk attune: spend every eligible item in the bags for a permanent
+    // account slice each.
+    //
+    // Deliberate rather than automatic. Attuning CONSUMES the item, and
+    // auto-attuning what you loot would destroy gear before the player had
+    // decided whether to wear it -- strictly worse than the armory round-trip
+    // it was meant to save. Equipped gear is never touched: you cannot lose
+    // what you are wearing to a mis-click.
+    if (msg == "ATTUNEALL")
+    {
+        ChatHandler h(player->GetSession());
+        uint32 attuned = 0, skipped = 0;
+        // Collect first -- DestroyItem inside a bag walk invalidates it.
+        std::vector<ObjectGuid> spend;
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (Item* it = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                spend.push_back(it->GetGUID());
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            if (Bag* container = player->GetBagByPos(bag))
+                for (uint32 i = 0; i < container->GetBagSize(); ++i)
+                    if (Item* it = container->GetItemByPos(uint8(i)))
+                        spend.push_back(it->GetGUID());
+
+        for (ObjectGuid guid : spend)
+        {
+            Item* it = player->GetItemByGuid(guid);
+            if (!it)
+                continue;
+            ItemTemplate const* proto = it->GetTemplate();
+            if (!proto || !IsEligible(proto))
+                continue;
+            if (AttuneItemEntry(player, proto->ItemId))
+            {
+                player->DestroyItem(it->GetBagSlot(), it->GetSlot(), true);
+                ++attuned;
+            }
+            else
+                ++skipped;      // account already has this entry
+        }
+
+        if (attuned)
+        {
+            RefreshStats(player, true);
+            h.PSendSysMessage("|cff66ccff[Attune]|r Attuned {} item(s). {} already known.",
+                attuned, skipped);
+        }
+        else
+            h.PSendSysMessage("|cff66ccff[Attune]|r Nothing new to attune ({} already known).",
+                skipped);
+        return true;
+    }
+
     if (msg.rfind("ATTUNE|", 0) != 0)
         return false;
 
@@ -1295,7 +1413,21 @@ static bool HandleAttuneMessage(Player* player, std::string const& raw)
 // to send the loot notification. Crashed the server (SIGSEGV in
 // Player::SendNewItem -> Item::GetCount, 2026-08-20). Only the read-only
 // eligibility/toggle checks run synchronously here.
-static void TryAutoAttune(Player* player, Item* item)
+// RETIRED 2026-08-23. Attuning consumes the item now, and auto-attuning what
+// you loot would destroy gear before the player had decided whether to wear
+// it -- strictly worse than the armory round-trip it was invented to avoid.
+// Attuning is a deliberate act: the Armory's Attune All button, or nothing.
+//
+// Left as an early return rather than deleted so the hook, the account
+// columns and the client's toggle all keep working harmlessly until they are
+// removed in their own change. Deleting it here would mean touching six files
+// in a commit that is already large.
+static void TryAutoAttune(Player* /*player*/, Item* /*item*/)
+{
+    return;
+}
+
+static void TryAutoAttuneRetired(Player* player, Item* item)
 {
     if (!g_cfg.enabled || !player || !item || !player->GetSession())
         return;
