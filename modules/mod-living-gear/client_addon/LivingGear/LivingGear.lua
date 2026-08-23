@@ -371,9 +371,9 @@ local ARM_LIST_X = 260
 
 local CLASS_PERKS = {
     MAGE = {
-        { id = 910032, name = "Arcane", how = "In combat, Mirror Images appear and chain-cast. They linger 60 sec after combat." },
-        { id = 910033, name = "Fire", how = "Fire spells apply Living Bomb. Spreads every 1 sec." },
-        { id = 910034, name = "Frost", how = "Blizzard is instant, no cooldown, and lingers like Death and Decay. Ice Lance hits nearby enemies every 2 sec." },
+        { id = 910032, name = "Arcane", how = "Arcane Power is a free toggle with no cooldown. While it is up your Arcane damage is quadrupled. In combat, Mirror Images appear and chain-cast, and linger 60 sec after combat." },
+        { id = 910033, name = "Fire", how = "Fire spells apply Living Bomb, which spreads every 1 sec and deals +300% damage. Fire Blast detonates every Living Bomb within 15 yards at once, and each blast re-applies Living Bomb around it." },
+        { id = 910034, name = "Frost", how = "Blizzard is instant, no cooldown, and lingers like Death and Decay, damaging everything inside it every 1 sec. Frost damage quadrupled. Ice Lance hits nearby enemies every 2 sec." },
     },
     ROGUE = {
         { id = 910035, name = "Assassination", how = "Poisons deal +300% damage. DoTs spread within 10 yards." },

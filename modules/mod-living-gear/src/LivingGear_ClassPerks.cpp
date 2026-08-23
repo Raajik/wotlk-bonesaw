@@ -138,6 +138,16 @@ uint32 const SPELL_ICE_LANCE_R1 = 30455;
 uint32 const SPELL_ICE_LANCE_R2 = 42913;
 uint32 const SPELL_ICE_LANCE_R3 = 42914;
 uint32 const SPELL_BLIZZARD_RANKS[] = { 10, 6141, 8427, 10185, 10186, 10187, 27085, 42939, 42940 };
+uint32 const SPELL_FIRE_BLAST_R1 = 2136;
+uint32 const SPELL_ARCANE_POWER = 12042;
+// Living Bomb's explosion is a separate spell per rank. The aura effect
+// carries its own explosion id in GetAmount() (see spell_mage_living_bomb),
+// so nothing here has to map ranks by hand -- this list exists only so the
+// damage multiplier can recognise an explosion when it lands.
+uint32 const SPELL_LIVING_BOMB_BLASTS[] = { 44461, 55359, 55360, 55361, 55362 };
+// +300%, matching the Assassination poison and Fury bleed perks.
+uint32 const MAGE_DAMAGE_MULT = 4;
+uint32 const MAGE_BLIZZARD_TICK_MS = 1000;
 uint32 const SPELL_BLADESTORM = 46924;
 uint32 const SPELL_SHOCKWAVE = 46968;
 uint32 const SPELL_THUNDER_CLAP = 6343;
@@ -243,6 +253,7 @@ struct MageState
 {
     uint32 fireTickAcc = 0;
     uint32 frostTickAcc = 0;
+    uint32 blizzardTickAcc = 0;
 };
 
 struct WarriorFuryState
@@ -692,6 +703,54 @@ void SelectClassPerk(Player* player, uint32 spellId)
 // images up during combat and lets the aura run out naturally 60s after
 // combat ends.
 // -------------------------------------------------------------------------
+// Arcane's damage buff and its button.
+//
+// The old perk was "in combat, Mirror Images appear and chain-cast" -- one
+// more thing that happens on its own while the player watches. Arcane Power
+// is a free permanent toggle instead, the same shape as Arms' Bladestorm and
+// Feral's Berserk, both of which already work here: cast it and it stays,
+// recast to drop it. All Arcane damage is multiplied while the mage is the
+// one dealing it.
+void ApplyMageArcaneDamage(Unit* attacker, int32& damage, SpellInfo const* info)
+{
+    if (!attacker || damage <= 0 || !info)
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_MAGE_ARCANE)
+        return;
+    if (!(info->GetSchoolMask() & SPELL_SCHOOL_MASK_ARCANE))
+        return;
+    if (!player->HasAura(SPELL_ARCANE_POWER))
+        return;
+    damage *= int32(MAGE_DAMAGE_MULT);
+}
+
+void TryMageArcaneOnCast(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_MAGE_ARCANE)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || info->Id != SPELL_ARCANE_POWER)
+        return;
+    if (int32 const cost = spell->GetPowerCost())
+        player->ModifyPower(POWER_MANA, cost);
+    player->RemoveSpellCooldown(SPELL_ARCANE_POWER, true);
+    if (uint32 const cat = info->GetCategory())
+        player->RemoveCategoryCooldown(cat);
+}
+
+// Observed from the update loop rather than by touching the aura's lifetime
+// during its own application -- the same reason TickWarriorArmsBladestorm
+// works that way.
+void TickMageArcanePower(Player* player)
+{
+    if (!player || GetClassPerk(player) != SPELL_MAGE_ARCANE || !player->IsAlive())
+        return;
+    if (Aura* aura = player->GetAura(SPELL_ARCANE_POWER))
+        if (aura->GetDuration() >= 0 && aura->GetDuration() < 5000)
+            aura->SetDuration(aura->GetMaxDuration() > 0 ? aura->GetMaxDuration() : 15000);
+}
+
 void TickMageArcane(Player* player)
 {
     if (!player || GetClassPerk(player) != SPELL_MAGE_ARCANE || !player->IsAlive() || !player->IsInCombat())
@@ -762,6 +821,94 @@ void TryMageFireOnCast(Player* player, Spell* spell)
     if (!target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
         player->CastSpell(target, SPELL_LIVING_BOMB, true);
     ApplyMageCombustion(player);
+}
+
+// Is this Living Bomb, in any of its forms -- the DoT, or one of the five
+// per-rank explosions?
+bool IsLivingBombDamage(SpellInfo const* info)
+{
+    if (!info)
+        return false;
+    if (RankOf(info, SPELL_LIVING_BOMB))
+        return true;
+    for (uint32 id : SPELL_LIVING_BOMB_BLASTS)
+        if (info->Id == id)
+            return true;
+    return false;
+}
+
+// Fire's damage buff. Spreading Living Bomb to eight enemies was spreading
+// noise: base Living Bomb at 80 is small, and unlike Assassination (+300%
+// poisons), DK Frost (x2) or Priest Shadow (x4 Mind Flay), Fire carried a
+// multiplier of exactly one.
+void ApplyMageFireDamage(Unit* attacker, int32& damage, SpellInfo const* info)
+{
+    if (!attacker || damage <= 0 || !IsLivingBombDamage(info))
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_MAGE_FIRE)
+        return;
+    damage *= int32(MAGE_DAMAGE_MULT);
+}
+
+void ApplyMageFirePeriodic(Unit* attacker, uint32& damage, SpellInfo const* info)
+{
+    if (!attacker || !damage || !IsLivingBombDamage(info))
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_MAGE_FIRE)
+        return;
+    damage *= MAGE_DAMAGE_MULT;
+}
+
+// Fire Blast becomes a detonator.
+//
+// The spread on its own is entirely passive -- a 1 sec timer copying Living
+// Bomb onto everything nearby while the player does nothing. Compare
+// Subtlety, which hands the player a button with a dramatic payoff.
+// Detonating is that button, and it reuses one Fire already has.
+//
+// Every Living Bomb the player owns within range is expired on the spot,
+// which is what makes it explode (spell_mage_living_bomb only fires its
+// blast for AURA_REMOVE_BY_EXPIRE or _BY_ENEMY_SPELL), and each detonated
+// target re-seeds Living Bomb around itself -- so a big pull chain-reacts
+// outward instead of ticking politely.
+void TryMageFireDetonate(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_MAGE_FIRE)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_FIRE_BLAST_R1))
+        return;
+
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+
+    // Collect first. Removing the aura casts the explosion, which can reach
+    // straight back into this hook and into the hostile iterator.
+    std::vector<ObjectGuid> bombed;
+    ForEachHostileInRange(player, CLASS_PERK_RANGE, [player, &bombed](Unit* target)
+    {
+        if (target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
+            bombed.push_back(target->GetGUID());
+    });
+
+    for (ObjectGuid targetGuid : bombed)
+    {
+        Unit* target = ObjectAccessor::GetUnit(*player, targetGuid);
+        if (!target || !target->IsAlive())
+            continue;
+        target->RemoveAura(SPELL_LIVING_BOMB, player->GetGUID(), 0, AURA_REMOVE_BY_EXPIRE);
+        // Re-seed around the corpse-to-be so the reaction travels.
+        ForEachHostileNear(player, target, CLASS_PERK_RANGE, [player](Unit* next)
+        {
+            if (!next->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
+                player->CastSpell(next, SPELL_LIVING_BOMB, true);
+        });
+    }
+
+    g_reentryGuard.erase(guid);
 }
 
 void TickMageFire(Player* player, MageState& st, uint32 diff)
@@ -856,6 +1003,78 @@ void TickMageFrostBlizzard(Player* player)
         if (DynamicObject* dyn = player->GetDynObject(id))
             if (dyn->GetDuration() < 4000)
                 dyn->SetDuration(8000);
+}
+
+// Blizzard's damage, driven by us rather than by the spell's own channel.
+//
+// Swayss reported that Blizzard places its circle and then does nothing.
+// That is a direct consequence of how it was made to linger: Blizzard is a
+// channeled persistent area aura, and PatchBlizzardServerSide clears
+// SPELL_ATTR1_IS_CHANNELED so it behaves like Death and Decay. The engine
+// only ever syncs a persistent-area-aura's lifetime to the channel inside
+// `if (m_spellInfo->IsChanneled() && ...)` (Spell.cpp, handle_immediate),
+// so once that flag is gone the ticking depends on machinery we deliberately
+// switched off.
+//
+// Rather than keep fighting that, the perk does the damage itself: while a
+// Blizzard dynamic object of ours is on the ground, every second, everything
+// inside its radius takes the rank-appropriate Blizzard damage. That is what
+// "lingers like Death and Decay" meant in the first place, it cannot be
+// broken again by the channel flag, and it gets Frost the damage multiplier
+// the other specs already had.
+//
+// The damage spell is read from the rank's own effect rather than hardcoded,
+// so every rank hits for its correct amount.
+void TickMageFrostBlizzardDamage(Player* player, MageState& st, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_MAGE_FROST || !player->IsAlive())
+        return;
+    st.blizzardTickAcc += diff;
+    if (st.blizzardTickAcc < MAGE_BLIZZARD_TICK_MS)
+        return;
+    st.blizzardTickAcc = 0;
+
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+
+    for (uint32 id : SPELL_BLIZZARD_RANKS)
+    {
+        DynamicObject* dyn = player->GetDynObject(id);
+        if (!dyn)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+        if (!info)
+            continue;
+        uint32 tick = 0;
+        for (uint8 i = EFFECT_0; i < MAX_SPELL_EFFECTS && !tick; ++i)
+            tick = info->Effects[i].TriggerSpell;
+        if (!tick)
+            continue;
+        float radius = dyn->GetRadius();
+        if (radius <= 0.0f)
+            radius = CLASS_PERK_RANGE;
+        ForEachHostileNear(player, dyn, radius, [player, tick](Unit* target)
+        {
+            player->CastSpell(target, tick, true);
+        });
+    }
+
+    g_reentryGuard.erase(guid);
+}
+
+// Frost's damage buff, applied to the Blizzard ticks above and to the
+// Ice Lance volley below.
+void ApplyMageFrostDamage(Unit* attacker, int32& damage, SpellInfo const* info)
+{
+    if (!attacker || damage <= 0 || !info)
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_MAGE_FROST)
+        return;
+    if (!(info->GetSchoolMask() & SPELL_SCHOOL_MASK_FROST))
+        return;
+    damage *= int32(MAGE_DAMAGE_MULT);
 }
 
 uint32 IceLanceForLevel(uint8 level)
@@ -2422,6 +2641,7 @@ public:
         if (selected == SPELL_MAGE_ARCANE)
         {
             TickMageArcane(player);
+            TickMageArcanePower(player);
         }
         else if (selected == SPELL_MAGE_FIRE)
         {
@@ -2430,6 +2650,7 @@ public:
         else if (selected == SPELL_MAGE_FROST)
         {
             TickMageFrostBlizzard(player);
+            TickMageFrostBlizzardDamage(player, g_mage[player->GetGUID().GetCounter()], diff);
             TickMageFrostIceLance(player, g_mage[player->GetGUID().GetCounter()], diff);
         }
         else if (selected == SPELL_WARRIOR_ARMS)
@@ -2475,6 +2696,8 @@ public:
         if (spell->IsTriggered())
             return;
         TryMageFireOnCast(player, spell);
+        TryMageFireDetonate(player, spell);
+        TryMageArcaneOnCast(player, spell);
         TryMageFrostBlizzardLinger(player, spell);
         TryPaladinProtOnCast(player, spell);
         TryWarriorArmsOnCast(player, spell);
@@ -2552,6 +2775,9 @@ public:
         ApplyHunterSurvivalExplosiveShotDamage(attacker, damage, spellInfo);
         ApplyPriestShadowMindFlayDamage(attacker, damage, spellInfo);
         ApplyDkFrostDamage(attacker, damage, spellInfo);
+        ApplyMageFireDamage(attacker, damage, spellInfo);
+        ApplyMageFrostDamage(attacker, damage, spellInfo);
+        ApplyMageArcaneDamage(attacker, damage, spellInfo);
         ApplyWarlockDemoPetSpellDamage(attacker, damage);
         if (target)
             ApplyHunterSurvivalTrapImmunity(attacker, target, damage, spellInfo);
@@ -2573,6 +2799,7 @@ public:
         if (!attacker || !damage || !spellInfo)
             return;
         ApplyWarlockAfflictionHaste(target, attacker, damage, spellInfo);
+        ApplyMageFirePeriodic(attacker, damage, spellInfo);
     }
 };
 
