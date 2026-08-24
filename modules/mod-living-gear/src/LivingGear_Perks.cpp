@@ -188,7 +188,7 @@ struct PerkCfg
 {
     bool zoneEnable = true;
     uint32 zoneBuffer = 3;
-    uint32 zoneMinLevel = 10;
+    uint32 zoneMinLevel = 2;
     float zoneFloor = 0.35f;
     float zoneDecay = 12.0f;
     float zoneIncoming = 0.12f;
@@ -1733,8 +1733,11 @@ void CatchUpProfession(Player* player)
     for (uint32 i = 0; i < 5; ++i)
         if (maxLv >= travelNeed[i])
             UnlockPerk(player, SPELL_TRAVEL[i], nullptr);
-    if (maxLv >= 40)
-        UnlockPerk(player, SPELL_MOUNTED_OPENER, nullptr);
+    // Mounted Opener (910104) is no longer granted -- scrapped 2026-08-24.
+    // The non-class perk audit found it could never fire: the only trigger is
+    // the cast branch below, and the spell is neither castable nor learned. It
+    // is off the panel too. Existing lg_account_perk rows are left alone;
+    // nothing reads them.
     if (PickMount(player))
         UnlockPerk(player, SPELL_AUTO_MOUNT, nullptr);
     if (QueryResult att = CharacterDatabase.Query(
@@ -2144,7 +2147,6 @@ public:
         PLAYERHOOK_ON_LOGIN,
         PLAYERHOOK_ON_LOGOUT,
         PLAYERHOOK_ON_UPDATE,
-        PLAYERHOOK_ON_MAP_CHANGED,
         PLAYERHOOK_ON_CREATURE_KILL,
         PLAYERHOOK_ON_CREATURE_KILLED_BY_PET,
         PLAYERHOOK_ON_GIVE_EXP,
@@ -2168,15 +2170,20 @@ public:
     // Answering it makes the toggle mean something: it waives the Deserter
     // check when queueing, and skips the playerbot fill for RAID finder groups.
     //
-    // It does NOT yet deliver the whole request. Two pieces are missing, both
-    // deliberately left for a design pass rather than improvised:
-    //   - Dungeons still get bots. LFGMgr's raid branch consults this hook
-    //     before OnPlayerbotFillLfgRaid, but the dungeon branch calls
-    //     OnPlayerbotFillLfgDungeon unconditionally.
-    //   - A lone player still cannot cause a proposal to form, so the queue
-    //     would never pop for them at all.
-    // Doing only the first would be worse than doing neither: solo queue would
-    // then mean "you queue forever and nothing ever arrives".
+    // 2026-08-24, non-class perk audit: this comment used to say a lone player
+    // could not cause a proposal to form, so the queue "would never pop for
+    // them at all". That stopped being true and nobody updated it.
+    // LFGQueue::CheckCompatibility now computes
+    //     allowIncomplete = hasSoloQueue() || raidQueue || allowBotFill
+    // so hasSoloQueue() ALONE lets an incomplete proposal form. Verified end to
+    // end: Deserter waived (LFGMgr.cpp:737), random-dungeon cooldown waived
+    // (:784), incomplete proposals allowed (LFGQueue.cpp:339), and the raid
+    // branch skips bot fill for a solo queuer while dungeons still get filled
+    // (LFGMgr.cpp:1839). The perk delivers what it advertises.
+    //
+    // Left as-is on purpose: dungeons DO still get bots, which is the point --
+    // a solo queuer wants a group that can clear the place, not four empty
+    // slots. Raids skip the fill instead.
     bool OnPlayerCanSoloQueue(Player* player) override
     {
         if (!player || !player->GetSession())
@@ -2920,7 +2927,7 @@ void LoadPerkConfig()
 {
     g_cfg.zoneEnable = sConfigMgr->GetOption<bool>("LivingGear.ZoneScale.Enable", true);
     g_cfg.zoneBuffer = sConfigMgr->GetOption<uint32>("LivingGear.ZoneScale.CombatBuffer", 3);
-    g_cfg.zoneMinLevel = sConfigMgr->GetOption<uint32>("LivingGear.ZoneScale.MinPlayerLevel", 10);
+    g_cfg.zoneMinLevel = sConfigMgr->GetOption<uint32>("LivingGear.ZoneScale.MinPlayerLevel", 2);
     g_cfg.zoneFloor = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.RewardFloor", 0.35f);
     g_cfg.zoneDecay = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.RewardGapDecay", 12.0f);
     g_cfg.zoneIncoming = sConfigMgr->GetOption<float>("LivingGear.ZoneScale.IncomingPerLevel", 0.12f);

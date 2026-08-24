@@ -114,6 +114,49 @@ Still to do, and only playing proves them:
 
 ---
 
+## 1c. Audit the 111 non-class perks — DONE (2026-08-24)
+
+**Results in `NON-CLASS-PERK-AUDIT.md`.** The companion to the class audit: the
+30 class specs are done, these are the other 111 -- every world toggle, action
+and progression track in the Account Perks panel.
+
+Why it earns a slot this high: the 0.1.73 work touched about six of these
+incidentally and two had a silently dead path (the Leveling +50%-per-alt XP
+bonus and the dungeon pace bonus, both read through a hook `Player::GiveXP`
+never fires, so both were absent from every kill in a low-level zone). All four
+mechanical audits passed both, because the ids *are* read -- in a place that
+does not execute.
+
+All 111 examined. **One dead perk found: 910104 Mounted Opener could never
+fire** -- its only trigger was a cast branch for a spell that is not castable
+and is never learned. Scrapped on the user's call: off the panel, no longer
+granted, implementation parked rather than deleted so it can return as a real
+mounted button if that is ever judged worthwhile.
+
+Otherwise: Craft 1-5 PARTIAL, confirmed as bug #30 with the reason (the cast
+time is already 0 where it is applied); Trade 75-450 UNPROVEN, bug #20 -- the
+code reads correctly and the hook has never once fired for a real profession
+craft, so there is nothing to act on yet. Its instrumentation was drowning in 71
+lines of bots casting class spells and is now silent for the non-trade case, so
+the next real craft will be findable.
+
+Four polish items, no defects: Solo Queue's comment claims it half-works when it
+fully works; faction rep perks unlock silently; `CheckReputationPerks` is
+login-only; the gather scan uses the max reach across professions while the text
+is per profession.
+
+Also produced `tools/perk_hook_audit.py`, which closes one of the ten checks for
+all 111 at once: it reads the core's own dispatchers for every hook/method pair
+and reports overrides absent from their script's enabled-hook list -- dead code
+the core never calls. Living Gear has none; mod-playerbots has 16.
+
+The pattern worth carrying forward: shared helpers are safe (gathering is 30
+perks and two functions), and every failure was a perk with its own **bespoke
+trigger** -- Mounted Opener's unreachable cast branch, the Leveling perks' wrong
+hook, Craft's already-zero cast time. Look at one-off triggers first.
+
+---
+
 ## 1b. Attunement interface redesign — HIGH, requested 2026-08-23
 
 Bulk attune *works* ("Attuned 9 item(s). 21 already known.") but the interface

@@ -70,7 +70,12 @@ LivingGear.RollStatCount = 1
 # Zone scaling: overleveled players deal less and take more in open world.
 LivingGear.ZoneScale.Enable = 1
 LivingGear.ZoneScale.CombatBuffer = 3
-LivingGear.ZoneScale.MinPlayerLevel = 10
+# 2, not 10 (bug report #57, "mobs aren't scaling upward to match my level" --
+# filed by a level 9, for whom scaling was switched off by this very setting).
+# Level 1 is left alone deliberately: a brand new character's first fight should
+# be exactly what the game shipped, and scaling a level 1 mob to level 2 buys
+# nothing anyway.
+LivingGear.ZoneScale.MinPlayerLevel = 2
 LivingGear.ZoneScale.RewardFloor = 0.35
 LivingGear.ZoneScale.RewardGapDecay = 12.0
 LivingGear.ZoneScale.IncomingPerLevel = 0.12

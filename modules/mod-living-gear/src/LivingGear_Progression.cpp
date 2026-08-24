@@ -19,6 +19,7 @@
 #include "AllBattlegroundScript.h"
 #include "Chat.h"
 #include "DatabaseEnv.h"
+#include "DBCStores.h"
 #include "DBCStructure.h"
 #include "Log.h"
 #include "Player.h"
@@ -31,6 +32,7 @@
 #include "WorldSession.h"
 
 #include <algorithm>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -332,6 +334,16 @@ float RepPerkMultiplier(Player* player)
     return 1.0f + bonus;
 }
 
+// Faction name for the unlock message, out of the DBC rather than a hardcoded
+// table -- ten more hand-written strings is ten more chances to be wrong.
+std::string FactionName(uint32 factionId)
+{
+    if (FactionEntry const* entry = sFactionStore.LookupEntry(factionId))
+        if (entry->name[LOCALE_enUS] && *entry->name[LOCALE_enUS])
+            return entry->name[LOCALE_enUS];
+    return "that faction";
+}
+
 void CheckReputationPerks(Player* player)
 {
     if (!player || !player->GetSession())
@@ -345,10 +357,16 @@ void CheckReputationPerks(Player* player)
         UnlockPerk(player, SPELL_REP_FIVE, "|cff66ccff[Account Perks]|r Rep: Five Exalted unlocked.");
     if (exalted >= 10)
         UnlockPerk(player, SPELL_REP_TEN, "|cff66ccff[Account Perks]|r Rep: Ten Exalted unlocked.");
+    // Announced, like every other rep tier above. These ten used to unlock in
+    // silence -- UnlockPerk with no message -- so the one reputation perk a
+    // player had actually gone out of their way to earn was the only one that
+    // never said so. Found by the non-class perk audit, 2026-08-24.
     for (SpecialRepPerk const& perk : SPECIAL_REP_PERKS)
         if (AccountHasExaltedFaction(accountId, perk.factionId)
             || player->GetReputationRank(perk.factionId) >= REP_EXALTED)
-            UnlockPerk(player, perk.spellId);
+            UnlockPerk(player, perk.spellId, Acore::StringFormat(
+                "|cff66ccff[Account Perks]|r Rep: {} exalted -- reputation gains up.",
+                FactionName(perk.factionId)).c_str());
 }
 
 // ---------------------------------------------------------------------
@@ -573,12 +591,15 @@ public:
         // line, not a chat print -- no player sees it.
         if (!player || !skill)
             return;
+        // Silent for non-trade skill lines. This used to log every one, and
+        // over one uptime that produced 71 lines -- all of them bots casting
+        // class spells (skill lines 237 Arcane and 354 Demonology reach this
+        // hook through Spell::EffectCreateItem's siblings), and not one real
+        // craft among them. Instrumentation that buries the case it was added
+        // to catch is worse than none: #20 needs the line for an actual
+        // profession craft to be findable when it finally happens.
         if (!IsTradeSkill(skill->SkillLine))
-        {
-            LOG_INFO("module.livinggear", "trade skill-up: {} skill line {} is not a trade skill, no boost",
-                player->GetName(), skill->SkillLine);
             return;
-        }
         if (!gain)
         {
             LOG_INFO("module.livinggear", "trade skill-up: {} skill {} arrived with gain 0",

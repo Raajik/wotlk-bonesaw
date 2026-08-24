@@ -1,0 +1,103 @@
+Send the LFG proposal member role as the INDEX the 3.3.5 client expects, not as
+AzerothCore's role bitmask.
+Touches: src/server/game/Handlers/LFGHandler.cpp, WorldSession::SendLfgUpdateProposal()
+
+Why: players saw this on every dungeon-finder pop, repeatedly, and on accept --
+
+  Interface\FrameXML\LFGFrame.lua:337: Unknown role: UNKNOWN
+  ... GetTexCoordsForRole -> LFDDungeonReadyStatus_UpdateIcon
+      -> LFDDungeonReadyPopup_Update
+
+-- and separately reported "healers marked as dps". Those are one bug.
+
+THE EVIDENCE, because two earlier fixes were wrong and both were guesses.
+
+FrameXML was extracted from the client's own MPQs rather than recalled:
+
+  * LFGFrame.lua:337 `GetTexCoordsForRole(role)` accepts exactly GUIDE, TANK,
+    HEALER, DAMAGER and calls error() on anything else. `role` is a STRING.
+  * LFDFrame.lua:675 `LFDDungeonReadyStatus_UpdateIcon` gets it from
+    `GetLFGProposalMember(button:GetID())`, and those buttons carry ids 1-5 in
+    LFDFrame.xml, so the index is not the problem.
+  * `GetLFGProposalMember` returns `isLeader, role, level, responded, accepted,
+    name, class` -- isLeader is its OWN return value, so the leader bit never
+    belonged in the role field.
+
+That string comes from client C code, so Wow.exe was searched for the table. It
+holds exactly one: three pointers at VA 0xad87b0 (file offset 0x6d67b0),
+pointing at the strings at 0xa29b70/78/80, in this order:
+
+    index 0 -> "TANK"    index 1 -> "HEALER"    index 2 -> "DAMAGER"
+
+"GUIDE" does not occur in the 3.3.5 binary at all. The client indexes that
+table with the number the server sends. AzerothCore sends the bitmask, so what
+players actually got was:
+
+    PLAYER_ROLE_TANK   = 2 -> index 2 -> "DAMAGER"  (tank draws the dps icon)
+    PLAYER_ROLE_HEALER = 4 -> out of range -> "UNKNOWN" -> Lua error
+    PLAYER_ROLE_DAMAGE = 8 -> out of range -> "UNKNOWN" -> Lua error
+
+Every observation fits: the error fired on every pop no matter what was done to
+the mask, its Count tracked the number of non-tank members, only tanks escaped
+it (while rendering wrongly), and "healers show as dps" was a separate report of
+the same root cause.
+
+WHAT THE TWO EARLIER ATTEMPTS DID, AND WHY THEY MISSED.
+
+Both assumed a bitmask, so both produced values the client still could not read:
+
+  1. Narrowing a multi-bit mask down to a single role bit. Still sent 4 or 8.
+  2. Stripping PLAYER_ROLE_LEADER. Turned 9 into 8 -- still out of range.
+
+The clue was sitting in the log the whole time: both patches logged whenever
+they corrected a mask, and that line never fired once across a full uptime. The
+value on the wire was already a single clean role bit and the client still could
+not resolve it, which rules out the mask's SHAPE and points at its MEANING.
+"Verify, then theorise" applies to the second guess as much as the first.
+
+The mapping and the fallback are kept: a member arriving with no role bits at
+all still goes out as damage rather than as something the client cannot render,
+and that case is still logged, because it is a genuine upstream bug (a bot
+placed into a group outside the queue, or a proposal formed without
+CheckGroupRoles running). What is gone is the pretence that narrowing a mask was
+ever going to fix this.
+
+--- a/src/server/game/Handlers/LFGHandler.cpp
++++ b/src/server/game/Handlers/LFGHandler.cpp
+@@ (replacing NarrowProposalRoleForClient)
+-static uint8 NarrowProposalRoleForClient(uint8 role)
+-{
+-    uint8 const leader = role & lfg::PLAYER_ROLE_LEADER;
+-    if (role & lfg::PLAYER_ROLE_TANK)
+-        return leader | lfg::PLAYER_ROLE_TANK;
+-    ...
+-}
++enum LfgClientRoleIndex : uint32
++{
++    LFG_CLIENT_ROLE_TANK   = 0,
++    LFG_CLIENT_ROLE_HEALER = 1,
++    LFG_CLIENT_ROLE_DAMAGE = 2,
++};
++
++static uint32 ProposalRoleIndexForClient(uint8 role)
++{
++    if (role & lfg::PLAYER_ROLE_TANK)
++        return LFG_CLIENT_ROLE_TANK;
++    if (role & lfg::PLAYER_ROLE_HEALER)
++        return LFG_CLIENT_ROLE_HEALER;
++    return LFG_CLIENT_ROLE_DAMAGE;
++}
+
+@@ SendLfgUpdateProposal -- sort by what is actually sent
+-        switch (NarrowProposalRoleForClient(player.role) & ~lfg::PLAYER_ROLE_LEADER)
++        switch (ProposalRoleIndexForClient(player.role))
+
+@@ SendLfgUpdateProposal -- the per-member write
+-        uint8 const role = NarrowProposalRoleForClient(player.role);
+-        ... logging for masks that were never narrowed ...
+-        data << uint32(role);                              // Role
++        uint32 const roleIndex = ProposalRoleIndexForClient(player.role);
++        if (!(player.role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)))
++            LOG_ERROR("lfg", "SMSG_LFG_PROPOSAL_UPDATE: proposal {} member [{}] has no LFG role at all (mask {}), sending damage",
++                proposal.id, pguid.ToString(), uint32(player.role));
++        data << uint32(roleIndex);                         // Role INDEX, not a mask

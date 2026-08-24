@@ -220,14 +220,21 @@ local WORLD_TRACKS = {
         -- nothing: on-foot extra jump is deliberately disabled because
         -- ApplyLgMoveSpeed + KnockbackFrom crashed on the first tick, and the
         -- wiki records "do not re-enable". Advertising a feature that is off on
-        -- purpose is worse than not listing it. Mounted Opener below is the
-        -- surviving jump perk and is unaffected -- it is mounted-only, which is
-        -- what steers around the crash.
+        -- purpose is worse than not listing it.
+        --
+        -- Mounted Opener (910104) followed them on 2026-08-24, for the same
+        -- reason and with better evidence. The non-class perk audit proved it
+        -- could never fire at all: its only trigger was a cast branch for a
+        -- spell that is not castable and is never learned, so a level 40
+        -- account earned it, saw it green here, and got nothing. Its
+        -- description also advertised the very jump behaviour that is disabled
+        -- on purpose. The slam/pull/Thunder Clap implementation is parked in
+        -- LivingGear_Perks.cpp, not deleted, so it can come back as a real
+        -- mounted button if that is ever judged worth doing.
         ticks = {
             { id = 910038, name = "Wayfarer", how = "Explore your home zone, or earn Going Down?. Balances up to 50% movement speed against 50% damage -- see the slider at the top of this tab.", bonus = 50 },
             { id = 910176, name = "Wayfarer: Wide", how = "Explore Eastern Kingdoms or Explore Kalimdor. The Wayfarer balance reaches 75%.", bonus = 75 },
             { id = 910177, name = "Wayfarer: Full", how = "Explore Outland or Explore Northrend. The Wayfarer balance reaches the full 100%.", bonus = 100 },
-            { id = 910104, name = "Mounted Opener", how = "Reach level 40. While mounted: jump while moving forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap.", bonus = 0 },
         },
     },
     {

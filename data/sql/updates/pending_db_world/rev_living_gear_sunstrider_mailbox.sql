@@ -1,0 +1,28 @@
+-- Bug report #51: "random mailbox in the blood elf starting area
+-- (non-functional), needs to be removed."
+--
+-- Found: gameobject guid 9000108, entry 142075 (Mailbox), map 530 at
+-- (10348, -6354, 34) -- six yards from where the report was filed on
+-- Sunstrider Isle.
+--
+-- It is not random. It is one of eight custom mailbox spawns, guids
+-- 9000101-9000108, one per starting zone (Stormwind, Tirisfal, Durotar,
+-- Mulgore, Teldrassil, Azuremyst, Sunstrider and one more), added so a new
+-- character has mail access before they own the *Mailbox amenity perk -- which
+-- unlocks by USING mail, so without a real mailbox somewhere it cannot be
+-- earned at all. That is why only this one is being removed and the other
+-- seven are left alone.
+--
+-- Its row is structurally identical to a working stock mailbox (spawnMask 1,
+-- phaseMask 1, state 1), so the data is not what is wrong with it; the likely
+-- cause is placement -- sunk into or clipped by the terrain so the client will
+-- not accept a click. Removed rather than nudged because a coordinate guessed
+-- from outside the game is how you get a second non-functional mailbox, and
+-- Silvermoon City's own mailboxes are ~960 yards away for anyone who needs one
+-- before the perk.
+--
+-- No gameobject_addon, pool_gameobject or game_event_gameobject rows reference
+-- this guid, so a single DELETE is the whole change. The object stays spawned
+-- in the running world until the worldserver restarts.
+
+DELETE FROM `gameobject` WHERE `guid` = 9000108 AND `id` = 142075;
