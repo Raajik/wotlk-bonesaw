@@ -31,9 +31,20 @@ cannot render:
     place.
 
 Rather than chase each producer, narrow at the one place the value reaches the
-wire. The leader bit is preserved (the client reads it separately for the crown);
-the role bits collapse to tank > healer > damage, with damage as the fallback for
-a roleless member. A corrected mask is logged (at error level either way -- the "lfg" logger is
+wire. The role bits collapse to tank > healer > damage, with damage as the
+fallback for a roleless member.
+
+2026-08-23: the leader bit is now stripped as well. It was originally preserved
+on the assumption that the client reads it separately for a crown, which was
+never checked -- and a report of the same Lua error came in hours after this
+narrowing shipped. The running binary provably had the patch (the log string is
+in it) and the correction log below had fired zero times over the whole uptime,
+so every mask reaching that client already carried exactly one role bit. The
+leader bit was the only thing this function still let through untouched, and
+LFGQueue.cpp copies the queue mask verbatim into the proposal
+(`data.role = itRoles->second`), so a solo queuer -- their own leader -- has
+their own entry go out as LEADER|DAMAGE = 9. Nothing in the proposal pop-up
+draws a crown, so there is no reason to send the bit. A corrected mask is logged (at error level either way -- the "lfg" logger is
 commented out in worldserver.conf, so it falls back to Logger.root, which only
 passes error and above) so the remaining producer names itself in the log next
 time rather than being guessed at.

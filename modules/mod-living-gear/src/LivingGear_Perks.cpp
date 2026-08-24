@@ -59,6 +59,7 @@
 
 class Player;
 void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp); // LivingGear.cpp
+float LivingGear_LevelingXpMultiplier(Player* player); // LivingGear_Progression.cpp
 uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
 bool LivingGear_SafeToCastOn(Player* player); // LivingGear_Support.cpp
@@ -68,7 +69,6 @@ bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 namespace LivingGearPerks
 {
 uint32 const SPELL_FIND_QUESTS = 910088;
-uint32 const SPELL_COMBO = 910089;
 uint32 const SPELL_AUTO_QUEST = 910090;
 uint32 const SPELL_ARMORY = 910091;
 uint32 const SPELL_SOLO_QUEUE = 910092;
@@ -99,7 +99,7 @@ uint32 const SPELL_PULL_RADIUS = 910168;
 // spells (Find Minerals / Find Herbs, stock Blizzard spells not in our
 // spell_dbc table since they're resolved from the compiled client DBC).
 // Casting the native spell puts real nodes on the minimap; refreshed
-// periodically the same way SPELL_PULL_RADIUS/SPELL_COMBO are, since we
+// periodically the same way SPELL_PULL_RADIUS is, since we
 // can't check the native spell's real duration from our sparse table.
 uint32 const SPELL_TRACK_ORE = 910170;
 uint32 const SPELL_TRACK_HERB = 910171;
@@ -157,15 +157,6 @@ uint32 const SPELL_THUNDER_CLAP = 6343;
 uint32 const SPELL_CRIPPLING = 3408;
 uint32 const SPELL_WOUND = 13218;
 uint32 const SPELL_DEADLY_POISON = 2818;
-// Redesigned 2026-08-21: was 100 stacks/3% xp/3min independent-per-stack
-// decay, never actually unlocked so nobody ever saw it. New spec: 10 stacks
-// cap, 20% xp/stack, 5% move speed/stack (native MOD_INCREASE_SPEED aura,
-// stacks with everything else normally), single 10-min timer that refreshes
-// in full on every kill rather than each stack decaying independently.
-uint32 const COMBO_MAX = 10;
-uint32 const COMBO_SECONDS = 600;
-float const COMBO_XP_PCT_PER_STACK = 0.20f;
-int32 const COMBO_SPEED_PCT_PER_STACK = 5;
 // How often to re-evaluate the cooking regen aura's base points. Not a
 // restore interval any more -- the engine does the restoring -- just how
 // promptly the aura tracks a max-health/mana change.
@@ -208,7 +199,15 @@ struct PerkCfg
     uint32 curatorTick = 60000;
     bool dungeonScale = true;
     bool questScale = true;
-    uint32 questFloorPct = 4;
+    uint32 questFloorPct = 10;
+    // Every kill is worth at least this percentage of the killer's current
+    // level bar. See KillXpFor.
+    bool killFloor = true;
+    uint32 killFloorPct = 2;
+    uint32 killFloorElitePct = 4;
+    // Share a kill the engine paid nobody for with the whole party, not just
+    // whoever landed the blow. See GrantUnrewardedKillXp.
+    bool groupKillXp = true;
     bool softenImmunity = true;
     bool ignoreSpellReqs = true;
     // See ReconcilePerkSpells. Castable perks only, so the cost is bounded.
@@ -217,21 +216,6 @@ struct PerkCfg
 
 PerkCfg g_cfg;
 
-// expiresAt is wall-clock unix seconds, NOT getMSTime() -- the whole point
-// of this struct now is that it round-trips through the `lg_combo` table
-// across a logout, and a millisecond counter measured from worldserver start
-// means nothing after a restart.
-struct ComboState
-{
-    uint32 stacks = 0;
-    uint32 expiresAt = 0; // unix seconds; whole buff expires together, every kill refreshes it to now + COMBO_SECONDS
-};
-
-std::unordered_map<uint32, ComboState> g_combo;
-std::unordered_map<uint32, ComboState> g_groupCombo;
-// Stack count last actually cast on each player, so RecastCombo can leave a
-// correct aura alone instead of resetting its visible timer every second.
-std::unordered_map<uint32, uint32> g_comboShown;
 std::unordered_map<uint32, bool> g_autoMountOn;
 std::unordered_map<uint32, bool> g_soloQueue;
 std::unordered_map<uint32, bool> g_chatOn;
@@ -245,7 +229,6 @@ std::unordered_map<uint32, uint32> g_cookAcc;
 std::unordered_map<uint32, uint64> g_cookAmount;
 std::unordered_map<uint32, uint32> g_aidCleanseTick;
 std::unordered_map<uint32, uint32> g_curatorAcc;
-std::unordered_map<uint32, uint32> g_comboTick;
 // Shadow Dance's +10% attack power half -- keyed by player GUID (not
 // account), since it's a real per-character stat modifier applied via
 // Player::ApplyStatPctModifier, not a persisted account toggle.
@@ -768,224 +751,199 @@ uint32 ScaledKillXP(Player* killer, Creature* killed)
     uint32 const eff = EffectiveCreatureLevel(killed, killer);
     if (!eff)
         return 0;
-    return Acore::XP::BaseGain(uint8(killer->GetLevel()), uint8(eff), ContentForLevel(killer->GetLevel()));
+    // Everything Acore::XP::Gain applies on top of BaseGain and BaseGain
+    // itself does not. This used to return the bare BaseGain, so a scaled
+    // kill silently paid no elite bonus, ignored the creature's
+    // ModExperience, and ignored Rate.XP.Kill -- an elite paid exactly what
+    // the trash beside it paid.
+    float mod = 1.0f;
+    if (killed->isElite())
+        mod *= 2.0f;
+    if (CreatureTemplate const* tmpl = killed->GetCreatureTemplate())
+        mod *= tmpl->ModExperience;
+    mod *= sWorld->getRate(RATE_XP_KILL);
+    uint32 const base = Acore::XP::BaseGain(uint8(killer->GetLevel()), uint8(eff), ContentForLevel(killer->GetLevel()));
+    return uint32(float(base) * mod);
 }
 
-// XP half of zone scaling: AzerothCore's own kill-XP formula hard-zeroes a
-// grey kill (mob_level <= GetGrayLevel(playerLevel)) well before any
-// module hook runs, so the existing OnPlayerGiveXP multiplier below can
-// only ever multiply that zero. Compute XP ourselves using the effective
-// (displayed) level and grant it directly -- safe from double-granting
-// since we only do this when the core's own grant for this exact kill was
-// definitely zero. Killer-only: does not replicate KillRewarder's
-// group-XP-sharing, so a grouped low-level member doesn't get a scaled
-// share of a high-level leader's grey kill. Revisit if that matters.
-void GrantScaledGreyKillXP(Player* killer, Creature* killed)
+// Creatures that must never pay XP, no matter which path asks. Critters,
+// anything owned by a player, and the NO_XP flag (training dummies and the
+// like) -- the flag in particular is checked by Acore::XP::Gain but NOT by
+// EffectiveCreatureLevel, so the scaled path has to exclude it itself.
+bool CreatureNeverPaysXp(Creature* killed)
 {
-    if (!killer || !killed || !killer->IsAlive())
-        return;
-    if (killed->GetLevel() > Acore::XP::GetGrayLevel(uint8(killer->GetLevel())))
-        return;
-    uint32 xp = ScaledKillXP(killer, killed);
-    if (!xp)
-        return;
-    // KillRewarder skips the OnPlayerGiveXP hook entirely when its own
-    // number is zero (KillRewarder.cpp, `if (xp)`), which is exactly the
-    // grey case -- so nothing else will apply the zone multiplier to this
-    // grant and it has to be applied here.
-    xp = uint32(float(xp) * ZoneRewardMult(killer));
-    if (xp)
-        killer->GiveXP(xp, killed);
+    if (!killed)
+        return true;
+    if (killed->IsPet() || killed->IsTotem() || killed->IsGuardian() || killed->IsSummon() || killed->IsCritter())
+        return true;
+    return killed->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_XP);
 }
 
-uint32 ComboCount(Player* player)
+// THE single answer to "what is this kill worth to this player", used by both
+// halves of kill XP: the engine's own reward (LivingGearPerks::OnPlayerGiveXP)
+// and the grants the engine declined to make at all (GrantUnrewardedKillXp).
+//
+// Before this existed the two halves each had a piece of the rules and neither
+// had all of them. The engine path got zone rescaling but not the floor; the
+// grey path got neither the floor, the elite bonus, nor Rate.XP.Kill, because
+// Player::GiveXP does not fire OnPlayerGiveXP (only KillRewarder, quests,
+// exploration and BG bonus honor do), so every hook-based rule silently
+// skipped the exact kills that needed it most. A level 60 in a starter zone
+// was being paid 131 XP against a 290,000 bar -- 0.045%, or 2,200 kills per
+// level -- for a mob the same module had already scaled to level 61 in both
+// display and damage. That is what "the scaling is a facade" meant.
+//
+// engineAmount is what AzerothCore itself calculated, or 0 when it never ran.
+uint32 KillXpFor(Player* killer, Creature* killed, uint32 engineAmount)
 {
-    if (!player)
+    if (!killer || !killed)
+        return engineAmount;
+    if (killer->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
         return 0;
-    uint32 now = uint32(GameTime::GetGameTime().count());
-    ComboState* st = nullptr;
-    if (player->GetGroup())
-        st = &g_groupCombo[player->GetGroup()->GetGUID().GetCounter()];
-    else
-        st = &g_combo[player->GetGUID().GetCounter()];
-    if (st->stacks && now >= st->expiresAt)
-        st->stacks = 0;
-    return st->stacks;
-}
+    if (CreatureNeverPaysXp(killed))
+        return engineAmount;
 
-// 2026-08-22: Kill Combo used to be a hidden (SPELL_ATTR0_PASSIVE) aura
-// blindly recast every single second, with a hand-drawn HUD frame in the
-// addon standing in for the buff icon and counting the timer down itself.
-// The spell is no longer passive and now carries a real 10 minute duration,
-// so the client draws it in the buff bar with a working timer -- but that
-// only works if we STOP recasting it every second, since each recast resets
-// the displayed duration to full. Hence g_comboShown: recast only when the
-// stack count actually changes or the aura has gone missing, and otherwise
-// leave the engine to tick the timer down on its own.
-void RecastCombo(Player* player)
-{
-    // Guarded here as well as in the update tick: this is also reached from
-    // OnPlayerLogin and from AddCombo() on a creature kill, and a kill landing
-    // as the player logs out is exactly the race that keeps asserting.
-    if (!LivingGear_SafeToCastOn(player))
-        return;
-    if (!HasPerk(player, SPELL_COMBO) || !sSpellMgr->GetSpellInfo(SPELL_COMBO))
-        return;
-    uint32 const guid = player->GetGUID().GetCounter();
-    uint32 const stacks = ComboCount(player);
-    if (!stacks)
+    uint32 xp = engineAmount;
+    // Rebase onto the level the player is actually being SHOWN. Replaces
+    // rather than maxes: scaling runs both ways in the open world, and a
+    // creature scaled DOWN to the viewer is supposed to pay less.
+    if (uint32 const scaled = ScaledKillXP(killer, killed))
+        xp = scaled;
+    xp = uint32(float(xp) * ZoneRewardMult(killer));
+
+    // The floor. Expressed against PLAYER_NEXT_LEVEL_XP so it stays
+    // meaningful at every level -- a flat number would be a fortune at 5 and
+    // a rounding error at 75. Elites are worth double a trash mob here for
+    // the same reason Acore::XP::Gain doubles them.
+    if (g_cfg.killFloor)
     {
-        player->RemoveAurasDueToSpell(SPELL_COMBO);
-        g_comboShown.erase(guid);
-        return;
-    }
-    // Bug report #14, 2026-08-22: "it should also refresh back to 10 minute
-    // duration on each kill."
-    //
-    // AddCombo has always pushed expiresAt out to a full window on every kill,
-    // but the recast that shows it was skipped whenever the stack count had not
-    // changed -- which is exactly what happens at 10/10. So a player holding max
-    // stacks watched the buff tick towards zero while the server quietly
-    // considered it freshly refreshed. Recast when the DISPLAYED time has
-    // drifted meaningfully behind the real remaining time as well as on a stack
-    // change. The one-second slack stops a recast every tick from rounding.
-    Aura* aura = player->GetAura(SPELL_COMBO);
-    auto const shown = g_comboShown.find(guid);
-    if (aura && shown != g_comboShown.end() && shown->second == stacks)
-    {
-        uint32 const now = uint32(GameTime::GetGameTime().count());
-        ComboState const& st = player->GetGroup()
-            ? g_groupCombo[player->GetGroup()->GetGUID().GetCounter()]
-            : g_combo[guid];
-        int32 const realLeftMs = st.expiresAt > now ? int32(st.expiresAt - now) * IN_MILLISECONDS : 0;
-        if (realLeftMs - aura->GetDuration() < IN_MILLISECONDS)
-            return;
-        aura->SetMaxDuration(int32(COMBO_SECONDS) * IN_MILLISECONDS);
-        aura->SetDuration(realLeftMs);
-        return;
-    }
-
-    // All three effects are movement speed, and all three get the SAME value.
-    //
-    // The comment that used to sit here called bp0 a "display/marker" for the
-    // XP bonus. It was wrong, and the mistake was costing players speed: the
-    // spell's effect 1 is MOD_SPEED_ALWAYS (129, on foot) and it was being fed
-    // the raw stack count, so walking speed rose 1% per stack while mounted
-    // speed rose the advertised 5%. The XP bonus has always been read from
-    // ComboCount() in OnPlayerGiveXP and never from this aura at all.
-    //
-    // Effect 3 is MOD_MOUNTED_FLIGHT_SPEED_ALWAYS (209), added for bug report
-    // #27 -- the buff did nothing in the air, because 129 and 130 only cover
-    // ground movement. All three of these are the "_ALWAYS" variants, which is
-    // why flight uses 209 rather than 207.
-    int32 speedPct = int32(stacks) * COMBO_SPEED_PCT_PER_STACK;
-    int32 groundPct = speedPct;
-    int32 flightPct = speedPct;
-    player->CastCustomSpell(player, SPELL_COMBO, &groundPct, &speedPct, &flightPct, true);
-    g_comboShown[guid] = stacks;
-
-    if (Aura* cast = player->GetAura(SPELL_COMBO))
-    {
-        // Real aura stacks, so the buff icon carries the "x7" the old HUD
-        // used to print. This has to come before the speed amount is put
-        // back: Aura::SetStackAmount recalculates every effect's amount from
-        // the spell's own base points, which throws away the custom value
-        // CastCustomSpell just passed in and would silently drop the move
-        // speed bonus to zero.
-        cast->SetStackAmount(uint8(stacks));
-        // Every effect has to be restored, not just one: SetStackAmount
-        // recalculates them all from the spell's own base points and would
-        // otherwise drop each back to zero.
-        for (uint8 i = EFFECT_0; i <= EFFECT_2; ++i)
-            if (AuraEffect* speed = cast->GetEffect(i))
-                speed->ChangeAmount(speedPct);
-
-        // Show the time actually left rather than a fresh 10 minutes. Matters
-        // at login, where the buff is usually part spent already.
-        uint32 const now = uint32(GameTime::GetGameTime().count());
-        ComboState const& st = player->GetGroup()
-            ? g_groupCombo[player->GetGroup()->GetGUID().GetCounter()]
-            : g_combo[guid];
-        if (st.expiresAt > now)
+        uint32 const pct = killed->isElite() ? g_cfg.killFloorElitePct : g_cfg.killFloorPct;
+        if (pct)
         {
-            int32 const remaining = int32(st.expiresAt - now) * IN_MILLISECONDS;
-            cast->SetMaxDuration(int32(COMBO_SECONDS) * IN_MILLISECONDS);
-            cast->SetDuration(remaining);
+            uint64 const bar = killer->GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+            uint32 const floor = uint32(bar * pct / 100);
+            if (xp < floor)
+                xp = floor;
         }
     }
+    return xp;
 }
 
-void AddCombo(Player* player)
+// The module's own XP multipliers, for the grant path that never reaches
+// OnPlayerGiveXP. Every one of these is applied to a normal kill by some
+// script's hook; a direct Player::GiveXP fires none of them, so they have to be
+// applied by hand here or the grey half of the world quietly loses them.
+uint32 ApplyOffHookXpMultipliers(Player* player, uint32 xp)
 {
-    if (!player || !HasPerk(player, SPELL_COMBO))
-        return;
-    uint32 now = uint32(GameTime::GetGameTime().count());
-    ComboState* st = nullptr;
-    if (Group* group = player->GetGroup())
-        st = &g_groupCombo[group->GetGUID().GetCounter()];
-    else
-        st = &g_combo[player->GetGUID().GetCounter()];
-    if (now >= st->expiresAt)
-        st->stacks = 0; // previous buff had already fully expired -- start fresh
-    if (st->stacks < COMBO_MAX)
-        ++st->stacks;
-    st->expiresAt = now + COMBO_SECONDS; // every kill refreshes the whole timer, not just adds a new independently-decaying stack
-    if (Group* group = player->GetGroup())
-    {
-        for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
-            if (Player* m = itr->GetSource())
-                RecastCombo(m);
-    }
-    else
-        RecastCombo(player);
+    if (!player || !xp)
+        return xp;
+    float mult = ::LivingGear_LevelingXpMultiplier(player);
+    if (Aura* pace = player->GetAura(SPELL_DUNGEON_PACE))
+        if (AuraEffect* e = pace->GetEffect(EFFECT_0))
+            mult *= 1.0f + float(e->GetAmount() + 1) / 100.0f;
+    if (mult <= 1.0f)
+        return xp;
+    uint32 const scaled = uint32(float(xp) * mult);
+    return scaled ? scaled : xp;
 }
 
-// Kill Combo runs for 10 minutes, which is long enough that logging out or
-// taking a zone-change loading screen inside the window used to be a silent
-// full loss -- OnPlayerLogout dropped g_combo outright. Zoning is already
-// safe (the map change keeps the same session and the aura rides along), so
-// this only has to cover the logout/login boundary. Wall-clock expiry is
-// stored rather than a remaining duration, so time spent offline still
-// counts against the window and a 10 minute buff cannot be parked overnight.
-void SaveCombo(Player* player)
+// Did AzerothCore's own KillRewarder already pay this player for this kill?
+//
+// Mirrors KillRewarder::_RewardGroup/_RewardXP exactly, because the answer
+// decides whether the module grants on top (double XP if this is wrong) or
+// stays out of the way (no XP at all if this is wrong). The rules are:
+//   * solo   -- paid unless Acore::XP::Gain returned zero, i.e. the victim
+//               was grey to the killer;
+//   * group  -- the engine picks the highest-level ALIVE member within reward
+//               distance for whom the victim is not grey, pays off that
+//               member's level, and pays nobody at all if there is no such
+//               member. Individual members are then skipped if they are dead
+//               or out-level that reference member.
+bool CoreRewardedKillXp(Player* member, Creature* killed, Player* maxNotGray, uint32 maxNotGrayLevel)
 {
-    if (!player)
-        return;
-    uint32 const guid = player->GetGUID().GetCounter();
-    ComboState const& st = g_combo[guid];
-    uint32 const now = uint32(GameTime::GetGameTime().count());
-    if (!st.stacks || st.expiresAt <= now)
-    {
-        CharacterDatabase.Execute("DELETE FROM `lg_combo` WHERE `guid` = {}", guid);
-        return;
-    }
-    CharacterDatabase.Execute(
-        "REPLACE INTO `lg_combo` (`guid`, `stacks`, `expires`) VALUES ({}, {}, {})",
-        guid, st.stacks, st.expiresAt);
+    if (!member || !killed)
+        return true;
+    if (!member->GetGroup())
+        return Acore::XP::Gain(member, killed) != 0;
+    if (!maxNotGray)
+        return false;
+    if (!member->IsAlive())
+        return false;
+    return maxNotGrayLevel >= member->GetLevel();
 }
 
-void LoadCombo(Player* player)
+// XP for every kill the engine declined to pay for.
+//
+// AzerothCore's kill-XP formula hard-zeroes a grey kill (mob_level <=
+// GetGrayLevel(playerLevel)) and KillRewarder then skips the OnPlayerGiveXP
+// hook entirely (`if (xp)`), so no hook-based rule can ever reach those
+// kills. In a low-level zone EVERY mob is grey -- GetGrayLevel(60) is 51 --
+// which is precisely where zone scaling is supposed to be doing its work.
+//
+// Group-aware on purpose. This used to grant to the killing blow only, while
+// KillRewarder zeroes a grey kill for the WHOLE group (_maxNotGrayMember is
+// null, so every member gets nothing). With playerbots in the party that
+// meant every kill a bot finished paid the player exactly zero -- the
+// "I don't get XP from half the mobs I kill" report.
+void GrantUnrewardedKillXp(Player* killer, Creature* killed)
 {
-    if (!player)
+    if (!killer || !killed || CreatureNeverPaysXp(killed))
         return;
-    uint32 const guid = player->GetGUID().GetCounter();
-    uint32 const now = uint32(GameTime::GetGameTime().count());
-    QueryResult result = CharacterDatabase.Query(
-        "SELECT `stacks`, `expires` FROM `lg_combo` WHERE `guid` = {}", guid);
-    if (!result)
-        return;
-    Field* fields = result->Fetch();
-    uint32 const stacks = fields[0].Get<uint32>();
-    uint32 const expires = fields[1].Get<uint32>();
-    if (!stacks || expires <= now)
+
+    Group* group = g_cfg.groupKillXp ? killer->GetGroup() : nullptr;
+    if (!group)
     {
-        CharacterDatabase.Execute("DELETE FROM `lg_combo` WHERE `guid` = {}", guid);
+        if (!killer->IsAlive() || CoreRewardedKillXp(killer, killed, nullptr, 0))
+            return;
+        if (uint32 const xp = ApplyOffHookXpMultipliers(killer, KillXpFor(killer, killed, 0)))
+            killer->GiveXP(xp, killed);
         return;
     }
-    ComboState& st = g_combo[guid];
-    st.stacks = std::min(stacks, COMBO_MAX);
-    st.expiresAt = expires;
+
+    // Same reference member the engine would have used.
+    Player* maxNotGray = nullptr;
+    uint32 maxNotGrayLevel = 0;
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive())
+            continue;
+        if (member != killer && !member->IsAtGroupRewardDistance(killed))
+            continue;
+        if (killed->GetLevel() <= Acore::XP::GetGrayLevel(uint8(member->GetLevel())))
+            continue;
+        if (!maxNotGray || maxNotGrayLevel < member->GetLevel())
+        {
+            maxNotGray = member;
+            maxNotGrayLevel = member->GetLevel();
+        }
+    }
+
+    for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive())
+            continue;
+        if (member != killer && !member->IsAtGroupRewardDistance(killed))
+            continue;
+        if (CoreRewardedKillXp(member, killed, maxNotGray, maxNotGrayLevel))
+            continue;
+        // Deliberately NOT split across the group. Every member's share is
+        // computed against their own level and their own zone multiplier,
+        // which is the same answer they would get soloing the mob. Grouping
+        // up is meant to be rewarded here, not taxed.
+        if (uint32 const xp = ApplyOffHookXpMultipliers(member, KillXpFor(member, killed, 0)))
+            member->GiveXP(xp, killed);
+    }
 }
+
+// Kill Combo (910089) was removed on 2026-08-23. It was two rewards wearing
+// one coat: a stacking kill-XP bonus, now made redundant by the flat kill
+// floor in KillXpFor, and a stacking movement-speed bonus, now the speed half
+// of the Wayfarer balance perk (LivingGear_Amenities.cpp). What is gone with
+// it: g_combo/g_groupCombo/g_comboShown, the per-second RecastCombo tick, and
+// the `lg_combo` round-trip across logout. The table and any existing
+// lg_account_perk rows are left alone -- nothing reads them now.
 
 uint32 RandomPoison(Player* player)
 {
@@ -1745,7 +1703,6 @@ void CatchUpProfession(Player* player)
     // actually granted to anyone (found in a 2026-08-21 audit after the
     // Autoloot/Quests-Finish 910008/910090 instances of this same bug) --
     // no documented unlock condition for any of them, so grant unconditionally.
-    UnlockPerk(player, SPELL_COMBO, nullptr);
     UnlockPerk(player, SPELL_ARMORY, nullptr);
     UnlockPerk(player, SPELL_SOLO_QUEUE, nullptr);
     UnlockPerk(player, SPELL_PULL_RADIUS, nullptr);
@@ -2269,8 +2226,6 @@ public:
         if (HasPerk(player, SPELL_SWIM))
             player->CastSpell(player, SPELL_SWIM, true);
         GrantSubtletyPerks(player);
-        LoadCombo(player);
-        RecastCombo(player);
     }
 
     void OnPlayerLogout(Player* player) override
@@ -2278,10 +2233,6 @@ public:
         if (!player)
             return;
         uint32 g = player->GetGUID().GetCounter();
-        SaveCombo(player);
-        g_combo.erase(g);
-        g_comboShown.erase(g);
-        g_comboTick.erase(g);
         g_cookAcc.erase(g);
         g_cookAmount.erase(g);
         g_aidCleanseTick.erase(g);
@@ -2312,22 +2263,12 @@ public:
                 TickShadowDanceBuff(player);
             }
         }
-        if (HasPerk(player, SPELL_COMBO))
-        {
-            uint32 id = player->GetGUID().GetCounter();
-            g_comboTick[id] += diff;
-            if (g_comboTick[id] >= 1000)
-            {
-                g_comboTick[id] = 0;
-                RecastCombo(player);
-            }
-        }
         if (player->GetSession() && g_pullRadiusOn[player->GetSession()->GetAccountId()]
             && HasPerk(player, SPELL_PULL_RADIUS))
         {
             uint32 id = player->GetGUID().GetCounter();
             g_pullRadiusTick[id] += diff;
-            // SPELL_PULL_RADIUS's own duration is short (matches SPELL_COMBO's
+            // SPELL_PULL_RADIUS's own duration is short (it matched Kill Combo's
             // DurationIndex) -- refresh well inside that window so the aura
             // never actually lapses between ticks.
             if (g_pullRadiusTick[id] >= 10000)
@@ -2381,16 +2322,14 @@ public:
 
     void OnPlayerCreatureKill(Player* killer, Creature* killed) override
     {
-        AddCombo(killer);
         CheckDungeonClear(killer, killed);
-        GrantScaledGreyKillXP(killer, killed);
+        GrantUnrewardedKillXp(killer, killed);
     }
 
     void OnPlayerCreatureKilledByPet(Player* owner, Creature* killed) override
     {
-        AddCombo(owner);
         CheckDungeonClear(owner, killed);
-        GrantScaledGreyKillXP(owner, killed);
+        GrantUnrewardedKillXp(owner, killed);
     }
 
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override
@@ -2405,20 +2344,14 @@ public:
         // battleground XP.
         if (xpSource == XPSOURCE_KILL)
         {
-            // The engine paid out using the creature's REAL level. Anything
-            // the player is being shown as scaled has to be re-based onto
-            // the level they actually see, or a mob that reads as yellow
-            // still pays like the grey it really is. (Fully-grey kills
-            // never reach this hook -- KillRewarder zeroes them first --
-            // and are handled by GrantScaledGreyKillXP instead.)
+            // One funnel for creature kills: rescale onto the level the
+            // player is actually shown, re-apply what BaseGain drops, apply
+            // the zone multiplier, then the floor -- see KillXpFor. A player
+            // victim (battleground honorable kill) has none of that to do
+            // and only wants the floor, which SupportKillXp applies.
             if (Creature* creature = victim ? victim->ToCreature() : nullptr)
-                if (uint32 const scaled = ScaledKillXP(player, creature))
-                    amount = scaled;
-            mult *= ZoneRewardMult(player);
+                amount = KillXpFor(player, creature, amount);
         }
-        uint32 const stacks = ComboCount(player);
-        if (HasPerk(player, SPELL_COMBO) && stacks)
-            mult *= 1.0f + COMBO_XP_PCT_PER_STACK * float(stacks);
         if (Aura* pace = player->GetAura(SPELL_DUNGEON_PACE))
             if (AuraEffect* e = pace->GetEffect(EFFECT_0))
                 mult *= 1.0f + float(e->GetAmount() + 1) / 100.0f;
@@ -2996,9 +2929,21 @@ void LoadPerkConfig()
     g_cfg.ignoreSpellReqs = sConfigMgr->GetOption<bool>("LivingGear.IgnoreSpellRequirements", true);
     g_cfg.reconcilePerkSpells = sConfigMgr->GetOption<bool>("LivingGear.ReconcilePerkSpells", true);
     g_cfg.questScale = sConfigMgr->GetOption<bool>("LivingGear.QuestScale.Enable", true);
-    g_cfg.questFloorPct = sConfigMgr->GetOption<uint32>("LivingGear.QuestScale.FloorPct", 4);
+    // 10, not the 4 this shipped with. The kill floor pays 2% of the level
+    // bar per mob and 4% per elite, so a 4% quest was worth exactly two mobs
+    // -- which does not complement questing, it replaces it. At 10% a quest
+    // is worth five mobs and both halves of levelling stay worth doing.
+    g_cfg.questFloorPct = sConfigMgr->GetOption<uint32>("LivingGear.QuestScale.FloorPct", 10);
     if (g_cfg.questFloorPct > 100)
         g_cfg.questFloorPct = 100;
+    g_cfg.killFloor = sConfigMgr->GetOption<bool>("LivingGear.KillXpFloor.Enable", true);
+    g_cfg.killFloorPct = sConfigMgr->GetOption<uint32>("LivingGear.KillXpFloor.Pct", 2);
+    g_cfg.killFloorElitePct = sConfigMgr->GetOption<uint32>("LivingGear.KillXpFloor.ElitePct", 4);
+    if (g_cfg.killFloorPct > 100)
+        g_cfg.killFloorPct = 100;
+    if (g_cfg.killFloorElitePct > 100)
+        g_cfg.killFloorElitePct = 100;
+    g_cfg.groupKillXp = sConfigMgr->GetOption<bool>("LivingGear.GroupKillXp", true);
     g_cfg.instantMount = sConfigMgr->GetOption<bool>("LivingGear.InstantMount", true);
     g_cfg.uniformMount = sConfigMgr->GetOption<bool>("LivingGear.UniformMountSpeed", true);
     g_cfg.autoMount = sConfigMgr->GetOption<bool>("LivingGear.AutoMount", true);

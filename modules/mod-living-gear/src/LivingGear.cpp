@@ -56,12 +56,14 @@ bool LivingGear_HandlePerksCommand(Player* player, std::string const& msg); // L
 bool LivingGear_HandleClassPerksCommand(Player* player, std::string const& msg); // LivingGear_ClassPerks.cpp
 bool LivingGear_HandleNextCommand(Player* player, std::string const& msg); // LivingGear_Next.cpp
 bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg); // LivingGear_Support.cpp
+bool LivingGear_HandleAmenitiesCommand(Player* player, std::string const& msg); // LivingGear_Amenities.cpp
 void LivingGear_ShowDiagnostics(Player* player); // LivingGear_Support.cpp
 
 // Login-time state pushes, reused to answer a client REQ. See SendAddonSync.
 void LivingGear_SendPerksSync(Player* player); // LivingGear_Perks.cpp
 void LivingGear_SendClassPerksSync(Player* player); // LivingGear_ClassPerks.cpp
 void LivingGear_SendNextSync(Player* player); // LivingGear_Next.cpp
+void LivingGear_SendWayfarerSync(Player* player); // LivingGear_Amenities.cpp
 
 // ---------------------------------------------------------------------
 // Shared addon transport.
@@ -1117,6 +1119,7 @@ static void SendAddonSync(Player* player, bool includeBags = true)
     ::LivingGear_SendPerksSync(player);
     ::LivingGear_SendClassPerksSync(player);
     ::LivingGear_SendNextSync(player);
+    ::LivingGear_SendWayfarerSync(player);
 
     LgStats absorb = LoadAbsorbForPlayer(player);
     uint32 count = 0;
@@ -1653,6 +1656,8 @@ bool DispatchAddonCommand(Player* player, std::string const& raw)
     if (::LivingGear_HandleNextCommand(player, msg))
         return true;
     if (::LivingGear_HandleSupportCommand(player, msg))
+        return true;
+    if (::LivingGear_HandleAmenitiesCommand(player, msg))
         return true;
 
     // Every "this button does nothing" report against this module has

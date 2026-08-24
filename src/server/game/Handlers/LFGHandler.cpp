@@ -559,17 +559,30 @@ void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
 // client, whatever else it gets wrong.
 static uint8 NarrowProposalRoleForClient(uint8 role)
 {
-    uint8 const leader = role & lfg::PLAYER_ROLE_LEADER;
-
+    // PLAYER_ROLE_LEADER (0x1) is stripped, not preserved.
+    //
+    // It used to be kept here on the assumption that the client reads it
+    // separately for the crown. That assumption was never checked and it is
+    // the last thing left that can explain a report of the Lua error on
+    // 2026-08-23, hours after this narrowing went live: the correction log
+    // below had fired exactly zero times over the whole uptime, so every mask
+    // that reached that client already had exactly one role bit -- and the
+    // only thing this function was still letting through untouched was the
+    // leader bit. LFGQueue.cpp copies the queue mask verbatim into the
+    // proposal (`data.role = itRoles->second`), and a solo queuer is their own
+    // leader, so their own entry goes out as LEADER|DAMAGE = 9.
+    //
+    // Nothing in the proposal pop-up draws a leader crown, so there is no
+    // reason to send the bit and one concrete reason not to.
     if (role & lfg::PLAYER_ROLE_TANK)
-        return leader | lfg::PLAYER_ROLE_TANK;
+        return lfg::PLAYER_ROLE_TANK;
 
     if (role & lfg::PLAYER_ROLE_HEALER)
-        return leader | lfg::PLAYER_ROLE_HEALER;
+        return lfg::PLAYER_ROLE_HEALER;
 
     // Covers both "already damage" and "no role at all": damage is the one role
     // every class can fill, and roleless members sort last either way.
-    return leader | lfg::PLAYER_ROLE_DAMAGE;
+    return lfg::PLAYER_ROLE_DAMAGE;
 }
 
 void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
@@ -636,9 +649,15 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
             if (!(player.role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)))
                 LOG_ERROR("lfg", "SMSG_LFG_PROPOSAL_UPDATE: proposal {} member [{}] has no LFG role at all (mask {}), sending damage - a roleless member throws Lua errors client-side",
                     proposal.id, pguid.ToString(), uint32(player.role));
-            else
+            else if (player.role & ~(lfg::PLAYER_ROLE_LEADER | lfg::PLAYER_ROLE_TANK
+                | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)
+                || (player.role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE))
+                    != (role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)))
                 // Error rather than warn on purpose: the unconfigured "lfg" logger
-                // falls back to Logger.root, which only passes error and above
+                // falls back to Logger.root, which only passes error and above.
+                // Only a genuinely multi-role or unknown mask is worth a line --
+                // stripping the leader bit happens on nearly every proposal and
+                // would otherwise log once per member per pop.
                 LOG_ERROR("lfg", "SMSG_LFG_PROPOSAL_UPDATE: proposal {} member [{}] role mask {} was never narrowed to one role, sending {}",
                     proposal.id, pguid.ToString(), uint32(player.role), uint32(role));
         }

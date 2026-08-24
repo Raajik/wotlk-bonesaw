@@ -93,7 +93,7 @@ LivingGear.CollectionPassive.TickMs = 60000
 # value still reads as noise. Repeat turn-ins of a repeatable quest are always
 # left at zero and never get the floor.
 LivingGear.QuestScale.Enable = 1
-LivingGear.QuestScale.FloorPct = 4
+LivingGear.QuestScale.FloorPct = 10
 
 # Creature damage-school immunity from creature_template is downgraded to an
 # 80% resist, so "immune to Frost" mobs stop existing while still shrugging off
@@ -141,11 +141,22 @@ LivingGear.QuestBypass.Multiplier = 2.0
 LivingGear.QuestBypass.WindowSeconds = 3600
 
 # Kill XP floor (bug report #11). Every kill is worth at least this percentage
-# of the current level's XP bar, so trash far below you still pays something.
-# Zone scaling still governs anything worth more than the floor. Quest XP has
-# its own separate floor above and is not affected by this.
+# of the killer's current level bar, so trash far below you still pays
+# something. 2% is 50 kills a level at every level; elites are worth double.
+#
+# Applies to creature kills through KillXpFor (LivingGear_Perks.cpp) and to
+# battleground honorable kills through SupportKillXp, so levelling in a
+# battleground is viable. Anything worth more than the floor keeps its own
+# value. Quest XP has its own separate floor above and is not affected.
 LivingGear.KillXpFloor.Enable = 1
-LivingGear.KillXpFloor.Pct = 1
+LivingGear.KillXpFloor.Pct = 2
+LivingGear.KillXpFloor.ElitePct = 4
+
+# Share a kill the engine paid nobody for with the whole party rather than
+# only whoever landed the killing blow. AzerothCore zeroes a grey kill for
+# every member of a group at once, so with this off a party -- or a party of
+# playerbots -- gets nothing at all from a scaled-up low-level zone.
+LivingGear.GroupKillXp = 1
 
 # Quest items always drop (bug report #12). Covers loot entries flagged as quest
 # drops, and ordinary items that are an objective of a quest the looting player

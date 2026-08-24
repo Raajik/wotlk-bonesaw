@@ -224,7 +224,9 @@ local WORLD_TRACKS = {
         -- surviving jump perk and is unaffected -- it is mounted-only, which is
         -- what steers around the crash.
         ticks = {
-            { id = 910038, name = "Wayfarer", how = "Complete 100 quests. +40% movement speed (stacks).", bonus = 40 },
+            { id = 910038, name = "Wayfarer", how = "Explore your home zone, or earn Going Down?. Balances up to 50% movement speed against 50% damage -- see the slider at the top of this tab.", bonus = 50 },
+            { id = 910176, name = "Wayfarer: Wide", how = "Explore Eastern Kingdoms or Explore Kalimdor. The Wayfarer balance reaches 75%.", bonus = 75 },
+            { id = 910177, name = "Wayfarer: Full", how = "Explore Outland or Explore Northrend. The Wayfarer balance reaches the full 100%.", bonus = 100 },
             { id = 910104, name = "Mounted Opener", how = "Reach level 40. While mounted: jump while moving forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap.", bonus = 0 },
         },
     },
@@ -412,12 +414,12 @@ local CLASS_PERKS = {
         { id = 910159, name = "Destruction", how = "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt." },
     },
     DRUID = {
-        { id = 910160, name = "Balance", how = "Starfall has no cooldown/mana cost. You are permanently in both Solar and Lunar Eclipse at once." },
+        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once." },
         { id = 910161, name = "Feral", how = "Berserk is a free toggle. While active, Cat/Bear abilities cost no energy/rage and lose their cooldowns." },
         { id = 910162, name = "Restoration", how = "Wild Growth has no cooldown and heals up to 10 allies within 30 yards. Rejuvenation spreads to injured allies within 15 yards every 3 sec." },
     },
     PRIEST = {
-        { id = 910163, name = "Discipline", how = "Penance has no cooldown and also applies Power Word: Shield to the target." },
+        { id = 910163, name = "Discipline", how = "Penance has no cooldown, also applies Power Word: Shield to the target, and ricochets to up to 5 nearby enemies." },
         { id = 910164, name = "Holy", how = "Guardian Spirit has no cooldown and also applies to 2 more injured allies within 20 yards." },
         { id = 910165, name = "Shadow", how = "Shadowfiend has no cooldown. Mind Flay deals quadruple damage." },
     },
@@ -496,6 +498,10 @@ local db = {
     armoryAttr = "All",
     reagentCat = "All",
     jump = { mode = 2, max = 0 },
+    -- Wayfarer: pct is the share of the dial spent on damage, cap is how far
+    -- the unlocked tiers let it reach (0 = not unlocked), cd is seconds left
+    -- on the swap cooldown. Replaced wholesale by every WAY| line.
+    way = { pct = 0, cap = 0, cd = 0 },
     solo = 0,
     autoMount = 0,
     speedCap = 500,
@@ -1777,10 +1783,57 @@ function LG2.SendWorldToggle(info)
     end
 end
 
+local function RefreshWayfarer()
+    if not ui.waySlider then
+        return
+    end
+    local way = db.way or {}
+    local cap = way.cap or 0
+    if cap <= 0 then
+        ui.wayDesc:SetText("Locked - explore your home zone, or earn Going Down?")
+        ui.wayDesc:SetTextColor(0.45, 0.45, 0.45, 1)
+        ui.waySlider:EnableMouse(false)
+        ui.waySlider:SetValue(way.pct or 0)
+        return
+    end
+    ui.waySlider:EnableMouse(true)
+    ui.wayDesc:SetTextColor(0.5, 0.5, 0.55, 1)
+    -- Setting the value fires OnValueChanged, which repaints the description
+    -- through PreviewWayfarer, so this is the only line that has to run.
+    ui.waySlider:SetValue(way.pct or 0)
+    LG2.PreviewWayfarer(way.pct or 0)
+end
+
+function LG2.PreviewWayfarer(value)
+    if not ui.wayDesc then
+        return
+    end
+    local way = db.way or {}
+    local cap = way.cap or 0
+    if cap <= 0 then
+        return
+    end
+    local dmg = math.floor((tonumber(value) or 0) + 0.5)
+    if dmg < 0 then dmg = 0 elseif dmg > 100 then dmg = 100 end
+    local text = string.format("+%d%% speed, +%d%% damage",
+        math.floor((100 - dmg) * cap / 100), math.floor(dmg * cap / 100))
+    if (way.cd or 0) > 0 then
+        text = text .. string.format("  (settling, %ds)", way.cd)
+    end
+    ui.wayDesc:SetText(text)
+end
+
+function LG2.SendWayfarer(value)
+    local dmg = math.floor((tonumber(value) or 0) + 0.5)
+    if dmg < 0 then dmg = 0 elseif dmg > 100 then dmg = 100 end
+    SendLine("WAYSET|" .. tostring(dmg))
+end
+
 local function LayoutWorld()
     if not ui.worldUnlocks then
         return
     end
+    RefreshWayfarer()
     for i = 1, #WORLD_UNLOCKS do
         local info = WORLD_UNLOCKS[i]
         local btn = ui.worldUnlocks[i]
@@ -3225,6 +3278,73 @@ function LG2.BuildWorldPanel(f)
     local ACTION_W, ACTION_H = 124, 18
     local worldY = -6
 
+    -- Wayfarer. One dial: everything spent on damage comes out of movement
+    -- speed. Lives at the top of the World tab rather than inside the
+    -- Movement track because it is the only perk in the addon the player
+    -- SETS rather than simply owns.
+    --
+    -- The value is sent on mouse release, never on OnValueChanged: dragging
+    -- fires that continuously, and every send is an addon whisper the server
+    -- answers with a state line. The label still tracks the drag live so the
+    -- slider does not feel dead while it is moving.
+    ui.waySection = Font(content, 10, 0.5, 0.68, 0.92)
+    ui.waySection:SetPoint("TOPLEFT", 6, worldY)
+    ui.waySection:SetText("WAYFARER")
+    worldY = worldY - 16
+
+    local wayRow = CreateFrame("Frame", nil, content)
+    wayRow:SetSize(506, 40)
+    wayRow:SetPoint("TOPLEFT", 6, worldY)
+    wayRow.bg = wayRow:CreateTexture(nil, "BACKGROUND")
+    wayRow.bg:SetAllPoints(wayRow)
+    Solid(wayRow.bg, 0.12, 0.12, 0.13, 1)
+    ui.wayRow = wayRow
+
+    ui.wayLabel = Font(wayRow, 11, 0.88, 0.9, 0.94)
+    ui.wayLabel:SetPoint("TOPLEFT", 8, -4)
+    ui.wayLabel:SetText("Wayfarer")
+
+    ui.wayDesc = Font(wayRow, 9, 0.5, 0.5, 0.55)
+    ui.wayDesc:SetPoint("TOPLEFT", 8, -18)
+    ui.wayDesc:SetWidth(200)
+    ui.wayDesc:SetText("Locked")
+
+    local waySlider = CreateFrame("Slider", nil, wayRow)
+    waySlider:SetOrientation("HORIZONTAL")
+    waySlider:SetSize(230, 14)
+    waySlider:SetPoint("RIGHT", wayRow, "RIGHT", -12, 0)
+    waySlider:SetMinMaxValues(0, 100)
+    waySlider:SetValueStep(5)
+    waySlider:SetThumbTexture("Interface\\Buttons\\UI-SliderBar-Button-Horizontal")
+    waySlider.track = waySlider:CreateTexture(nil, "BACKGROUND")
+    waySlider.track:SetPoint("LEFT", 0, 0)
+    waySlider.track:SetPoint("RIGHT", 0, 0)
+    waySlider.track:SetHeight(4)
+    Solid(waySlider.track, 0.24, 0.24, 0.28, 1)
+    ui.waySlider = waySlider
+
+    ui.wayLeft = Font(wayRow, 9, 0.6, 0.8, 0.98)
+    ui.wayLeft:SetPoint("BOTTOMLEFT", waySlider, "TOPLEFT", 0, 2)
+    ui.wayLeft:SetText("SPEED")
+    ui.wayRight = Font(wayRow, 9, 0.98, 0.72, 0.55)
+    ui.wayRight:SetPoint("BOTTOMRIGHT", waySlider, "TOPRIGHT", 0, 2)
+    ui.wayRight:SetText("DAMAGE")
+
+    waySlider:SetScript("OnValueChanged", function(self, value)
+        LG2.PreviewWayfarer(value)
+    end)
+    waySlider:SetScript("OnMouseUp", function(self)
+        LG2.SendWayfarer(self:GetValue())
+    end)
+    waySlider:SetScript("OnEnter", function()
+        SetWorldTip("Wayfarer - slide toward SPEED or DAMAGE. Whatever one gains the other loses. Mounted and flying speed get half the movement share. Changing takes 30 seconds and cannot be done in combat.")
+    end)
+    waySlider:SetScript("OnLeave", function()
+        SetWorldTip()
+    end)
+
+    worldY = worldY - 46
+
     ui.worldSectionToggles = Font(content, 10, 0.5, 0.68, 0.92)
     ui.worldSectionToggles:SetPoint("TOPLEFT", 6, worldY)
     ui.worldSectionToggles:SetText("TOGGLES")
@@ -4352,6 +4472,15 @@ function LG2.HandleAddon(prefix, message)
     end
     if p[1] == "PULL" then
         db.pullRadius = tonumber(p[2]) or 0
+        LayoutWorld()
+        return
+    end
+    if p[1] == "WAY" then
+        db.way = {
+            pct = tonumber(p[2]) or 0,
+            cap = tonumber(p[3]) or 0,
+            cd = tonumber(p[4]) or 0,
+        }
         LayoutWorld()
         return
     end

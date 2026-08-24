@@ -12,14 +12,14 @@ Read `../../CLAUDE.md` first for the rules. This file is the map.
 | File | Lines | Owns |
 |---|---|---|
 | `LivingGear_ClassPerks.cpp` | 3369 | The 30 class specs. `CLASS_PERK_GRANTS`, spec selection, per-spec behaviour |
-| `LivingGear_Perks.cpp` | 3116 | Account perks: Kill Combo, cooking, fishing, Rogue Subtlety, world toggles |
+| `LivingGear_Perks.cpp` | 3116 | Account perks: zone scaling and **all kill XP**, cooking, fishing, Rogue Subtlety, world toggles |
 | `LivingGear.cpp` | 1997 | Item leveling, the stat budget, attunement, milestones, the addon dispatcher's stat half |
 | `LivingGear_Vault.cpp` | 1754 | Reagent bank, autoloot rule engine, pickpocket and corpse autoloot |
 | `LivingGear_Next.cpp` | 1327 | Paladin perks, shared account currency, class buffs, mentor bots |
 | `LivingGear_Gather.cpp` | 1095 | Gathering perks, chest autoloot, lockpicking |
-| `LivingGear_Support.cpp` | 870 | `.bug` reports, Complete Quest + gold buyout, kill XP floor, Wintergrasp |
+| `LivingGear_Support.cpp` | 870 | `.bug` reports, Complete Quest + gold buyout, PvP kill XP floor, Wintergrasp |
 | `LivingGear_Progression.cpp` | 623 | Reputation, honour, trade and Leveling perk tracks |
-| `LivingGear_Amenities.cpp` | 484 | Summoned mailbox, bank, vendor and friends |
+| `LivingGear_Amenities.cpp` | 484 | Summoned mailbox, bank, vendor and friends; the Wayfarer speed/damage slider |
 
 The split is historical rather than principled. Two things follow from that and
 both have caused real bugs:
@@ -30,6 +30,34 @@ both have caused real bugs:
 - **Ownership is not always where you would guess.** Rogue Assassination and
   Subtlety live in `Perks.cpp`, not `ClassPerks.cpp`. Paladin lives in
   `Next.cpp`. Grep before assuming.
+
+---
+
+## Kill XP, in one place
+
+`KillXpFor(killer, killed, engineAmount)` in `LivingGear_Perks.cpp` is the only
+answer to "what is this kill worth". In order:
+
+1. Rebase onto the level the killer is actually **shown** (`ScaledKillXP`), and
+   re-apply what `Acore::XP::BaseGain` leaves out but `Acore::XP::Gain` applies:
+   elite ×2, the creature's `ModExperience`, and `Rate.XP.Kill`.
+2. Multiply by `ZoneRewardMult` — the overlevelled-zone decay.
+3. Floor at `LivingGear.KillXpFloor.Pct` of the killer's level bar (2%), or
+   `ElitePct` (4%) for an elite.
+
+Two callers, and the split between them is the whole point:
+
+- `LivingGearPerks::OnPlayerGiveXP` — kills the engine **did** pay for.
+- `GrantUnrewardedKillXp` — kills the engine paid **nobody** for, i.e. every
+  grey kill. Group-aware, because `KillRewarder` zeroes a grey kill for the
+  entire party at once; granting only to the killing blow meant that with
+  playerbots in the group, every kill a bot finished paid the player zero.
+  `CoreRewardedKillXp` mirrors `KillRewarder`'s eligibility rules exactly —
+  get that wrong in one direction and it is double XP, in the other, none.
+
+Battleground honourable kills reach `OnPlayerGiveXP` with a **Player** victim,
+which has no scaling to do; `SupportKillXp` floors those and skips creature
+victims entirely so the elite tier is not flattened by a second floor.
 
 ---
 
@@ -157,6 +185,18 @@ Each of these cost at least one shipped bug.
    caught a wrong Hemorrhage rank and two achievements that do not exist.
 8. **Keep-in-step updates should be bidirectional.** `WHERE x < y` strands rows
    above `y` forever; `WHERE x <> y` converges.
+9. **`Player::GiveXP` does NOT fire `OnPlayerGiveXP`.** Only `KillRewarder`,
+   quest turn-in, exploration and battleground bonus honour do — and
+   `KillRewarder` skips the hook entirely whenever its own number is zero,
+   which is every grey kill, which is every mob in a low-level zone. A rule
+   written as an XP hook therefore does not apply to the kills that need it
+   most. Everything about the value of a creature kill now lives in one
+   function, `KillXpFor`, and both paths call it.
+10. **One question, one function.** A bot's dungeon role was answered by talent
+   tab in one place (`LfgJoinAction::GetRoles`) and by active AI strategy in
+   another (`LfgFillRoleOf`); they disagreed, so groups were built around
+   healers that were really dps. `PlayerbotAI::GetDungeonRole` is the only
+   answer now.
 
 ---
 

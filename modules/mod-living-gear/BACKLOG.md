@@ -66,6 +66,68 @@ path or playing the game confirms behaviour.
 
 ---
 
+## 1a. Kill XP, Wayfarer and bot roles — DONE (2026-08-23), unshipped
+
+Four things, all built and compiling, none shipped.
+
+**The zone-scaling XP audit.** Asked for as "the monster/world scaling system
+feels like a facade — I don't get XP from half the mobs I kill in lower level
+zones". It was. Every mob in a low-level zone is grey (`GetGrayLevel(60)` is
+51), `Acore::XP::Gain` hard-zeroes a grey kill, and `KillRewarder` then skips
+the `OnPlayerGiveXP` hook entirely — so the 1% floor, the elite bonus and
+`Rate.XP.Kill` never reached a single one of those kills. A level 60 in a
+starter zone was paid 131 XP against a 290,000 bar, 0.045%, for a mob the
+module had already scaled to 61 in display and in damage. Grouped it was
+worse: `KillRewarder` zeroes a grey kill for the whole party, and the module
+granted only to the killing blow, so with playerbots in the group every kill a
+bot finished paid the player nothing. Now one funnel, `KillXpFor`, and one
+group-aware grant. See ARCHITECTURE.md, "Kill XP, in one place".
+
+**The kill floor is now 2% of the level bar, 4% for elites**, and the quest
+floor moved 4% → 10% so a quest is worth five mobs rather than two. Battleground
+honourable kills get the same 2% through `SupportKillXp`. Roughly 50 kills a
+level at every level, and the numbers behind that choice are in the same commit
+message.
+
+**Kill Combo (910089) is gone.** Its XP half is what the flat floor now does
+better and its speed half is what Wayfarer now does better. State, table
+round-trip and per-second recast all removed; existing `lg_account_perk` rows
+are left alone.
+
+**Wayfarer (910038) is now a slider**, not a flat +40% speed for 100 quests.
+One dial trading movement speed against damage, +/-50 at tier 1, widening to
++/-100 through exploration; mounted speed gets half; swapping takes 30 seconds
+and cannot be done in combat. Unlocked by any home-zone exploration achievement
+or by 964 "Going Down?" — early, but a deed rather than time served.
+
+**One definition of a bot's dungeon role.** `PlayerbotAI::GetDungeonRole`.
+Reported as "healers marked as dps or dps marked as healers and everyone dies";
+the cause was that the queue role read the talent tab and the fill read the
+active AI strategy. Core-patch 0023.
+
+Still to do, and only playing proves them:
+- Confirm the LFG "Unknown role: UNKNOWN" Lua error is actually gone. The
+  leader bit is the last untested suspect (core-patch 0013) and stripping it is
+  a hypothesis, not a proven fix.
+- Watch the levelling curve at 2%/4% for a few real levels before calling the
+  numbers right.
+
+---
+
+## 1b. Attunement interface redesign — HIGH, requested 2026-08-23
+
+Bulk attune *works* ("Attuned 9 item(s). 21 already known.") but the interface
+around it is disliked and wants redesigning. The mechanic is fine; this is
+purely the UI.
+
+Not started, and not specced yet — the shape of the redesign has not been
+discussed, so that conversation comes first. Related: item 2 below already
+notes that bulk attune wants to live on the first page and that the Armory page
+was never laid out with a primary action button in mind, which is probably the
+same problem seen from the other side.
+
+---
+
 ## 2. Attunement and item leveling redesign — HIGH
 
 Spec is complete in `ATTUNEMENT-REDESIGN.md`. Not started.
@@ -146,7 +208,10 @@ Current as of 2026-08-23. See `tools/bug-reports/bug_resolve.py` for status.
 - **#52** Living Bomb not spreading in combat
 - **#53** Blizzard does no damage — instrumented, awaiting a fresh attempt
 
-Fixed and awaiting ship: **#49** (fel iron chests), **#54** (Blizzard revoke).
+Fixed and awaiting ship: **#49** (fel iron chests), **#54** (Blizzard revoke),
+plus the two reported on 2026-08-23: the LFG dungeon-ready Lua error (leader bit
+stripped from the proposal role, core-patch 0013 — unconfirmed, see item 1a) and
+bots queueing with a role their spec does not play (core-patch 0023).
 
 ---
 

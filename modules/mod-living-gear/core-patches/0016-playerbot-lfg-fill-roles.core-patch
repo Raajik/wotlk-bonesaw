@@ -4,6 +4,10 @@ Touches: modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp and .h --
 FillLfgRaidGroup(), EnsureQueueFillBots(), plus new EnsureLfgRoleBots(),
 RetargetBotToBand() and LoginExtraBotsForRole()
 Applies on top of 0003-playerbot-lfg-role.core-patch (same function, same lines).
+Superseded in part by 0023-playerbot-one-role-definition.core-patch: LfgFillRoleOf
+now delegates to PlayerbotAI::GetDungeonRole, because reading a bot's active AI
+strategy here while its queue role was read from the talent tab meant the two
+disagreed -- healers counted as dps and dps counted as healers.
 
 Why: FillLfgRaidGroup() selected bots on team, level range and idle flag and
 nothing else, so a bot-filled dungeon group was whichever four idle bots the

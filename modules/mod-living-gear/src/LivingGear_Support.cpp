@@ -83,11 +83,16 @@ uint32 g_questBypassWindow = 3600;      // window length, seconds
 // something. Both are config-gated so they can be turned off without a rebuild.
 bool g_questDropAlways = true;
 bool g_killXpFloorEnabled = true;
-// Percent of the CURRENT level's XP bar that any kill is worth at minimum.
-// Asked for as 2 (50 kills a level); set to 1 on the call that 100 kills a
-// level is still plenty, and that 2% would make grinding strictly faster than
-// questing at every level.
-uint32 g_killXpFloorPct = 1;
+// Percent of the CURRENT level's XP bar that a PLAYER kill is worth at
+// minimum. Creature kills are floored by KillXpFor in LivingGear_Perks.cpp
+// instead -- it is the only place that knows the effective level, the elite
+// tier and the zone multiplier, and applying a second floor here would just
+// be a worse copy of it.
+//
+// Raised from 1 to 2 alongside that funnel: 50 kills a level, and a
+// battleground honorable kill is now worth the same as a mob, which is what
+// makes BG levelling viable at all.
+uint32 g_killXpFloorPct = 2;
 
 // Bug report #3: Wintergrasp siege damage scales with how many people are
 // actually there. WG_FULL_ROSTER is the population the stock building health
@@ -583,17 +588,21 @@ void JoinWintergrasp(Player* player)
 // Bug report #11: "make all mobs give N% current level xp per kill so you
 // always get something from them."
 //
-// This is a floor, not a replacement. Zone scaling already re-bases a kill onto
-// the level the player is actually shown (ScaledKillXP in LivingGear_Perks.cpp),
-// and anything worth more than the floor keeps its own value untouched. What
-// this fixes is the tail: trash far below the player, critters, and anything
-// the scaling declines to touch, all of which paid effectively nothing.
+// PLAYER victims only now. Creature kills go through KillXpFor in
+// LivingGear_Perks.cpp, which floors them itself with the elite tier and the
+// zone multiplier in hand; this hook only ever saw the subset of creature
+// kills the engine already paid for anyway, since KillRewarder skips
+// OnPlayerGiveXP entirely whenever its own number is zero.
+//
+// What is left here is the half that funnel cannot reach: a battleground
+// honorable kill, which reaches this hook with a Player victim and no scaling
+// to do. That is what makes "get a decent bit of XP from battlegrounds" true.
 //
 // Expressed against PLAYER_NEXT_LEVEL_XP so it stays meaningful at every level
 // -- a flat XP number would be a fortune at level 5 and a rounding error at 75.
 //
 // Deliberately NOT applied to quest XP: LivingGearPerks::OnPlayerQuestComputeXP
-// already has its own 4% floor, and stacking a second one here would pay the
+// already has its own floor, and stacking a second one here would pay the
 // kill floor on top of every turn-in.
 class SupportKillXp : public PlayerScript
 {
@@ -602,11 +611,16 @@ public:
         PLAYERHOOK_ON_GIVE_EXP
     }) { }
 
-    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 xpSource) override
+    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override
     {
         if (!g_killXpFloorEnabled || !g_killXpFloorPct || !player)
             return;
         if (xpSource != XPSOURCE_KILL)
+            return;
+        // Creature kills are floored by KillXpFor instead. Two floors on one
+        // grant is how the elite tier would quietly get flattened back to the
+        // trash rate.
+        if (victim && victim->IsCreature())
             return;
         if (player->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
             return;
@@ -851,7 +865,7 @@ void AddSC_LivingGearSupport()
     LivingGearSupport::g_killXpFloorEnabled =
         sConfigMgr->GetOption<bool>("LivingGear.KillXpFloor.Enable", true);
     LivingGearSupport::g_killXpFloorPct =
-        sConfigMgr->GetOption<uint32>("LivingGear.KillXpFloor.Pct", 1);
+        sConfigMgr->GetOption<uint32>("LivingGear.KillXpFloor.Pct", 2);
     if (LivingGearSupport::g_killXpFloorPct > 100)
         LivingGearSupport::g_killXpFloorPct = 100;
 

@@ -478,9 +478,15 @@ public:
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 /*xpSource*/) override
     {
         // Composes with LivingGearPerks' own OnPlayerGiveXP (zone scale,
-        // Kill Combo, dungeon pace) -- ScriptMgr calls every registered
-        // PlayerScript hook, so this only multiplies whatever `amount`
-        // already is; it never assumes it's the sole handler.
+        // the kill funnel, dungeon pace) -- ScriptMgr calls every registered
+        // PlayerScript hook in registration order, and Perks registers first
+        // (LivingGear_loader.cpp). So this multiplies a value the funnel has
+        // already settled, and must not run before it: the funnel REPLACES
+        // amount for a creature kill rather than scaling it.
+        //
+        // The grey-kill grant does not reach this hook at all -- Player::GiveXP
+        // never fires it -- which is why GrantUnrewardedKillXp applies
+        // LivingGear_LevelingXpMultiplier itself.
         if (!player || !amount)
             return;
         float const mult = LevelingXpMultiplier(player);
@@ -615,6 +621,16 @@ public:
 };
 
 } // namespace LivingGearProgression
+
+// The Leveling perks apply to every XP source, including the one XP path that
+// cannot use the hook: LivingGear_Perks.cpp grants grey-kill XP through
+// Player::GiveXP directly, and Player::GiveXP does not fire OnPlayerGiveXP.
+// Without this the +50%-per-max-level-alt bonus silently did nothing in exactly
+// the low-level zones the scaling exists to keep relevant.
+float LivingGear_LevelingXpMultiplier(Player* player)
+{
+    return LivingGearProgression::LevelingXpMultiplier(player);
+}
 
 void AddSC_LivingGearProgression()
 {

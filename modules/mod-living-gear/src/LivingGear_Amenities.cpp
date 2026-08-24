@@ -13,13 +13,17 @@
  * the hearthstone, from anywhere -- by summoning an invisible clone of the
  * real NPC and interacting with it, same trick the original used.
  *
- * Quest Wayfarer (910038): +40% movement speed, permanently, once the
- * account has 100 rewarded quests across any character.
+ * Wayfarer (910038 + 910175/910176/910177): one perk that trades movement
+ * speed against damage on a slider the player sets. See the block comment
+ * above WayfarerCap() for the whole design.
  */
 
+#include "AchievementMgr.h"
 #include "Chat.h"
 #include "Config.h"
 #include "DatabaseEnv.h"
+#include "DBCStores.h"
+#include "GameTime.h"
 #include "Log.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -27,6 +31,7 @@
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "Spell.h"
+#include "SpellAuraEffects.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -36,8 +41,13 @@
 #include "Unit.h"
 #include "WorldSession.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 // Castable perks only get learned; badges do not. LivingGear_Perks.cpp.
 bool LivingGear_PerkIsCastable(uint32 spellId);
@@ -57,7 +67,18 @@ uint32 const SPELL_BANK = 910005;
 uint32 const SPELL_STABLE = 910006;
 uint32 const SPELL_BIND = 910007;
 uint32 const SPELL_FLIGHT = 910009;
-uint32 const SPELL_QUEST_SPEED = 910038;
+// Wayfarer. 910038 carries the speed half (MOD_SPEED_ALWAYS on foot,
+// MOD_MOUNTED_SPEED_ALWAYS and MOD_MOUNTED_FLIGHT_SPEED_ALWAYS at half value
+// while mounted or flying); 910175 is a hidden companion carrying the damage
+// half (MOD_DAMAGE_PERCENT_DONE, all schools). Two spells because spell_dbc
+// has room for exactly three effects and the speed half needs all three --
+// bug report #27 is the record of what happens when flight is left out.
+//
+// 910176 and 910177 are badges: they own no aura and only widen the range.
+uint32 const SPELL_WAYFARER = 910038;
+uint32 const SPELL_WAYFARER_FOCUS = 910175;
+uint32 const SPELL_WAYFARER_WIDE = 910176;
+uint32 const SPELL_WAYFARER_FULL = 910177;
 uint32 const SPELL_AUTO_QUEST = 910090;
 
 uint32 const NPC_AH_ALLIANCE = 8670;
@@ -243,43 +264,276 @@ void BindHearthHere(Player* player)
     Say(player, "|cff66ccff[Living Gear]|r Your hearthstone is bound here.");
 }
 
-void ApplyQuestSpeedAura(Player* player)
+// ---------------------------------------------------------------------
+// Wayfarer
+// ---------------------------------------------------------------------
+//
+// One perk, one dial. Everything the player puts into damage comes out of
+// movement speed and vice versa: at 0 it is +100% speed and nothing else, at
+// 100 it is +100% damage and nothing else, and the middle is +50%/+50%. The
+// total never changes, so there is no setting that is simply better than
+// another -- only one that suits what you are doing.
+//
+// Replaces the old *Quest: Wayfarer, which was a flat +40% movement speed for
+// completing 100 quests. That was a fine reward and a boring one, and 100
+// quests is not "early" for something meant to stand in for not owning a
+// mount yet.
+//
+// Three things stop it being a free win:
+//
+//   Mounted speed is HALVED. The speed half is meant to bridge the gap before
+//   a mount, not to make an epic mount 100% faster on top of its own 100%.
+//
+//   Swapping costs WAYFARER_SWAP_COOLDOWN and cannot be done in combat.
+//   Without that, everyone travels at full speed and flips to full damage on
+//   the pull, which is not a choice, it is both halves for free.
+//
+//   The range starts at +/-50 and only opens to +/-100 through exploration
+//   (see WAYFARER_TIERS). A level 6 character does not get +100% damage.
+//
+// Alt sharing: the UNLOCK is account-wide like every other perk here, but the
+// slider position is per character, seeded from the last value used anywhere
+// on the account. A protection warrior and a hunter genuinely want different
+// settings; nobody wants to set it again on every alt.
+uint32 const WAYFARER_SWAP_COOLDOWN = 30; // seconds
+
+// Achievements that unlock and then widen the perk. Every id was read out of
+// var/mmap-output/dbc/Achievement.dbc on 2026-08-23 by parsing the file and
+// checking the name field (index 4 in this build), not from memory.
+//
+// Tier 1 is deliberately reachable at level 1 by two very different routes:
+// walk every corner of your own starting zone, or survive a 65 yard fall.
+// Both are deeds rather than time served, which is what "available early but
+// not a freebie" has to mean.
+struct WayfarerTier
 {
-    if (!player || !player->IsAlive() || !player->GetSession())
+    uint32 spellId;
+    uint32 cap;
+    char const* label;
+    std::vector<uint32> anyOf;
+};
+
+std::vector<WayfarerTier> const WAYFARER_TIERS =
+{
+    { SPELL_WAYFARER, 50, "*Wayfarer",
+      { 964,   // Going Down?           -- fall 65 yards and live
+        776,   // Explore Elwynn Forest
+        627,   // Explore Dun Morogh
+        842,   // Explore Teldrassil
+        860,   // Explore Azuremyst Isle
+        728,   // Explore Durotar
+        736,   // Explore Mulgore
+        768,   // Explore Tirisfal Glades
+        859 }  // Explore Eversong Woods
+    },
+    { SPELL_WAYFARER_WIDE, 75, "*Wayfarer: Wide",
+      { 42,    // Explore Eastern Kingdoms
+        43 }   // Explore Kalimdor
+    },
+    { SPELL_WAYFARER_FULL, 100, "*Wayfarer: Full",
+      { 44,    // Explore Outland
+        45 }   // Explore Northrend
+    },
+};
+
+// Character guid -> percentage of the dial spent on DAMAGE (0-100).
+std::unordered_map<uint32, uint32> g_wayfarerPct;
+// Character guid -> unix seconds of the last swap, for the cooldown.
+std::unordered_map<uint32, uint32> g_wayfarerSwap;
+
+uint32 WayfarerCap(Player* player)
+{
+    uint32 cap = 0;
+    for (WayfarerTier const& tier : WAYFARER_TIERS)
+        if (HasPerk(player, tier.spellId) && tier.cap > cap)
+            cap = tier.cap;
+    return cap;
+}
+
+void SendWayfarerState(Player* player)
+{
+    if (!player)
         return;
-    if (!HasPerk(player, SPELL_QUEST_SPEED))
+    uint32 const guid = player->GetGUID().GetCounter();
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    uint32 const last = g_wayfarerSwap[guid];
+    uint32 const left = (last && now < last + WAYFARER_SWAP_COOLDOWN)
+        ? last + WAYFARER_SWAP_COOLDOWN - now : 0;
+    SendLine(player, Acore::StringFormat("WAY|{}|{}|{}",
+        g_wayfarerPct[guid], WayfarerCap(player), left));
+}
+
+// Apply both halves with the amounts this character's dial currently asks for.
+//
+// AddAura (the path the old flat +40% used, and the only one proven to work on
+// a PASSIVE spell here) to get the aura on, then ChangeAmount per effect to set
+// the real values. The spell's own base points are all zero: every number comes
+// from here, and ChangeAmount is what re-runs the effect handler, so it is also
+// what makes a slider move take effect without a relog.
+void ApplyWayfarer(Player* player)
+{
+    if (!player || !player->IsInWorld() || !player->GetSession())
         return;
-    if (player->HasAura(SPELL_QUEST_SPEED))
-        return;
-    if (Aura* aura = player->AddAura(SPELL_QUEST_SPEED, player))
+    uint32 const cap = WayfarerCap(player);
+    if (!cap || !sSpellMgr->GetSpellInfo(SPELL_WAYFARER) || !sSpellMgr->GetSpellInfo(SPELL_WAYFARER_FOCUS))
     {
-        aura->SetDuration(-1);
-        aura->SetMaxDuration(-1);
+        player->RemoveAurasDueToSpell(SPELL_WAYFARER);
+        player->RemoveAurasDueToSpell(SPELL_WAYFARER_FOCUS);
+        return;
+    }
+
+    uint32 const guid = player->GetGUID().GetCounter();
+    uint32 damage = g_wayfarerPct[guid];
+    if (damage > 100)
+        damage = 100;
+    // The dial is always the full 0-100 split; the tier caps how far either
+    // END of it can actually reach, so a tier 1 character slides between
+    // +50 speed / +50 damage rather than between +100 and 0.
+    int32 const dmgPct = int32(damage * cap / 100);
+    int32 const speedPct = int32((100 - damage) * cap / 100);
+    // Mounted and flying get half. See the block comment above.
+    int32 const mountedPct = speedPct / 2;
+
+    Aura* speed = player->GetAura(SPELL_WAYFARER);
+    if (!speed)
+        speed = player->AddAura(SPELL_WAYFARER, player);
+    if (speed)
+    {
+        if (AuraEffect* e = speed->GetEffect(EFFECT_0))
+            e->ChangeAmount(speedPct);
+        if (AuraEffect* e = speed->GetEffect(EFFECT_1))
+            e->ChangeAmount(mountedPct);
+        if (AuraEffect* e = speed->GetEffect(EFFECT_2))
+            e->ChangeAmount(mountedPct);
+        speed->SetMaxDuration(-1);
+        speed->SetDuration(-1);
+    }
+
+    Aura* focus = player->GetAura(SPELL_WAYFARER_FOCUS);
+    if (!focus)
+        focus = player->AddAura(SPELL_WAYFARER_FOCUS, player);
+    if (focus)
+    {
+        if (AuraEffect* e = focus->GetEffect(EFFECT_0))
+            e->ChangeAmount(dmgPct);
+        focus->SetMaxDuration(-1);
+        focus->SetDuration(-1);
     }
 }
 
-void CheckQuestSpeedPerk(Player* player)
+void LoadWayfarer(Player* player)
 {
     if (!player || !player->GetSession())
         return;
-    if (HasPerk(player, SPELL_QUEST_SPEED))
-        return;
-    if (player->GetRewardedQuestCount() >= QUEST_SPEED_NEED)
-    {
-        UnlockPerk(player, SPELL_QUEST_SPEED, "|cff66ccff[Account Perks]|r *Quest: Wayfarer unlocked!");
-        return;
-    }
+    uint32 const guid = player->GetGUID().GetCounter();
     uint32 const accountId = player->GetSession()->GetAccountId();
-    if (QueryResult result = CharacterDatabase.Query(
-        "SELECT COALESCE(MAX(`cnt`), 0) FROM ("
-        "SELECT COUNT(*) AS `cnt` FROM `character_queststatus_rewarded` `r` "
-        "INNER JOIN `characters` `c` ON `c`.`guid` = `r`.`guid` "
-        "WHERE `c`.`account` = {} GROUP BY `r`.`guid`) `t`",
-        accountId))
+    if (QueryResult mine = CharacterDatabase.Query(
+        "SELECT `dmg_pct` FROM `lg_wayfarer` WHERE `guid` = {}", guid))
     {
-        if ((*result)[0].Get<uint32>() >= QUEST_SPEED_NEED)
-            UnlockPerk(player, SPELL_QUEST_SPEED, "|cff66ccff[Account Perks]|r *Quest: Wayfarer unlocked!");
+        g_wayfarerPct[guid] = std::min<uint32>(100, (*mine)[0].Get<uint32>());
+        return;
     }
+    // No row yet: inherit whatever this account last chose anywhere, so a new
+    // alt starts where its owner left off instead of at zero.
+    uint32 seed = 0;
+    if (QueryResult acc = CharacterDatabase.Query(
+        "SELECT `dmg_pct` FROM `lg_wayfarer` WHERE `account_id` = {} ORDER BY `changed_at` DESC LIMIT 1",
+        accountId))
+        seed = std::min<uint32>(100, (*acc)[0].Get<uint32>());
+    g_wayfarerPct[guid] = seed;
+}
+
+// Returns false (with a reason said to the player) when the swap is refused.
+bool SetWayfarer(Player* player, uint32 damagePct)
+{
+    if (!player || !player->GetSession())
+        return false;
+    if (!WayfarerCap(player))
+    {
+        Say(player, "|cffff6666[Wayfarer]|r You have not unlocked Wayfarer yet.");
+        return false;
+    }
+    if (damagePct > 100)
+        damagePct = 100;
+
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (g_wayfarerPct[guid] == damagePct)
+        return true; // no-op, and no cooldown burned for one
+
+    if (player->IsInCombat())
+    {
+        Say(player, "|cffff6666[Wayfarer]|r Not while you are in combat.");
+        SendWayfarerState(player);
+        return false;
+    }
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    uint32 const last = g_wayfarerSwap[guid];
+    if (last && now < last + WAYFARER_SWAP_COOLDOWN)
+    {
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cffff6666[Wayfarer]|r Settling. {} seconds left.",
+            last + WAYFARER_SWAP_COOLDOWN - now);
+        SendWayfarerState(player);
+        return false;
+    }
+
+    g_wayfarerPct[guid] = damagePct;
+    g_wayfarerSwap[guid] = now;
+    CharacterDatabase.Execute(
+        "REPLACE INTO `lg_wayfarer` (`guid`, `account_id`, `dmg_pct`, `changed_at`) VALUES ({}, {}, {}, {})",
+        guid, player->GetSession()->GetAccountId(), damagePct, now);
+    ApplyWayfarer(player);
+    SendWayfarerState(player);
+    uint32 const cap = WayfarerCap(player);
+    ChatHandler(player->GetSession()).PSendSysMessage(
+        "|cff66ccff[Wayfarer]|r +{}% movement speed, +{}% damage.",
+        (100 - damagePct) * cap / 100, damagePct * cap / 100);
+    return true;
+}
+
+// Checked on login and on every achievement earned. Each tier is any-of, so
+// the faction-split exploration achievements each count on their own.
+void CheckWayfarerPerks(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    bool gained = false;
+    for (WayfarerTier const& tier : WAYFARER_TIERS)
+    {
+        if (HasPerk(player, tier.spellId))
+            continue;
+        for (uint32 achievement : tier.anyOf)
+        {
+            if (!player->HasAchieved(achievement))
+                continue;
+            std::string const msg = Acore::StringFormat(
+                "|cff66ccff[Account Perks]|r {} unlocked!", tier.label);
+            UnlockPerk(player, tier.spellId, msg.c_str());
+            gained = true;
+            break;
+        }
+    }
+    if (gained)
+    {
+        ApplyWayfarer(player);
+        SendWayfarerState(player);
+    }
+}
+
+bool HandleWayfarerCommand(Player* player, std::string const& msg)
+{
+    uint32 pct = 0;
+    if (std::sscanf(msg.c_str(), "WAYSET|%u", &pct) == 1)
+    {
+        SetWayfarer(player, pct);
+        return true;
+    }
+    if (msg == "WAYREQ")
+    {
+        SendWayfarerState(player);
+        return true;
+    }
+    return false;
 }
 
 struct LgAmenityConfig
@@ -381,17 +635,37 @@ class AmenitiesPlayer : public PlayerScript
 public:
     AmenitiesPlayer() : PlayerScript("LivingGearAmenitiesPlayer", {
         PLAYERHOOK_ON_LOGIN,
+        PLAYERHOOK_ON_LOGOUT,
         PLAYERHOOK_ON_LEVEL_CHANGED,
         PLAYERHOOK_ON_SPELL_CAST,
+        PLAYERHOOK_ON_ACHI_COMPLETE,
         PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST
     }) { }
 
     void OnPlayerLogin(Player* player) override
     {
         GrantAmenityPerks(player);
-        ApplyQuestSpeedAura(player);
-        CheckQuestSpeedPerk(player);
+        LoadWayfarer(player);
+        CheckWayfarerPerks(player);
+        ApplyWayfarer(player);
+        SendWayfarerState(player);
         AutoTrainClassSpells(player);
+    }
+
+    void OnPlayerLogout(Player* player) override
+    {
+        if (!player)
+            return;
+        uint32 const guid = player->GetGUID().GetCounter();
+        g_wayfarerPct.erase(guid);
+        g_wayfarerSwap.erase(guid);
+    }
+
+    // Every Wayfarer tier is an achievement, so this is the moment one can
+    // become true without a relog.
+    void OnPlayerAchievementComplete(Player* player, AchievementEntry const* /*achievement*/) override
+    {
+        CheckWayfarerPerks(player);
     }
 
     void OnPlayerLevelChanged(Player* player, uint8 /*oldLevel*/) override
@@ -469,13 +743,28 @@ public:
 
     void OnPlayerCompleteQuest(Player* player, Quest const* /*quest*/) override
     {
-        CheckQuestSpeedPerk(player);
         UnlockPerk(player, SPELL_AUTO_QUEST, "|cff66ccff[Account Perks]|r *Quests - Finish unlocked!");
     }
 };
 } // namespace LivingGearAmenities
 
 using namespace LivingGearAmenities;
+
+// Wayfarer's slider. Every addon command in this module goes through the one
+// dispatcher in LivingGear.cpp -- see the note there about buttons that do
+// nothing because nothing was listening.
+bool LivingGear_HandleAmenitiesCommand(Player* player, std::string const& msg)
+{
+    return LivingGearAmenities::HandleWayfarerCommand(player, msg);
+}
+
+// Answers the client's REQ alongside every other sync. Login alone is not
+// enough: the addon re-syncs on /reload and on entering the world, and a
+// state line sent before the addon existed reaches nobody.
+void LivingGear_SendWayfarerSync(Player* player)
+{
+    LivingGearAmenities::SendWayfarerState(player);
+}
 
 void AddSC_LivingGearAmenities()
 {

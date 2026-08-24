@@ -130,7 +130,10 @@ CUSTOM_SPELLS = {
     910140: ("*Gather Sparkle Mine", "Mining node sparkle visual (Beacon of Light heal).", 361),
     910141: ("*Gather Sparkle Fish", "Fishing pool sparkle visual.", 580),
     910142: ("*Rare Pulse", "Rare creature pulse visual (Beacon of Light).", 149),
-    910038: ("*Quest: Wayfarer", "Movement speed +40%. Stacks with other speed effects. Unlocked by completing 100 quests.", 516),
+    910038: ("*Wayfarer", "Balance movement speed against damage on one slider. Everything spent on one comes out of the other. Mounted and flying speed gain half the movement share. Changing the balance takes 30 seconds and cannot be done in combat. Unlocked by exploring your home zone, or by Going Down?.", 516),
+    910175: ("*Wayfarer: Focus", "The damage half of Wayfarer.", 516),
+    910176: ("*Wayfarer: Wide", "Wayfarer reaches +75% instead of +50%. Unlocked by Explore Eastern Kingdoms or Explore Kalimdor.", 516),
+    910177: ("*Wayfarer: Full", "Wayfarer reaches the full +100%. Unlocked by Explore Outland or Explore Northrend.", 516),
     910039: ("*Jump: Double", "Jumps go twice as high and far. 10 sec cooldown between boosted jumps. Boosted jumps grant +40% movement speed for 30 sec. Unlocked at level 10.", 1299),
     910040: ("*Jump: Triple", "Jumps go three times as high and far. 10 sec cooldown between boosted jumps. Boosted jumps grant +40% movement speed for 30 sec. Unlocked at level 30.", 1762),
     910041: ("*Gear: Auto-Attune", "Auto-attune looted gear. Poor starts unlocked. Higher qualities unlock as you attune more items (10, 100, 1000, ...).", 1762),
@@ -169,7 +172,6 @@ CUSTOM_SPELLS = {
     # No leading asterisk (bug report #14): the "*" prefix marks perks the player
     # casts from the Account Perks panel. Kill Combo is a buff that happens TO
     # you, so it reads as a normal buff and is named like one.
-    910089: ("Kill Combo", "Kills stack this, up to 10. Kill XP increased by 20% per stack. Movement speed increased by 5% per stack, on foot, mounted and flying. Refreshes to 10 minutes on every kill. Survives death and logging out.", 95),
     910090: ("*Quests - Finish", "Summon the questgivers for completed quests in your log for 60 sec. Turn in and take follow-ups from them. Unlocked by completing 1 quest.", 141),
     910091: ("*Attuned Armory", "Make a wearable copy of an item you have attuned. The attunement stays on the account.", 249),
     910092: ("*Solo Queue", "Queue for dungeons and raids by yourself. No group required.", 169),
@@ -195,10 +197,10 @@ CUSTOM_SPELLS = {
     910157: ("*Warlock: Affliction", "Your DoTs spread to enemies within 15 yards every 1 sec. DoT tick damage is increased by your haste.", 95),
     910158: ("*Warlock: Demonology", "Metamorphosis has no cooldown or shard cost. Your demon pet's damage is doubled.", 95),
     910159: ("*Warlock: Destruction", "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt.", 95),
-    910160: ("*Druid: Balance", "Starfall has no cooldown/mana cost. You are permanently in both Solar and Lunar Eclipse at once.", 95),
+    910160: ("*Druid: Balance", "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once.", 95),
     910161: ("*Druid: Feral", "Berserk is a free toggle. While active, Cat/Bear abilities cost no energy/rage and lose their cooldowns.", 95),
     910162: ("*Druid: Restoration", "Wild Growth has no cooldown and heals up to 10 allies within 30 yards. Rejuvenation spreads to injured allies within 15 yards every 3 sec.", 95),
-    910163: ("*Priest: Discipline", "Penance has no cooldown and also applies Power Word: Shield to the target.", 95),
+    910163: ("*Priest: Discipline", "Penance has no cooldown, also applies Power Word: Shield to the target, and ricochets to up to 5 nearby enemies.", 95),
     910164: ("*Priest: Holy", "Guardian Spirit has no cooldown and also applies to 2 more injured allies within 20 yards.", 95),
     910165: ("*Priest: Shadow", "Shadowfiend has no cooldown. Mind Flay deals quadruple damage.", 95),
     910166: ("*Death Knight: Blood", "Dancing Rune Weapon has no cooldown/runic cost. While active, melee hits heal you for 5% of the damage dealt.", 95),
@@ -258,9 +260,6 @@ HOT_SPELLS = {
 #                    the buff lasted six seconds.
 VISIBLE_AURAS = {
     910087: (21, 1, ((6, 129, 1, 39, 1), (6, 130, 1, 39, 1))),
-    # 129 on foot, 130 ground mount, 209 flying (bug report #27 -- the buff
-    # did nothing in the air, because 129/130 do not cover flight).
-    910089: (6, 10, ((6, 129, 1, 0, 1), (6, 130, 1, 0, 1), (6, 209, 1, 0, 1))),
     910098: (0, 0, ((6, 58, 1, 499, 1),)),
     # +10% attack power, permanent while a Subtlety Rogue is in the party.
     910173: (21, 0, ((6, 166, 0, 10, 1),)),
