@@ -449,6 +449,17 @@ uint32 YieldForStore(LootStore const& store, Player* player, Loot* loot)
         go = player->GetMap()->GetGameObject(loot->sourceWorldObjectGUID);
     if (!go || !go->GetGOInfo())
         return 1;
+    // Fishing pools, before the lock lookup: a pool carries no gather lock at
+    // all (lockId 0), so GatherLockType could never identify one and the Fish
+    // Yield perks were silently skipped on every pool catch. Reported
+    // 2026-08-24.
+    //
+    // It only reaches this branch at all because casting into a pool loots via
+    // SendLoot(LOOT_FISHINGHOLE), which fills from LootTemplates_Gameobject --
+    // not LootTemplates_Fishing, which the short-circuit above already covers
+    // and which is why the Pools perk's own auto-loot path always worked.
+    if (go->GetGoType() == GAMEOBJECT_TYPE_FISHINGHOLE)
+        return YieldMult(player, SPELL_FISH_YIELD);
     uint32 skillId = 0;
     uint32 req = 0;
     if (!GatherLockType(go->GetGOInfo()->GetLockId(), skillId, req))

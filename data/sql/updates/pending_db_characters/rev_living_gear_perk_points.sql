@@ -27,7 +27,7 @@
 --
 -- Budget: 1,113 skill points exist outside holiday content (Achievement.dbc,
 -- CEIL(points/10), World Events excluded as a bonus rather than a plan).
--- The 72 purchasable nodes below total 837, so maxing literally everything
+-- The 72 purchasable nodes below total 835, so maxing literally everything
 -- takes ~75% of all non-holiday achievements. A player with two gathering
 -- professions who skips the other three tracks realistically needs ~630.
 
@@ -63,29 +63,39 @@ ALTER TABLE `lg_account_meta` ADD COLUMN `last_respec` INT UNSIGNED NOT NULL DEF
 -- accounts keep whatever price they bought in at forever.
 ALTER TABLE `lg_account_meta` ADD COLUMN `perk_epoch` INT UNSIGNED NOT NULL DEFAULT 0;
 
-DELETE FROM `lg_perk_cost` WHERE `spell_id` IN (910105, 910106, 910107, 910172, 910108, 910003, 910090, 910008, 910005, 910007, 910009, 910088, 910002, 910006, 910004, 910101, 910063, 910064, 910065, 910066, 910067, 910068, 910093, 910094, 910095, 910096, 910097, 910046, 910047, 910048, 910043, 910044, 910045, 910127, 910128, 910129, 910130, 910131, 910132, 910133, 910134, 910135, 910136, 910137, 910138, 910115, 910116, 910117, 910118, 910119, 910120, 910038, 910176, 910177, 910109, 910110, 910111, 910112, 910113, 910114, 910121, 910122, 910123, 910124, 910125, 910126, 910098, 910073, 910074, 910075, 910076, 910077, 910092, 910168, 910170, 910171, 910091);
 -- Armory, Solo Queue, Pull Radius, Track Ore and Track Herbs are absent on
 -- purpose: CatchUpProfession grants all five unconditionally at every login
 -- (they have no unlock condition at all), so every account already owns them
 -- before the panel can open. Pricing them would be dead rows. They stay in
 -- the DELETE above so a re-import clears any that were priced earlier.
+
+-- Yield and reach are INDEPENDENT chains within each gathering profession.
+-- They are listed as one track client-side, which is how an earlier pass came
+-- to chain them end to end -- that made all three yield ranks a prerequisite
+-- for any reach at all. They share nothing but a panel row.
+--
+-- Travel's Swim and Fishing's Cast/Pools/Speed are likewise not ranks of the
+-- ladder they sit next to, and First Aid's three are separate effects rather
+-- than tiers, so each stands alone.
+
+DELETE FROM `lg_perk_cost` WHERE `spell_id` IN (910106, 910172, 910107, 910105, 910008, 910088, 910108, 910090, 910002, 910003, 910004, 910005, 910006, 910007, 910009, 910101, 910063, 910064, 910065, 910066, 910067, 910068, 910093, 910094, 910095, 910096, 910097, 910046, 910047, 910048, 910038, 910176, 910177, 910098, 910073, 910074, 910075, 910076, 910077, 910109, 910110, 910111, 910112, 910113, 910114, 910115, 910116, 910117, 910118, 910119, 910120, 910121, 910122, 910123, 910124, 910125, 910126, 910133, 910134, 910135, 910136, 910137, 910138, 910043, 910044, 910045, 910127, 910128, 910129, 910130, 910131, 910132, 910091, 910092, 910168, 910170, 910171);
 INSERT INTO `lg_perk_cost` (`spell_id`, `cost`, `requires_spell_id`) VALUES
-(910105, 6, 0),  -- Auto-Mount
-(910106, 6, 0),  -- Class Buffs
-(910107, 6, 0),  -- Riding
-(910172, 6, 0),  -- CC Reduction
-(910108, 3, 0),  -- Auto-Accept
+(910106, 24, 0),  -- Class Buffs
+(910172, 20, 0),  -- CC Reduction
+(910107, 18, 0),  -- Riding
+(910105, 12, 0),  -- Auto-Mount
+(910008, 12, 0),  -- Autoloot
+(910088, 8, 0),  -- Quests - Find
+(910108, 6, 0),  -- Auto-Accept
+(910090, 6, 0),  -- Quests - Finish
+(910002, 1, 0),  -- Mailbox
 (910003, 1, 0),  -- Auction
-(910090, 3, 0),  -- Quests - Finish
-(910008, 6, 0),  -- Autoloot
+(910004, 1, 0),  -- Trainer
 (910005, 1, 0),  -- Bank
+(910006, 1, 0),  -- Stable
 (910007, 1, 0),  -- Bind Hearthstone
 (910009, 1, 0),  -- Flight
-(910088, 3, 0),  -- Quests - Find
-(910002, 1, 0),  -- Mailbox
-(910006, 1, 0),  -- Stable
-(910004, 1, 0),  -- Trainer
-(910101, 1, 0),  -- Attune 1
+(910101, 1, 0),  -- Attune
 (910063, 1, 0),  -- Cooking 1
 (910064, 3, 910063),  -- Cooking 2
 (910065, 7, 910064),  -- Cooking 3
@@ -97,48 +107,105 @@ INSERT INTO `lg_perk_cost` (`spell_id`, `cost`, `requires_spell_id`) VALUES
 (910095, 7, 910094),  -- Craft 3
 (910096, 13, 910095),  -- Craft 4
 (910097, 22, 910096),  -- Craft 5
-(910046, 1, 0),  -- First Aid 1
-(910047, 3, 910046),  -- First Aid 2
-(910048, 7, 910047),  -- First Aid 3
-(910043, 1, 0),  -- Fishing 1
-(910044, 3, 910043),  -- Fishing 2
-(910045, 7, 910044),  -- Fishing 3
-(910127, 13, 910045),  -- Fishing 4
-(910128, 22, 910127),  -- Fishing 5
-(910129, 34, 910128),  -- Fishing 6
-(910130, 44, 910129),  -- Fishing 7
-(910131, 54, 910130),  -- Fishing 8
-(910132, 64, 910131),  -- Fishing 9
-(910133, 1, 0),  -- Engineering 1
-(910134, 3, 910133),  -- Engineering 2
-(910135, 7, 910134),  -- Engineering 3
-(910136, 13, 910135),  -- Engineering 4
-(910137, 22, 910136),  -- Engineering 5
-(910138, 34, 910137),  -- Engineering 6
-(910115, 1, 0),  -- Herbalism 1
-(910116, 3, 910115),  -- Herbalism 2
-(910117, 7, 910116),  -- Herbalism 3
-(910118, 13, 910117),  -- Herbalism 4
-(910119, 22, 910118),  -- Herbalism 5
-(910120, 34, 910119),  -- Herbalism 6
-(910038, 1, 0),  -- Movement 1
-(910176, 3, 910038),  -- Movement 2
-(910177, 7, 910176),  -- Movement 3
-(910109, 1, 0),  -- Mining 1
-(910110, 3, 910109),  -- Mining 2
-(910111, 7, 910110),  -- Mining 3
-(910112, 13, 910111),  -- Mining 4
-(910113, 22, 910112),  -- Mining 5
-(910114, 34, 910113),  -- Mining 6
-(910121, 1, 0),  -- Skinning 1
-(910122, 3, 910121),  -- Skinning 2
-(910123, 7, 910122),  -- Skinning 3
-(910124, 13, 910123),  -- Skinning 4
-(910125, 22, 910124),  -- Skinning 5
-(910126, 34, 910125),  -- Skinning 6
-(910098, 1, 0),  -- Travel 1
-(910073, 3, 910098),  -- Travel 2
-(910074, 7, 910073),  -- Travel 3
-(910075, 13, 910074),  -- Travel 4
-(910076, 22, 910075),  -- Travel 5
-(910077, 34, 910076);  -- Travel 6
+(910046, 6, 0),  -- First Aid
+(910047, 6, 0),  -- First Aid
+(910048, 6, 0),  -- First Aid
+(910038, 2, 0),  -- Movement 1
+(910176, 6, 910038),  -- Movement 2
+(910177, 14, 910176),  -- Movement 3
+(910098, 6, 0),  -- Travel
+(910073, 1, 0),  -- Travel 1
+(910074, 3, 910073),  -- Travel 2
+(910075, 7, 910074),  -- Travel 3
+(910076, 13, 910075),  -- Travel 4
+(910077, 22, 910076),  -- Travel 5
+(910109, 2, 0),  -- Mining Yield 1
+(910110, 15, 910109),  -- Mining Yield 2
+(910111, 55, 910110),  -- Mining Yield 3
+(910112, 1, 0),  -- Mining Reach 1
+(910113, 6, 910112),  -- Mining Reach 2
+(910114, 16, 910113),  -- Mining Reach 3
+(910115, 2, 0),  -- Herbalism Yield 1
+(910116, 15, 910115),  -- Herbalism Yield 2
+(910117, 55, 910116),  -- Herbalism Yield 3
+(910118, 1, 0),  -- Herbalism Reach 1
+(910119, 6, 910118),  -- Herbalism Reach 2
+(910120, 16, 910119),  -- Herbalism Reach 3
+(910121, 2, 0),  -- Skinning Yield 1
+(910122, 15, 910121),  -- Skinning Yield 2
+(910123, 55, 910122),  -- Skinning Yield 3
+(910124, 1, 0),  -- Skinning Reach 1
+(910125, 6, 910124),  -- Skinning Reach 2
+(910126, 16, 910125),  -- Skinning Reach 3
+(910133, 2, 0),  -- Engineering Yield 1
+(910134, 15, 910133),  -- Engineering Yield 2
+(910135, 55, 910134),  -- Engineering Yield 3
+(910136, 1, 0),  -- Engineering Reach 1
+(910137, 6, 910136),  -- Engineering Reach 2
+(910138, 16, 910137),  -- Engineering Reach 3
+(910043, 2, 0),  -- Fishing Cast
+(910044, 8, 910043),  -- Fishing Pools
+(910045, 18, 910044),  -- Fishing Speed
+(910127, 2, 0),  -- Fishing Yield 1
+(910128, 15, 910127),  -- Fishing Yield 2
+(910129, 55, 910128),  -- Fishing Yield 3
+(910130, 1, 0),  -- Fishing Reach 1
+(910131, 6, 910130),  -- Fishing Reach 2
+(910132, 16, 910131);  -- Fishing Reach 3
+
+-- Realm First achievements are worth 10 skill points each.
+--
+-- Every one of them awards 0 points in Achievement.dbc, so without a row here
+-- the hardest content on the realm pays nothing at all. They are also the only
+-- part of Feats of Strength worth seeding: the other 115 are Collector's
+-- Edition pets, BlizzCon promos and removed vanilla PvP ranks, which would pay
+-- people for purchase history and for deleted systems rather than for playing.
+--
+-- This sits OUTSIDE the 1,113 point baseline the prices above are tuned
+-- against, the same way holiday content does. One account per realm can ever
+-- hold any of these, so it is a bragging bonus and not a budget line.
+DELETE FROM `lg_achievement_value` WHERE `achievement_id` IN (3259, 1402, 1416, 3117, 4576, 1419, 4078, 1415, 1420, 1414, 1417, 1418, 1421, 1423, 1424, 1425, 1422, 1426, 1427, 457, 1405, 461, 1406, 466, 1407, 1413, 1404, 1408, 462, 460, 1409, 1410, 465, 464, 458, 467, 1411, 1412, 463, 459, 1400, 1463, 456);
+INSERT INTO `lg_achievement_value` (`achievement_id`, `skill_points`) VALUES
+(3259, 10),  -- Realm First! Celestial Defender
+(1402, 10),  -- Realm First! Conqueror of Naxxramas
+(1416, 10),  -- Realm First! Cooking Grand Master
+(3117, 10),  -- Realm First! Death's Demise
+(4576, 10),  -- Realm First! Fall of the Lich King
+(1419, 10),  -- Realm First! First Aid Grand Master
+(4078, 10),  -- Realm First! Grand Crusader
+(1415, 10),  -- Realm First! Grand Master Alchemist
+(1420, 10),  -- Realm First! Grand Master Angler
+(1414, 10),  -- Realm First! Grand Master Blacksmith
+(1417, 10),  -- Realm First! Grand Master Enchanter
+(1418, 10),  -- Realm First! Grand Master Engineer
+(1421, 10),  -- Realm First! Grand Master Herbalist
+(1423, 10),  -- Realm First! Grand Master Jewelcrafter
+(1424, 10),  -- Realm First! Grand Master Leatherworker
+(1425, 10),  -- Realm First! Grand Master Miner
+(1422, 10),  -- Realm First! Grand Master Scribe
+(1426, 10),  -- Realm First! Grand Master Skinner
+(1427, 10),  -- Realm First! Grand Master Tailor
+(457, 10),  -- Realm First! Level 80
+(1405, 10),  -- Realm First! Level 80 Blood Elf
+(461, 10),  -- Realm First! Level 80 Death Knight
+(1406, 10),  -- Realm First! Level 80 Draenei
+(466, 10),  -- Realm First! Level 80 Druid
+(1407, 10),  -- Realm First! Level 80 Dwarf
+(1413, 10),  -- Realm First! Level 80 Forsaken
+(1404, 10),  -- Realm First! Level 80 Gnome
+(1408, 10),  -- Realm First! Level 80 Human
+(462, 10),  -- Realm First! Level 80 Hunter
+(460, 10),  -- Realm First! Level 80 Mage
+(1409, 10),  -- Realm First! Level 80 Night Elf
+(1410, 10),  -- Realm First! Level 80 Orc
+(465, 10),  -- Realm First! Level 80 Paladin
+(464, 10),  -- Realm First! Level 80 Priest
+(458, 10),  -- Realm First! Level 80 Rogue
+(467, 10),  -- Realm First! Level 80 Shaman
+(1411, 10),  -- Realm First! Level 80 Tauren
+(1412, 10),  -- Realm First! Level 80 Troll
+(463, 10),  -- Realm First! Level 80 Warlock
+(459, 10),  -- Realm First! Level 80 Warrior
+(1400, 10),  -- Realm First! Magic Seeker
+(1463, 10),  -- Realm First! Northrend Vanguard
+(456, 10);  -- Realm First! Obsidian Slayer
