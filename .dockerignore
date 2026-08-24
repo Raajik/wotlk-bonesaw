@@ -1,0 +1,57 @@
+/cmake-build-debug/*
+/build*/
+/var/*
+!/var/build/.gitkeep
+!/var/ccache/.gitkeep
+/env/dist/*
+!/env/dist/.gitkeep
+/env/user/*
+/.env*
+.idea
+!.gitkeep
+
+# do not ignore the ccache folder (used by the ci)
+!/var/docker/ccache
+
+# ---------------------------------------------------------------------
+# Directories the image never uses. Added 2026-08-24 because the build
+# context had grown to 2.2GB and every ship paid for it in transfer time --
+# several minutes per build, on a night with eight of them.
+#
+# apps/docker/Dockerfile (all four targets: build, authserver, worldserver,
+# db-import, client-data) copies exactly this and nothing else:
+#
+#     CMakeLists.txt   conf/   deps/   src/   modules/   apps/   data/
+#
+# Everything below is host-side working material. If a COPY is ever added
+# for one of these, delete its line here deliberately rather than wondering
+# why the file is missing inside the image.
+#
+#   tools/       1.9GB -- launcher/target (Rust artifacts, rebuilt by every
+#                build_launcher.py run), ws-layer.tar and ws-extract/ (an
+#                unpacked worldserver image), client-patch dist/cache/staging
+#   azerothcore/ 523MB -- a stray copy of a built env/dist
+#   archive/     123MB -- retired experiments, kept for reference only
+/tools/
+/azerothcore/
+/archive/
+/doc/
+/bin/
+
+# DO NOT exclude /.git/ -- tried on 2026-08-24 and the build fails immediately:
+#
+#   ERROR: failed to calculate checksum of ref ...: "/.git": not found
+#
+# apps/docker/Dockerfile line 96 bind-mounts it at build time
+# (--mount=type=bind,target=/azerothcore/.git,source=.git) so genrev can stamp
+# the revision without the repo ending up inside the image. A bind mount still
+# needs the path present in the build CONTEXT, so ignoring it breaks the build
+# rather than merely losing the version banner.
+#
+# It is 2.27GB and it is the bulk of what remains. If build time becomes painful
+# again, the lever is a shallower repo or a build arg that skips genrev -- not
+# this file.
+#
+# Worth knowing when auditing what the context needs: grep the Dockerfile for
+# `source=` as well as COPY and ADD. Only checking COPY is what caused the
+# failed attempt above.

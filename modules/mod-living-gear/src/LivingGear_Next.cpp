@@ -554,9 +554,18 @@ void LoadAccountProfessions(uint32 accountId)
     // characters, most of them class abilities, so the filtered set is a few
     // hundred at worst and this runs once per account per uptime.
     if (QueryResult spells = CharacterDatabase.Query(
+        // No `disabled` column here. character_spell is (guid, spell, specMask)
+        // in this build, and asking for one more killed the realm: AzerothCore
+        // treats a failed query as a fatal "database structure is not up to
+        // date" and ABORTS the worldserver. Every login ran this, so every
+        // login took the server down -- players saw unknown characters, no
+        // NPCs, then a disconnect. Shipped in 0.1.77, fixed in 0.1.78.
+        //
+        // Verify a column exists before selecting it; the cost of being wrong
+        // here is the whole realm, not a missing feature.
         "SELECT DISTINCT `cs`.`spell` FROM `character_spell` `cs` "
         "INNER JOIN `characters` `c` ON `c`.`guid` = `cs`.`guid` "
-        "WHERE `c`.`account` = {} AND `cs`.`disabled` = 0", accountId))
+        "WHERE `c`.`account` = {}", accountId))
     {
         do
         {
