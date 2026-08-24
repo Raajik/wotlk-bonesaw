@@ -1,6 +1,32 @@
 # Attunement and item leveling: the redesign
 
-Decided 2026-08-23. Not built yet — this is the spec.
+**Status: BUILT AND LIVE as of ship 0.1.70 (2026-08-23).**
+
+This started as a spec and is kept as the reasoning behind the system, not as a
+plan. Where the built thing differs from what was originally written down, the
+difference is called out inline — the wrong turns are more useful than the
+conclusions.
+
+| Piece | Shipped in |
+|---|---|
+| Item leveling raises effective item level, budget from `item_template` | 0.1.68 |
+| Attunement per unique item, consumes, auto-attune retired, Attune All | 0.1.68 |
+| 28 milestones awarding on login and achievement | 0.1.69 |
+| Level 80 milestone fixed (was Realm First, unreachable) | 0.1.69 |
+| Existing rows rescaled onto the real rate | 0.1.70 |
+
+**Three corrections the build made to this document**, all recorded below where
+they belong:
+
+1. A fixed item-level gain per level is **not** convergence. Interpolating
+   toward a shared ceiling is. Caught by running the numbers, not by review.
+2. Grandfathering existing rows at 100% **broke the progression** it was meant
+   to protect. Fixed in 0.1.70 by rescaling, at a visible cost to two players.
+3. "Salty" and "Iron Chef" do not exist as WotLK achievements. Substitutes
+   noted in the milestone list.
+
+**Still not built:** nothing in this document. The remaining attunement work is
+in `BACKLOG.md`.
 
 ## The power fantasy this serves
 

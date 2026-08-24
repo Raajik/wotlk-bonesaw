@@ -57,6 +57,22 @@ sessions ran against this repo without ever seeing any of it.
    Progress on one character helping every other one is a reward for the
    grind, not a leak to be plugged. Default to sharing.
 
+## Documentation map
+
+- `modules/mod-living-gear/ARCHITECTURE.md` -- what each source file owns, the
+  three kinds of perk id, the account/character split, and the invariants that
+  keep getting violated. Read this before changing perks or attunement.
+- `modules/mod-living-gear/ATTUNEMENT-REDESIGN.md` -- attunement and item
+  leveling as built, including the wrong turns and why they were wrong.
+- `modules/mod-living-gear/BACKLOG.md` -- ordered by importance. The
+  spec-by-spec class audit is item 1.
+- `modules/mod-living-gear/core-patches/*.core-patch` -- one per core-engine
+  change, describing what and why.
+- `tools/bug-reports/README.md` -- how player reports reach Discord.
+- `tools/client-update/README.md` -- how a client patch reaches players.
+- `A:/obsidian/jeremy/wiki/Bonesaw.md` -- durable learnings, appended every
+  ship. The single densest source of "do not repeat this mistake".
+
 ## Where things are
 
 - Real module source: `modules/mod-living-gear/`. The `main` branch has only a
