@@ -890,23 +890,34 @@ public:
     void OnPlayerUpdateGatheringSkill(Player* player, uint32 skillId, uint32 /*currentLevel*/,
         uint32 /*gray*/, uint32 /*green*/, uint32 /*yellow*/, uint32& gain) override
     {
+        // Bug report #46, "fishing not leveling up more than 1 point at a
+        // time". SKILL_FISHING was missing from this list even though it is in
+        // GATHER_SKILL_IDS and the design treats it as a gathering profession
+        // throughout. Player::UpdateFishingSkill dispatches THIS hook
+        // (PlayerUpdates.cpp:899, OnPlayerUpdateGatheringSkill with
+        // SKILL_FISHING), so leaving fishing out meant its gain was never
+        // touched and every catch was worth exactly the config's 1 point.
         bool const tracked = skillId == SKILL_MINING || skillId == SKILL_HERBALISM ||
-            skillId == SKILL_SKINNING || skillId == SKILL_ENGINEERING;
+            skillId == SKILL_SKINNING || skillId == SKILL_ENGINEERING ||
+            skillId == SKILL_FISHING;
         if (tracked)
             gain += CrossProfessionTier(player, skillId);
     }
 
-    bool OnPlayerUpdateFishingSkill(Player* player, int32 /*skill*/, int32 /*zoneSkill*/,
+    bool OnPlayerUpdateFishingSkill(Player* /*player*/, int32 /*skill*/, int32 /*zoneSkill*/,
         int32 /*chance*/, int32 /*roll*/) override
     {
-        // Unlike the gathering hook above, this one has no gain-amount
-        // parameter to add to -- it's a plain "does this attempt succeed"
-        // gate, and UpdateFishingSkill() itself always adds exactly 1 point.
-        // Simulate the bonus by calling it extra times ourselves, then
-        // letting the engine's own call (return true) add the last one.
-        uint32 const extra = CrossProfessionTier(player, SKILL_FISHING);
-        for (uint32 i = 0; i < extra; ++i)
-            player->UpdateFishingSkill();
+        // Pure gate: "did this fishing attempt earn a skill check", and the
+        // answer is always yes. GameObject.cpp:1812 uses the return value as
+        //     if (OnPlayerUpdateFishingSkill(...)) player->UpdateFishingSkill();
+        //
+        // This used to also call UpdateFishingSkill() CrossProfessionTier()
+        // extra times to fake a bonus, because the comment believed the
+        // gathering hook did not cover fishing. It does -- see above -- so the
+        // bonus is applied there now, as a flat gain like every other gathering
+        // profession. The old approach bought extra skill-up ROLLS rather than
+        // extra points, which is both weaker and random, and it re-entered
+        // engine skill code from inside a hook for no reason.
         return true;
     }
 

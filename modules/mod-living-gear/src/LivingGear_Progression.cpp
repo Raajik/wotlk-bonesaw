@@ -114,9 +114,17 @@ uint32 const TRADE_TIERS = 6;
 // the Craft (cast-speed) perks -- cooking has its own separate 75-450
 // regen-tier system (SPELL_COOK) and is intentionally excluded here so the
 // two systems don't double up on the same skill.
+// Bug report #47, "Cooking not raising multiple points". Cooking was left out
+// of this list on the grounds that it "has its own perks at the same 75-450
+// breakpoints" -- but those (910063-910068) grant health and mana regen from
+// food, not faster skill-ups, so the two do not overlap at all and cooking was
+// simply getting no skill-up bonus from anything. The Professions track says
+// "+100% skill-ups" for reaching profession skill milestones, and cooking is a
+// profession.
 uint32 const TRADE_SKILLS[] = {
     SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_LEATHERWORKING, SKILL_TAILORING,
-    SKILL_ENGINEERING, SKILL_ENCHANTING, SKILL_JEWELCRAFTING, SKILL_INSCRIPTION
+    SKILL_ENGINEERING, SKILL_ENCHANTING, SKILL_JEWELCRAFTING, SKILL_INSCRIPTION,
+    SKILL_COOKING
 };
 
 // 910053-910062: Leveling 1-10. XP gains +50% per tier. Unlocked when the
@@ -575,9 +583,9 @@ public:
     {
         // Distinct from LivingGearPerks' Craft 1-5 (cast time on this same
         // hook, via a different mechanism: SetCastTime in OnSpellPrepare).
-        // This only touches the skill-up gain amount, and only for the
-        // non-cooking profession set (cooking has its own regen-tier perks
-        // at the same 75-450 breakpoints).
+        // This only touches the skill-up gain amount. Cooking is included as
+        // of #47 -- its 910063-910068 perks are food regen, not skill-ups, so
+        // there was never an overlap to avoid.
         // Bug report #20, 2026-08-22: "professions 100% skill-up buffs for
         // hitting 75, 150, 225 etc don't work". Reading the code has not
         // explained it, and three plausible causes are already ruled out:

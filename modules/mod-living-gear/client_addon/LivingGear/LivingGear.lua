@@ -5431,14 +5431,24 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
     elseif event == "QUEST_DETAIL" then
         LG2.TryAutoAccept()
     elseif event == "QUEST_GREETING" then
+        -- Bug report #48: "quest auto-accept only works when there's a single
+        -- quest available, not for questgivers with multiple quests." Both of
+        -- these tested `== 1`, so a giver holding two or more quests had
+        -- nothing selected at all and auto-accept looked broken rather than
+        -- partial. Take the first available one instead.
+        --
+        -- That also chains on its own where the client re-shows the list after
+        -- an accept: this same event fires again and picks the next quest. No
+        -- protected call is involved, which is why it is done this way rather
+        -- than by re-interacting with the NPC from Lua.
         if PerkKnown(910108) and not (IsShiftKeyDown and IsShiftKeyDown()) then
-            if GetNumAvailableQuests and SelectAvailableQuest and GetNumAvailableQuests() == 1 then
+            if GetNumAvailableQuests and SelectAvailableQuest and GetNumAvailableQuests() >= 1 then
                 SelectAvailableQuest(1)
             end
         end
     elseif event == "GOSSIP_SHOW" then
         if PerkKnown(910108) and not (IsShiftKeyDown and IsShiftKeyDown()) then
-            if GetNumGossipAvailableQuests and SelectGossipAvailableQuest and GetNumGossipAvailableQuests() == 1 then
+            if GetNumGossipAvailableQuests and SelectGossipAvailableQuest and GetNumGossipAvailableQuests() >= 1 then
                 SelectGossipAvailableQuest(1)
             end
         end
