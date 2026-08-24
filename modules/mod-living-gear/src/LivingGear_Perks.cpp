@@ -265,6 +265,11 @@ std::unordered_map<uint32, uint32> g_achievementValue;
 // computed once per account per uptime and invalidated on purchase, respec,
 // and newly completed achievements rather than being re-queried per click.
 std::unordered_map<uint32, uint32> g_earnedCache;
+// spellId -> what was paid, per account. Cached because the buy-back check runs
+// on every condition grant (CatchUpProfession alone fires ~20 per login), and
+// that must not be 20 queries.
+std::unordered_map<uint32, std::unordered_map<uint32, uint32>> g_purchased;
+std::unordered_set<uint32> g_purchaseLoaded;
 bool g_hasPerkPriceSchema = false;
 bool g_hasLastRespecCol = false;
 bool g_hasPerkEpochCol = false;
@@ -366,6 +371,7 @@ bool HasPerk(Player* player, uint32 spellId)
 // regardless of being excluded from CASTABLE_SPELLS client-side. HasPerk()'s
 // g_perks[acc]/DB fallback works fine without ever calling learnSpell.
 bool PerkIsCastable(uint32 spellId);   // defined just below; UnlockPerk needs it
+void RefundIfPurchased(Player* player, uint32 spellId);   // buy-back, defined further down
 
 void UnlockPerk(Player* player, uint32 spellId, char const* msg, bool learnSpellToo = true)
 {
@@ -408,7 +414,12 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg, bool learnSpell
     if (learnSpellToo && PerkIsCastable(spellId) && !player->HasSpell(spellId))
         player->learnSpell(spellId);
     if (!firstTime)
+    {
+        // Already owned. If it was BOUGHT and a condition has now granted it
+        // anyway, the points went on something that would have been free.
+        RefundIfPurchased(player, spellId);
         return;
+    }
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
         Say(player, msg);
@@ -544,6 +555,8 @@ void ReconcilePerkSpells(Player* player)
 // which is how every pre-existing unlock grandfathers in at zero cost.
 // ---------------------------------------------------------------------------
 
+void SendPerkPoints(Player* player);   // defined below; the buy-back path re-sends
+
 void DetectPerkPriceSchema()
 {
     g_hasPerkPriceSchema = false;
@@ -674,6 +687,21 @@ uint32 SpentSkillPoints(uint32 accountId)
     return 0;
 }
 
+void LoadPurchases(uint32 accountId)
+{
+    if (!g_hasPerkPriceSchema || !g_purchaseLoaded.insert(accountId).second)
+        return;
+    auto& owned = g_purchased[accountId];
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `spell_id`, `paid` FROM `lg_account_perk_purchase` WHERE `account_id` = {}",
+        accountId))
+    {
+        do
+            owned[(*result)[0].Get<uint32>()] = (*result)[1].Get<uint32>();
+        while (result->NextRow());
+    }
+}
+
 uint32 SkillPointBalance(uint32 accountId)
 {
     uint32 const earned = EarnedSkillPoints(accountId);
@@ -701,9 +729,37 @@ bool PurchaseRank(Player* player, uint32 spellId)
     CharacterDatabase.DirectExecute(
         "INSERT INTO `lg_account_perk_purchase` (`account_id`, `spell_id`, `paid`) "
         "VALUES ({}, {}, {})", acc, spellId, itr->second.cost);
+    LoadPurchases(acc);
+    g_purchased[acc][spellId] = itr->second.cost;
 
     UnlockPerk(player, spellId, nullptr);
     return true;
+}
+
+// A condition has just granted a perk this account had already PAID for -- the
+// points went on something that would have arrived free anyway, so hand them
+// back. Deleting the purchase row is the entire refund, because balance is
+// derived; the perk itself stays owned.
+void RefundIfPurchased(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetSession() || !g_hasPerkPriceSchema)
+        return;
+    uint32 const acc = player->GetSession()->GetAccountId();
+    LoadPurchases(acc);
+    auto& owned = g_purchased[acc];
+    auto const itr = owned.find(spellId);
+    if (itr == owned.end())
+        return;
+    uint32 const paid = itr->second;
+    owned.erase(itr);
+    CharacterDatabase.DirectExecute(
+        "DELETE FROM `lg_account_perk_purchase` WHERE `account_id` = {} AND `spell_id` = {}",
+        acc, spellId);
+    if (paid)
+        Say(player, Acore::StringFormat(
+            "|cff66ccff[Account Perks]|r You earned that perk the hard way - {} point(s) refunded.",
+            paid).c_str());
+    SendPerkPoints(player);
 }
 
 uint32 LoadLastRespec(uint32 accountId)
@@ -756,6 +812,8 @@ void RespecPerks(uint32 accountId)
     g_perkLoaded.erase(accountId);
     g_perks.erase(accountId);
     g_earnedCache.erase(accountId);
+    g_purchaseLoaded.erase(accountId);
+    g_purchased.erase(accountId);
 }
 
 void SaveLastRespec(uint32 accountId, uint32 when)
@@ -3465,6 +3523,17 @@ bool LivingGear_HasPerk(Player* player, uint32 spellId)
 bool LivingGear_PerkIsCastable(uint32 spellId)
 {
     return LivingGearPerks::PerkIsCastable(spellId);
+}
+
+// Every UnlockPerk calls this when the perk was already owned, so an account
+// that BOUGHT a rank and then met its condition anyway gets the points back
+// instead of having paid for something free. Exported for the same reason
+// LivingGear_PerkIsCastable is: there are six copies of UnlockPerk across this
+// module plus a direct grant in LivingGear_Vault.cpp, and every one of them is
+// a place a purchase can be made redundant.
+void LivingGear_RefundIfPurchased(Player* player, uint32 spellId)
+{
+    LivingGearPerks::RefundIfPurchased(player, spellId);
 }
 
 bool LivingGear_SoftenCreatureImmunity()

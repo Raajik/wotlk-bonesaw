@@ -27,8 +27,8 @@
 --
 -- Budget: 1,113 skill points exist outside holiday content (Achievement.dbc,
 -- CEIL(points/10), World Events excluded as a bonus rather than a plan).
--- The 77 purchasable nodes below total 872, so maxing literally everything
--- takes ~78% of all non-holiday achievements. A player with two gathering
+-- The 72 purchasable nodes below total 837, so maxing literally everything
+-- takes ~75% of all non-holiday achievements. A player with two gathering
 -- professions who skips the other three tracks realistically needs ~630.
 
 CREATE TABLE IF NOT EXISTS `lg_achievement_value` (
@@ -63,18 +63,18 @@ ALTER TABLE `lg_account_meta` ADD COLUMN `last_respec` INT UNSIGNED NOT NULL DEF
 -- accounts keep whatever price they bought in at forever.
 ALTER TABLE `lg_account_meta` ADD COLUMN `perk_epoch` INT UNSIGNED NOT NULL DEFAULT 0;
 
-DELETE FROM `lg_perk_cost` WHERE `spell_id` IN (910092, 910105, 910168, 910170, 910171, 910106, 910107, 910172, 910108, 910091, 910003, 910090, 910008, 910005, 910007, 910009, 910088, 910002, 910006, 910004, 910101, 910063, 910064, 910065, 910066, 910067, 910068, 910093, 910094, 910095, 910096, 910097, 910046, 910047, 910048, 910043, 910044, 910045, 910127, 910128, 910129, 910130, 910131, 910132, 910133, 910134, 910135, 910136, 910137, 910138, 910115, 910116, 910117, 910118, 910119, 910120, 910038, 910176, 910177, 910109, 910110, 910111, 910112, 910113, 910114, 910121, 910122, 910123, 910124, 910125, 910126, 910098, 910073, 910074, 910075, 910076, 910077);
+DELETE FROM `lg_perk_cost` WHERE `spell_id` IN (910105, 910106, 910107, 910172, 910108, 910003, 910090, 910008, 910005, 910007, 910009, 910088, 910002, 910006, 910004, 910101, 910063, 910064, 910065, 910066, 910067, 910068, 910093, 910094, 910095, 910096, 910097, 910046, 910047, 910048, 910043, 910044, 910045, 910127, 910128, 910129, 910130, 910131, 910132, 910133, 910134, 910135, 910136, 910137, 910138, 910115, 910116, 910117, 910118, 910119, 910120, 910038, 910176, 910177, 910109, 910110, 910111, 910112, 910113, 910114, 910121, 910122, 910123, 910124, 910125, 910126, 910098, 910073, 910074, 910075, 910076, 910077, 910092, 910168, 910170, 910171, 910091);
+-- Armory, Solo Queue, Pull Radius, Track Ore and Track Herbs are absent on
+-- purpose: CatchUpProfession grants all five unconditionally at every login
+-- (they have no unlock condition at all), so every account already owns them
+-- before the panel can open. Pricing them would be dead rows. They stay in
+-- the DELETE above so a re-import clears any that were priced earlier.
 INSERT INTO `lg_perk_cost` (`spell_id`, `cost`, `requires_spell_id`) VALUES
-(910092, 6, 0),  -- Solo Queue
 (910105, 6, 0),  -- Auto-Mount
-(910168, 6, 0),  -- Pull Radius
-(910170, 3, 0),  -- Track Ore
-(910171, 3, 0),  -- Track Herbs
 (910106, 6, 0),  -- Class Buffs
 (910107, 6, 0),  -- Riding
 (910172, 6, 0),  -- CC Reduction
 (910108, 3, 0),  -- Auto-Accept
-(910091, 3, 0),  -- Armory
 (910003, 1, 0),  -- Auction
 (910090, 3, 0),  -- Quests - Finish
 (910008, 6, 0),  -- Autoloot

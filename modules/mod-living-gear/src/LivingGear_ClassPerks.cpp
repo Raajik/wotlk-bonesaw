@@ -72,6 +72,7 @@
 
 // Castable perks only get learned; badges do not. LivingGear_Perks.cpp.
 bool LivingGear_PerkIsCastable(uint32 spellId);
+void LivingGear_RefundIfPurchased(Player* player, uint32 spellId);
 
 // LivingGear_Perks.cpp -- owns Rogue Subtlety. Declared at global scope
 // (not inside namespace LivingGearClassPerks below) so the unqualified
@@ -545,7 +546,12 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg)
     if (LivingGear_PerkIsCastable(spellId) && !player->HasSpell(spellId))
         player->learnSpell(spellId);
     if (!firstTime)
+    {
+        // Already owned. If it was BOUGHT and a condition has now granted it
+        // anyway, the points went on something that would have been free.
+        LivingGear_RefundIfPurchased(player, spellId);
         return;
+    }
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
         ChatHandler(player->GetSession()).SendSysMessage(msg);

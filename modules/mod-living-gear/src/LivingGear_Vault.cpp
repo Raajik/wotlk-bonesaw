@@ -58,6 +58,7 @@ bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
 // itself is owned by the account -- so an alt that never learned the spell
 // had autoloot silently switched off. Four characters were in that state.
 bool LivingGear_HasPerk(Player* player, uint32 spellId);
+void LivingGear_RefundIfPurchased(Player* player, uint32 spellId); // LivingGear_Perks.cpp
 
 namespace LivingGearVault
 {
@@ -1607,6 +1608,9 @@ public:
                 "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
                 accountId, SPELL_AUTOLOOT);
             SendLine(player, Acore::StringFormat("PK|{}|1", SPELL_AUTOLOOT));
+            // Looting 10 corpses earns this outright, so refund anyone who
+            // had already bought it.
+            LivingGear_RefundIfPurchased(player, SPELL_AUTOLOOT);
         }
         else
         {

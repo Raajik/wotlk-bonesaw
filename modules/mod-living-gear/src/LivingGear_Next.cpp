@@ -46,6 +46,7 @@ uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 // exactly how bug #25 hid: a perk the account owned read as missing because
 // the spell had never been learned on that character.
 bool LivingGear_HasPerk(Player* player, uint32 spellId);
+void LivingGear_RefundIfPurchased(Player* player, uint32 spellId); // LivingGear_Perks.cpp
 
 namespace LivingGearNext
 {
@@ -325,6 +326,10 @@ void UnlockPerk(Player* player, uint32 spellId)
     CharacterDatabase.DirectExecute(
         "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
         accountId, spellId);
+    // No firstTime flag here to key off -- INSERT IGNORE hides whether this was
+    // new -- so ask unconditionally. The refund is a no-op unless the account
+    // actually paid for this rank.
+    LivingGear_RefundIfPurchased(player, spellId);
 }
 
 bool RankOf(SpellInfo const* info, uint32 firstId)

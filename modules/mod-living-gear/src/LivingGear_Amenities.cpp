@@ -51,6 +51,7 @@
 
 // Castable perks only get learned; badges do not. LivingGear_Perks.cpp.
 bool LivingGear_PerkIsCastable(uint32 spellId);
+void LivingGear_RefundIfPurchased(Player* player, uint32 spellId);
 
 using namespace std::chrono_literals;
 
@@ -152,7 +153,12 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg = nullptr)
     if (LivingGear_PerkIsCastable(spellId) && !player->HasSpell(spellId))
         player->learnSpell(spellId);
     if (!firstTime)
+    {
+        // Already owned. If it was BOUGHT and a condition has now granted it
+        // anyway, the points went on something that would have been free.
+        LivingGear_RefundIfPurchased(player, spellId);
         return;
+    }
     SendLine(player, Acore::StringFormat("PK|{}|1", spellId));
     if (msg)
         Say(player, msg);
