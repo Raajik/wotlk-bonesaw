@@ -615,16 +615,21 @@ static void CheckAttuneMilestones(Player* player)
             "|cff66ccff[Attune]|r Milestone earned: {}. Every attuned item is now worth more.",
             m.label);
     }
-    if (!gained)
-        return;
-    // Raise the rate on everything already banked. This is one UPDATE precisely
-    // because lg_absorb stores full stats and a percentage -- the reason the
-    // schema was built that way.
+    // Sync every banked row to the account's current rate -- always, not only
+    // when a milestone was just gained. Cheap, idempotent, and self-healing.
+    //
+    // This runs unconditionally because of what happened in 0.1.68: the
+    // migration parked every existing row at 100 to avoid cutting anyone's
+    // stats, and since the update only ever RAISED a row, 96 accounts sat
+    // permanently above any achievable rate. Milestones could never move them
+    // and new attunements arrived at 5% beside a 100% row. Keeping rows equal
+    // to the rate in both directions means that class of drift cannot recur.
     uint32 const rate = AttuneRateFor(accountId);
     CharacterDatabase.DirectExecute(
-        "UPDATE `lg_absorb` SET `attune_pct` = {} WHERE `account_id` = {} AND `attune_pct` < {}",
+        "UPDATE `lg_absorb` SET `attune_pct` = {} WHERE `account_id` = {} AND `attune_pct` <> {}",
         rate, accountId, rate);
-    RefreshStats(player, true);
+    if (gained)
+        RefreshStats(player, true);
 }
 
 // Rate per attuned item, as a percentage of that item's stats.
