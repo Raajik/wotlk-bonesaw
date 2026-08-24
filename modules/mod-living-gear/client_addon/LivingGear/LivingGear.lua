@@ -5120,12 +5120,13 @@ if origPopupShow then
     StaticPopup_Show = function(which, text1, text2, data, inserted)
         if which == "EQUIP_BIND" or which == "EQUIP_BIND_TRADEABLE" or which == "AUTOEQUIP_BIND" then
             local dialog = origPopupShow(which, text1, text2, data, inserted)
-            if dialog then
-                local btn = _G[dialog:GetName() .. "Button1"]
-                if btn then
-                    btn:Click()
-                end
-            elseif EquipPendingItem then
+            -- AutoAcceptBindPopup's OnShow hook already clicks Button1 once
+            -- the dialog is actually shown; clicking it again here double-
+            -- fires OnAccept after the dialog has been hidden and its
+            -- .data cleared, which is what threw EquipPendingItem's
+            -- "Usage: EquipPendingItem(index)" error. Only handle the case
+            -- where Blizzard couldn't show a dialog at all.
+            if not dialog and EquipPendingItem then
                 EquipPendingItem(data or 0)
             end
             return dialog
