@@ -2482,6 +2482,41 @@ public:
                 }, std::chrono::milliseconds(300));
             }
         }
+        // Bug report #58: "make quest items have no cooldown, some of them are
+        // absurdly long for no reason". Measured on this realm: 599 items of
+        // ITEM_CLASS_QUEST carry one, and the tail is genuinely silly -- three
+        // hours on one, an hour on another, 45 and 30 minutes on ten more.
+        //
+        // Cleared at runtime rather than by editing item_template: the data
+        // under data/sql is immutable, a migration would be a one-way door on
+        // 599 rows, and doing it here means it applies to the player who used
+        // the item and nothing else.
+        //
+        // Deferred by a tick for the reason invariant 2 exists -- cooldowns are
+        // applied when a cast FINISHES, so clearing one from OnPlayerSpellCast
+        // directly clears something that does not exist yet. Same shape as the
+        // Travel hearthstone clear above.
+        if (Item* castItem = spell->m_CastItem)
+        {
+            if (ItemTemplate const* proto = castItem->GetTemplate())
+            {
+                if (proto->Class == ITEM_CLASS_QUEST)
+                {
+                    ObjectGuid const questCaster = player->GetGUID();
+                    uint32 const questSpell = info->Id;
+                    uint32 const questCategory = info->GetCategory();
+                    player->m_Events.AddEventAtOffset([questCaster, questSpell, questCategory]()
+                    {
+                        Player* p = ObjectAccessor::FindPlayer(questCaster);
+                        if (!p || !p->IsInWorld())
+                            return;
+                        p->RemoveSpellCooldown(questSpell, true);
+                        if (questCategory)
+                            p->RemoveCategoryCooldown(questCategory);
+                    }, std::chrono::milliseconds(300));
+                }
+            }
+        }
         if (info->Id == SPELL_FIND_QUESTS)
             FindQuests(player);
         if (info->Id == SPELL_AUTO_QUEST)

@@ -627,9 +627,11 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
     ordered.insert(ordered.end(), healers.begin(), healers.end());
     ordered.insert(ordered.end(), dps.begin(), dps.end());
 
+    uint32 slot = 0;
     for (auto const& pguid : ordered)
     {
         lfg::LfgProposalPlayer const& player = proposal.players.find(pguid)->second;
+        ++slot; // 1-based, and it is what the client draws as its Nth icon
 
         uint8 const roleOut = ProposalRoleForClient(player.role);
 
@@ -643,8 +645,11 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
             std::string who = pguid.ToString();
             if (Player* member = ObjectAccessor::FindConnectedPlayer(pguid))
                 who = member->GetName();
-            LOG_ERROR("lfg", "LFGPROBE proposal {} member {} guid {} queuedMask {} sending {} self {} group {}",
-                proposal.id, who, pguid.ToString(), uint32(player.role), uint32(roleOut),
+            // The slot matters: the client draws these in packet order as
+            // LFDDungeonReadyStatusPlayer1..5, so "the third icon was a tank"
+            // is only useful if the log says who was third.
+            LOG_ERROR("lfg", "LFGPROBE proposal {} slot {} member {} guid {} queuedMask {} sending {} self {} group {}",
+                proposal.id, slot, who, pguid.ToString(), uint32(player.role), uint32(roleOut),
                 pguid == guid ? 1 : 0, player.group ? 1 : 0);
         }
 

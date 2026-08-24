@@ -458,6 +458,180 @@ void TickClassBuffs(Player* player)
     ApplyClassBuffs(player, ShouldHaveClassBuff(player));
 }
 
+// ---------------------------------------------------------------------
+// Account-wide professions (bug reports #50, #56, #63; backlog item 3)
+// ---------------------------------------------------------------------
+//
+// Reported three separate times, which makes it the most-asked-for thing on
+// the list. The design was decided out loud rather than guessed, as rule 6
+// requires, and the answer was the most generous of the options:
+//
+//   WHAT IS SHARED: everything -- the profession itself, its skill value, and
+//   every recipe. An alt does not visit a trainer and does not re-level
+//   anything. Sharing the skill number alone would hand someone 450
+//   Blacksmithing and nothing to make, which reads as another broken feature.
+//
+//   ACROSS FACTIONS: yes, everything. A Horde alt inherits what Alliance
+//   characters learned. Some of those recipes will have come from trainers the
+//   other faction cannot reach, and holding them is harmless.
+//
+//   HOW IT ARRIVES: automatically on login, exactly like the account riding
+//   share above. Nothing to click, and it self-heals for characters made later.
+//
+// MaxPrimaryTradeSkill is already 11 on this realm, so the usual two-profession
+// cap is not in the way and no core change is needed for that.
+//
+// The pool is read from the characters themselves rather than kept in a side
+// table: character_skills and character_spell already ARE the record of what
+// the account has earned, and a second copy is a second thing to drift. Cached
+// per account per uptime, and kept current by the learn-spell and skill-update
+// hooks below, both of which this script already listens to.
+uint32 const SHARED_PROFESSION_SKILLS[] = {
+    SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_ENCHANTING, SKILL_ENGINEERING,
+    SKILL_HERBALISM, SKILL_INSCRIPTION, SKILL_JEWELCRAFTING, SKILL_LEATHERWORKING,
+    SKILL_MINING, SKILL_SKINNING, SKILL_TAILORING,
+    SKILL_COOKING, SKILL_FIRST_AID, SKILL_FISHING
+};
+
+bool IsSharedProfession(uint32 skillId)
+{
+    for (uint32 id : SHARED_PROFESSION_SKILLS)
+        if (id == skillId)
+            return true;
+    return false;
+}
+
+// The profession skill line a spell belongs to, or 0. A recipe is any spell
+// with a SkillLineAbility row pointing at one of the shared professions.
+uint32 ProfessionSkillOfSpell(uint32 spellId)
+{
+    SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+    for (auto it = bounds.first; it != bounds.second; ++it)
+        if (it->second->SkillLine && IsSharedProfession(it->second->SkillLine))
+            return it->second->SkillLine;
+    return 0;
+}
+
+// Professions rank up in 75-point tiers (apprentice through grand master), and
+// SetSkill wants that tier as its step plus the matching cap. Same shape as
+// ApplyAccountRiding's ladder, generalised.
+void ProfessionTierFor(uint32 value, uint16& step, uint16& maxValue)
+{
+    uint32 tier = (value + 74) / 75;
+    if (!tier)
+        tier = 1;
+    if (tier > 6)
+        tier = 6;
+    step = uint16(tier);
+    maxValue = uint16(tier * 75);
+}
+
+std::unordered_map<uint32, std::unordered_map<uint32, uint32>> g_accountProfSkill; // account -> skill -> best value
+std::unordered_map<uint32, std::unordered_set<uint32>> g_accountProfSpell;         // account -> recipe spell ids
+std::unordered_set<uint32> g_accountProfLoaded;
+
+void LoadAccountProfessions(uint32 accountId)
+{
+    if (!g_accountProfLoaded.insert(accountId).second)
+        return;
+
+    if (QueryResult skills = CharacterDatabase.Query(
+        "SELECT `cs`.`skill`, MAX(`cs`.`value`) FROM `character_skills` `cs` "
+        "INNER JOIN `characters` `c` ON `c`.`guid` = `cs`.`guid` "
+        "WHERE `c`.`account` = {} GROUP BY `cs`.`skill`", accountId))
+    {
+        do
+        {
+            uint32 const skill = (*skills)[0].Get<uint16>();
+            uint32 const value = (*skills)[1].Get<uint32>();
+            if (value && IsSharedProfession(skill))
+                g_accountProfSkill[accountId][skill] = value;
+        } while (skills->NextRow());
+    }
+
+    // Every spell the account knows, filtered down to profession recipes. The
+    // busiest real account on this realm knows ~1000 spells across six
+    // characters, most of them class abilities, so the filtered set is a few
+    // hundred at worst and this runs once per account per uptime.
+    if (QueryResult spells = CharacterDatabase.Query(
+        "SELECT DISTINCT `cs`.`spell` FROM `character_spell` `cs` "
+        "INNER JOIN `characters` `c` ON `c`.`guid` = `cs`.`guid` "
+        "WHERE `c`.`account` = {} AND `cs`.`disabled` = 0", accountId))
+    {
+        do
+        {
+            uint32 const spellId = (*spells)[0].Get<uint32>();
+            if (ProfessionSkillOfSpell(spellId))
+                g_accountProfSpell[accountId].insert(spellId);
+        } while (spells->NextRow());
+    }
+}
+
+// Fold one character's own progress into the pool as it happens, so a second
+// character logging in later sees it without waiting for a restart.
+void NoteProfessionSkill(Player* player, uint32 skillId)
+{
+    if (!player || !player->GetSession() || !IsSharedProfession(skillId))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountProfessions(accountId);
+    uint32 const value = player->GetPureSkillValue(uint16(skillId));
+    uint32& best = g_accountProfSkill[accountId][skillId];
+    if (value > best)
+        best = value;
+}
+
+void NoteProfessionSpell(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetSession() || !ProfessionSkillOfSpell(spellId))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountProfessions(accountId);
+    g_accountProfSpell[accountId].insert(spellId);
+}
+
+// Bring this character up to everything the account knows.
+void GrantAccountProfessions(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountProfessions(accountId);
+
+    // Skills first: a recipe learned for a profession the character does not
+    // have yet would be a spell with nowhere to live.
+    for (auto const& [skillId, value] : g_accountProfSkill[accountId])
+    {
+        if (!value)
+            continue;
+        uint16 const current = player->GetPureSkillValue(uint16(skillId));
+        if (player->HasSkill(skillId) && current >= value)
+            continue;
+        uint16 step = 1;
+        uint16 maxValue = 75;
+        ProfessionTierFor(value, step, maxValue);
+        player->SetSkill(uint16(skillId), step, uint16(value), maxValue);
+    }
+
+    // Then the recipes. learnSpell rather than addSpell on purpose: the client
+    // was sent its spell list before this hook runs, so a silently-added recipe
+    // would not appear in the trade window until the next login -- learned and
+    // invisible, which is the worst of both.
+    uint32 taught = 0;
+    for (uint32 spellId : g_accountProfSpell[accountId])
+    {
+        if (player->HasSpell(spellId))
+            continue;
+        if (!sSpellMgr->GetSpellInfo(spellId))
+            continue;
+        player->learnSpell(spellId, false, true);
+        ++taught;
+    }
+    if (taught)
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cff66ccff[Professions]|r Synced {} recipe(s) from your other characters.", taught);
+}
+
 void LoadAccountRiding(uint32 accountId)
 {
     if (g_accountRiding.find(accountId) != g_accountRiding.end())
@@ -1041,6 +1215,7 @@ public:
             }
         }
         ApplyAccountRiding(player);
+        GrantAccountProfessions(player);
         // Harvest before grant: what this character already owns joins the
         // account pool in the same login it receives everyone else's.
         HarvestAccountCollection(player);
@@ -1148,6 +1323,7 @@ public:
     {
         NoteRiding(player);
         RecordAccountCollection(player, spellId);
+        NoteProfessionSpell(player, spellId);
     }
 
     void OnPlayerUpdateSkill(Player* player, uint32 skillId, uint32 /*value*/, uint32 /*max*/,
@@ -1155,6 +1331,7 @@ public:
     {
         if (skillId == SKILL_RIDING)
             NoteRiding(player);
+        NoteProfessionSkill(player, skillId);
     }
 
     void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 /*xpSource*/) override
