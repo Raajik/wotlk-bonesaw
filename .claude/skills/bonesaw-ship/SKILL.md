@@ -50,15 +50,49 @@ ship.
 
 ## Phase 2 - warn and save
 
-Skip only if `ac-worldserver` is not running.
+Skip entirely if `ac-worldserver` is not running.
+
+**First, count REAL players online.** The countdown exists to stop players
+taking a rollback; with nobody to roll back, five minutes of announcements to an
+empty realm is just five minutes. Playerbots do not count - they have no
+progress a restart can cost them.
+
+```
+docker compose exec -T ac-database mysql -uroot -ppassword -N -e "SELECT COUNT(*) FROM acore_characters.characters c JOIN acore_auth.account a ON a.id = c.account WHERE c.online = 1 AND a.username NOT LIKE 'RNDBOT%';"
+```
+
+Bot accounts are all named `RNDBOT*` (144 of 147 accounts at the time of
+writing), so excluding them is what makes this count mean "humans". Do NOT use
+the worldserver console's `server info` for this - its "Connected players"
+includes bots, so it reads non-zero on an empty realm.
+
+**If that count is 0:** save and restart immediately, no announcements.
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/save_world.ps1
+```
+
+The save still runs. It costs about three seconds and it is not a warning - it
+protects world and bot state, and a stale `online` flag left by an earlier crash
+is the one case where this count could be wrong in the dangerous direction. If
+it is wrong the other way (a human logs in during the restart) they get a clean
+reconnect, not a rollback.
+
+**If that count is greater than 0:** the full countdown, no shortcuts.
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/restart_worldserver.ps1
 ```
 
-Announces in game, waits 45 seconds, then `saveall`. Wait for it to print OK.
-Players take sizeable rollbacks otherwise. Never use AzerothCore
+Announces in game on a staged countdown (5 minutes, then 2, 1, 30s, 10s), then
+`saveall`. **Wait for its final line**, `OK: players warned ... and saved;
+restart is allowed`. An exit code of 0 is not the same thing: on 2026-08-23 that
+script was killed partway, exited 0, and had never reached the saveall - the
+missing final line was the only evidence. Never use AzerothCore
 `server shutdown` for a docker replace - it races `saveall` on its own timer.
+
+Run it in the background rather than in the foreground, or a tool timeout will
+kill it mid-countdown, which is exactly how that happened.
 
 ## Phase 3 - replace the server
 
