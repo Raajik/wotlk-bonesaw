@@ -29,9 +29,24 @@ Deliberately NOT changed:
 - `LivingGear_Next.cpp:895` (Hand of Freedom) — still UNCHECKED for which hook
   it runs under. The one remaining #59 candidate.
 
-**Everything here is verified by reading, not by playing.** The live spot checks
-at the bottom are still outstanding and are the only thing that proves the
-fixes work.
+### Verified in-game after the 0.1.72 ship
+
+Grant / revoke, tested live on a Warlock:
+
+```
+21:33:39  learned Conflagrate + Chaos Bolt (Rank 1)   <- picked Destruction
+21:34:32  unlearned both, learned Metamorphosis       <- switched to Demonology
+21:35:19  unlearned Metamorphosis, learned nothing    <- switched to Affliction
+```
+
+That confirms four things at once: the new grant rule hands the spec's
+abilities over on selection; the widened 8-slot array still revokes correctly
+(nothing stranded, which was the #54 shape and the riskiest part of the change);
+Affliction's deliberately-empty entry behaves; and `BestRankForLevel` picks a
+level-appropriate rank rather than a hardcoded one.
+
+**Still verified only by reading, not by playing:** the 18-site cooldown fix and
+the four damage multipliers. See the spot checks below.
 
 **Method note, and why this found things the tools did not.** All four existing
 audits (`perk_audit`, `perk_spell_audit`, `perk_promise_audit`,

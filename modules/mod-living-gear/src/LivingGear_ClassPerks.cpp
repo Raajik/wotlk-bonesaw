@@ -169,7 +169,7 @@ uint32 const SPELL_KILLING_SPREE = 51690;
 uint32 const SPELL_CHIMERA_SHOT = 53209; // single rank
 uint32 const SPELL_SERPENT_STING_R1 = 1978;
 uint32 const SPELL_AIMED_SHOT_R1 = 19434;
-uint32 const SPELL_THUNDERSTORM = 51490; // single rank
+uint32 const SPELL_THUNDERSTORM = 51490; // rank 1 of 4 -- use RankOf
 uint32 const SPELL_LAVA_BURST_R1 = 51505;
 uint32 const SPELL_CHAIN_LIGHTNING_R1 = 421;
 uint32 const SPELL_ARMY_OF_THE_DEAD = 42650;
@@ -204,6 +204,9 @@ uint32 const SPELL_WILD_GROWTH_R1 = 48438;
 uint32 const SPELL_REJUVENATION_R1 = 774;
 // Priest
 uint32 const SPELL_PENANCE_R1 = 47540;
+// Penance's damage half, ranked in lockstep with the channel above
+// (spell_priest.cpp SPELL_PRIEST_PENANCE_R1_DAMAGE). Used by the ricochet.
+uint32 const SPELL_PENANCE_R1_DAMAGE = 47758;
 uint32 const SPELL_POWER_WORD_SHIELD_R1 = 17;
 uint32 const SPELL_GUARDIAN_SPIRIT = 47788;
 uint32 const SPELL_SHADOWFIEND = 34433;
@@ -1963,9 +1966,14 @@ void TryShamanElementalOnCast(Player* player, Spell* spell)
     if (!player || !spell || GetClassPerk(player) != SPELL_SHAMAN_ELEMENTAL)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
-    if (!info || info->Id != SPELL_THUNDERSTORM)
+    // RankOf, not an exact id: Thunderstorm is rank 1 of 4 (51490 -> 51502,
+    // 51503, 51504). The old comment here claimed single rank and was wrong,
+    // so an Elemental shaman past rank 1 got no cooldown removal at all.
+    if (!info || !RankOf(info, SPELL_THUNDERSTORM))
         return;
-    ClearCooldownAfterCast(player, SPELL_THUNDERSTORM, info->GetCategory());
+    // info->Id, not SPELL_THUNDERSTORM: the player may be casting a higher rank,
+    // and clearing rank 1's cooldown entry would leave theirs untouched.
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
 }
 
 void ApplyShamanElementalLavaBurstDamage(Unit* attacker, int32& damage, SpellInfo const* info)
@@ -2478,9 +2486,12 @@ void TryShamanRestOnCast(Player* player, Spell* spell)
     if (!player || !spell || GetClassPerk(player) != SPELL_SHAMAN_RESTORATION)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
-    if (!info || info->Id != SPELL_RIPTIDE)
+    // Riptide is rank 1 of 4; an exact match skipped every higher rank.
+    if (!info || !RankOf(info, SPELL_RIPTIDE))
         return;
-    ClearCooldownAfterCast(player, SPELL_RIPTIDE, info->GetCategory());
+    // info->Id, not SPELL_RIPTIDE: the player may be casting a higher rank,
+    // and clearing rank 1's cooldown entry would leave theirs untouched.
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
     Unit* target = spell->m_targets.GetUnitTarget();
     if (!target)
         return;
@@ -2634,21 +2645,99 @@ void TryWarlockDestroOnCast(Player* player, Spell* spell)
 // "Starfall has no cooldown/mana cost. You are permanently in both Solar
 // and Lunar Eclipse at once."
 //
-// SIMPLIFICATION: Starfall's "recast to stop it early" toggle is not
-// implemented, same call already made for Warrior Arms/Bladestorm
-// elsewhere in this file (see that comment for the crash history reason).
-// No-cooldown/no-cost alone gets most of the value (spam it near-freely).
+// Starfall is a TOGGLE: cast to switch it on and it never expires, recast to
+// switch it off. Spamming a no-cooldown Starfall worked but played badly.
+//
+// The off-switch is the part with crash history, and it has one safe shape.
+// Ordering in the core, read rather than recalled:
+//
+//   Spell::prepare  -> CheckCast(true)        <-- we act HERE
+//   Spell::_cast    -> OnPlayerSpellCast      (Spell.cpp:3869)
+//   Spell::_cast    -> CheckCast(false)       (Spell.cpp:3895)
+//
+// Removing the aura from OnPlayerSpellCast and letting the cast continue just
+// re-applies it a moment later -- that is the documented Bladestorm trap. Doing
+// it in the STRICT CheckCast pass instead means the cast never starts at all:
+// OnSpellCheckCast sits at the very top of Spell::CheckCast (:5726) and the
+// function returns immediately on any non-OK result. So: remove the aura, fail
+// with SPELL_FAILED_DONT_REPORT, done. Nothing re-applies because nothing runs.
+//
+// The on-state uses the proven free-permanent-toggle pattern (Bladestorm, Feral
+// Berserk, Arcane Power): refund the cost and clear the cooldown in the cast
+// hook, and observe the aura's lifetime from the update loop rather than
+// touching it during its own application, which is what keeps it out of
+// Unit::_AddAura.
+//
+// Balance also had no damage multiplier at all, while Mage ran x4 and DK Frost
+// x2 -- the "perk that spreads noise" shape called out in the wiki. Rather than
+// chase Starfall's damage id (it periodically triggers a ranked dummy, 50286,
+// whose handler then casts a per-rank effect value -- exactly the moving target
+// that left Mind Flay and Explosive Shot unmultiplied for months), the
+// multiplier is gated on SCHOOL plus "is Starfall switched on". That makes the
+// toggle a damage stance and cannot be broken by a triggered id changing.
 // -------------------------------------------------------------------------
+uint32 const DRUID_BALANCE_DAMAGE_MULT = 3;
+
+// Keep the toggle alive. Same observe-only shape as TickMageArcanePower.
+void TickDruidBalanceStarfall(Player* player)
+{
+    if (!player || !player->IsAlive() || GetClassPerk(player) != SPELL_DRUID_BALANCE)
+        return;
+    for (uint32 id = SPELL_STARFALL; id; id = sSpellMgr->GetNextSpellInChain(id))
+        if (Aura* aura = player->GetAura(id))
+            if (aura->GetDuration() >= 0 && aura->GetDuration() < 5000)
+                aura->SetDuration(aura->GetMaxDuration() > 0 ? aura->GetMaxDuration() : 20000);
+}
+
+// The off-switch. Runs in CheckCast's strict pass -- see the ordering note above.
+void TryDruidBalanceStarfallToggleOff(Spell* spell, bool strict, SpellCastResult& res)
+{
+    if (!strict || res != SPELL_CAST_OK || !spell)
+        return;
+    Unit* caster = spell->GetCaster();
+    Player* player = caster ? caster->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_DRUID_BALANCE)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_STARFALL))
+        return;
+    if (!HasAuraRankOf(player, SPELL_STARFALL))
+        return;                     // not running -> let the cast through, toggle ON
+    for (uint32 id = SPELL_STARFALL; id; id = sSpellMgr->GetNextSpellInChain(id))
+        player->RemoveAurasDueToSpell(id);
+    res = SPELL_FAILED_DONT_REPORT; // toggle OFF, and the cast never happens
+}
+
+// Arcane and Nature are Balance's two schools (Starfire/Moonfire arcane,
+// Wrath/Insect Swarm nature, Starfall arcane), so this covers the whole kit
+// while the toggle is up and nothing while it is down.
+void ApplyDruidBalanceDamage(Unit* attacker, int32& damage, SpellInfo const* info)
+{
+    if (!attacker || damage <= 0 || !info)
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_DRUID_BALANCE)
+        return;
+    if (!(info->GetSchoolMask() & (SPELL_SCHOOL_MASK_ARCANE | SPELL_SCHOOL_MASK_NATURE)))
+        return;
+    if (!HasAuraRankOf(player, SPELL_STARFALL))
+        return;
+    damage *= int32(DRUID_BALANCE_DAMAGE_MULT);
+}
+
 void TryDruidBalanceOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_DRUID_BALANCE)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
-    if (!info || info->Id != SPELL_STARFALL)
+    // Starfall is rank 1 of 4; an exact match skipped every higher rank.
+    if (!info || !RankOf(info, SPELL_STARFALL))
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_MANA, cost);
-    ClearCooldownAfterCast(player, SPELL_STARFALL, info->GetCategory());
+    // info->Id, not SPELL_STARFALL: the player may be casting a higher rank,
+    // and clearing rank 1's cooldown entry would leave theirs untouched.
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
 }
 
 void TickDruidBalanceEclipse(Player* player, TickState& st, uint32 diff)
@@ -2752,6 +2841,64 @@ void TickDruidRestRejuvSpread(Player* player, TickState& st, uint32 diff)
 // "Penance has no cooldown and also applies Power Word: Shield to the
 // target."
 // -------------------------------------------------------------------------
+// Penance ricochets off up to PRIEST_PENANCE_BOUNCES further enemies.
+//
+// Penance itself is a channelled dummy (47540) that fires bolts; re-casting the
+// channel at each hop would fight the engine, so a hop casts Penance's own
+// DAMAGE spell instead. That spell is ranked in lockstep with the channel
+// (47758 -> 53001/53002/53003 against 47540 -> 53005/53006/53007), and the core
+// pairs them with GetSpellWithRank, so the hop uses the rank the priest
+// actually cast rather than a hardcoded id -- the mistake that left Mind Flay
+// and Explosive Shot unmultiplied.
+//
+// Staggered one hop per event, exactly like AvengerBounceStep above, because
+// this is scheduled from inside OnPlayerSpellCast (mid-Spell::cast) and a
+// synchronous loop of casts there is the documented Unit::_AddAura reentrancy
+// crash. g_reentryGuard is held for the whole chain and cleared on every exit.
+uint32 const PRIEST_PENANCE_BOUNCES = 5;
+float const PRIEST_PENANCE_HOP_RANGE = 15.0f;
+
+static void PenanceBounceStep(ObjectGuid playerGuid, ObjectGuid currentGuid, uint32 damageSpellId, uint32 bouncesLeft)
+{
+    uint32 const guid = playerGuid.GetCounter();
+    if (!bouncesLeft)
+    {
+        g_reentryGuard.erase(guid);
+        return;
+    }
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!player || !player->IsInWorld() || !player->IsAlive())
+    {
+        g_reentryGuard.erase(guid);
+        return;
+    }
+    Unit* current = ObjectAccessor::GetUnit(*player, currentGuid);
+    if (!current || !current->IsInWorld())
+    {
+        g_reentryGuard.erase(guid);
+        return;
+    }
+    // Hop to someone new near the last target; never bounce back onto it, so a
+    // single enemy does not eat all five jumps.
+    Unit* next = nullptr;
+    ForEachHostileNear(player, current, PRIEST_PENANCE_HOP_RANGE, [&next, current](Unit* target)
+    {
+        if (!next && target != current)
+            next = target;
+    });
+    if (!next)
+    {
+        g_reentryGuard.erase(guid);
+        return;
+    }
+    player->CastSpell(next, damageSpellId, true);
+    ObjectGuid nextGuid = next->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid, nextGuid, damageSpellId, bouncesLeft]()
+    {
+        PenanceBounceStep(playerGuid, nextGuid, damageSpellId, bouncesLeft - 1);
+    }, std::chrono::milliseconds(150));
+}
+
 void TryPriestDiscOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_PRIEST_DISCIPLINE)
@@ -2764,6 +2911,23 @@ void TryPriestDiscOnCast(Player* player, Spell* spell)
     uint32 const shield = BestOwned(player, SPELL_POWER_WORD_SHIELD_R1);
     if (target && shield)
         player->CastSpell(target, shield, true);
+
+    // Only ricochet when this was aimed at an enemy -- Penance on a friend is a
+    // heal, and chaining that off "nearby enemies" would be nonsense.
+    if (!target || !player->IsValidAttackTarget(target))
+        return;
+    uint32 const damageSpellId = sSpellMgr->GetSpellWithRank(SPELL_PENANCE_R1_DAMAGE, info->GetRank(), true);
+    if (!damageSpellId)
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+    ObjectGuid playerGuid = player->GetGUID();
+    ObjectGuid targetGuid = target->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid, targetGuid, damageSpellId]()
+    {
+        PenanceBounceStep(playerGuid, targetGuid, damageSpellId, PRIEST_PENANCE_BOUNCES);
+    }, std::chrono::milliseconds(1));
 }
 
 // -------------------------------------------------------------------------
@@ -3166,6 +3330,7 @@ public:
         else if (selected == SPELL_DRUID_BALANCE)
         {
             TickDruidBalanceEclipse(player, g_eclipseTick[player->GetGUID().GetCounter()], diff);
+            TickDruidBalanceStarfall(player);
         }
         else if (selected == SPELL_DRUID_RESTORATION)
         {
@@ -3235,8 +3400,16 @@ class ClassPerksSpell : public AllSpellScript
 {
 public:
     ClassPerksSpell() : AllSpellScript("LivingGearClassPerksSpell", {
-        ALLSPELLHOOK_ON_PREPARE
+        ALLSPELLHOOK_ON_PREPARE,
+        ALLSPELLHOOK_ON_SPELL_CHECK_CAST
     }) { }
+
+    // Toggle-off lives here rather than in the cast hook. See the long note
+    // above TryDruidBalanceStarfallToggleOff for why that ordering matters.
+    void OnSpellCheckCast(Spell* spell, bool strict, SpellCastResult& res) override
+    {
+        TryDruidBalanceStarfallToggleOff(spell, strict, res);
+    }
 
     void OnSpellPrepare(Spell* spell, Unit* caster, SpellInfo const* spellInfo) override
     {
@@ -3280,6 +3453,7 @@ public:
         ApplyMageFireDamage(attacker, damage, spellInfo);
         ApplyMageFrostDamage(attacker, damage, spellInfo);
         ApplyMageArcaneDamage(attacker, damage, spellInfo);
+        ApplyDruidBalanceDamage(attacker, damage, spellInfo);
         ApplyWarlockDemoPetSpellDamage(attacker, damage);
         if (target)
             ApplyHunterSurvivalTrapImmunity(attacker, target, damage, spellInfo);
