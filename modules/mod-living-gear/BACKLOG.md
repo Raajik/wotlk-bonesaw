@@ -50,7 +50,59 @@ Blocked on two things, both small:
 
 ---
 
-## 3. Open bug reports
+## 3. Professions account-wide, and cross-faction — HIGH
+
+Reports #50 and #56, the same request twice. Rule 6 territory, and the answer
+the user gave is specific: **everything truly account-wide, and hide recipes
+that are invalid for your faction** rather than refusing to share them.
+
+That split matters. Sharing the *skill* and the *recipe book* across the
+account is the feature; the faction-locked recipes are a display problem, not a
+sharing problem. Alliance-only patterns should sit in a Horde character's book
+greyed out or hidden, not cause the whole profession to be per-character.
+
+Shape, following the pattern `lg_account_recipe` already establishes:
+- skill values keyed on `account_id`, taking the highest any character reached
+- learned recipes likewise, unioned across the account
+- a display filter at the client for anything whose `RequiredRace`/faction does
+  not match the current character
+
+Unknowns worth checking before building: whether a recipe learned by a Horde
+character can even be *cast* by an Alliance one (some have hard faction
+requirements in the spell data), and what happens to a profession the character
+has not "learned" but the account has.
+
+---
+
+## 4. More than 10 characters per realm — RESEARCHED, tractable
+
+Asked whether this is a big ask. It is not, and it is two separate changes.
+
+**Server side.** `WorldConfig.cpp:232` clamps it:
+
+    SetConfigValue<uint32>(CONFIG_CHARACTERS_PER_REALM, "CharactersPerRealm", 10,
+        ..., [](uint32 const& value) { return value > 0 && value <= 10; }, "> 0 && <= 10");
+
+The validator rejects anything above 10, so raising the config alone does
+nothing. It needs a one-line core patch to widen that bound. The limit is
+enforced in exactly one place, `CharacterHandler.cpp:422`, so nothing else
+needs to change.
+
+**Client side.** The stock config comments say why the cap exists:
+`Default: 10 - (Client limitation)`. The character select screen has ten slots
+and no scrollbar. This is the half Synastria solved by shrinking the login
+font — it is a GlueXML change (`GlueXML/CharacterSelect.lua` / `.xml`), and we
+already ship FrameXML overrides through `patch-Y.MPQ`, so the delivery
+mechanism exists. Shrinking the font and row height to fit ~20, or adding a
+scroll, are both plausible.
+
+**Order matters:** raise the server bound first and verify with 11 characters
+before touching the client, so a broken character list is never confused with
+a broken server limit.
+
+---
+
+## 5. Open bug reports
 
 Current as of 2026-08-23. See `tools/bug-reports/bug_resolve.py` for status.
 
