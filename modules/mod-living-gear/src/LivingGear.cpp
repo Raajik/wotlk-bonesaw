@@ -548,7 +548,11 @@ struct AttuneMilestone { uint32 id; char const* label; };
 AttuneMilestone const ATTUNE_MILESTONES[] =
 {
     // Tier 1 -- the first week
-    {  457, "Realm First! Level 80" },            // any level 80 is the entry fee
+    // Achievement 13 "Level 80" -- the one every character earns, verified in
+    // Achievement.dbc. This was 457 "Realm First! Level 80", which only ONE
+    // account on the realm can ever hold, so tier 1 was unreachable for
+    // everybody else. Reported as #60, with the achievement link in it.
+    {   13, "Level 80" },
     { 1288, "Northrend Dungeonmaster" },          // every WotLK normal dungeon
     { 1516, "Accomplished Angler" },              // stands in for Salty
 

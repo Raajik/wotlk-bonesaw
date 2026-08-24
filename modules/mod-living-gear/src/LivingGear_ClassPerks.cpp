@@ -505,6 +505,34 @@ uint32 BestOwned(Player* player, uint32 firstId)
 // perk starts using it automatically. BestOwned answers exactly that; this
 // just supplies the granted rank as the floor for the case where the perk gave
 // it and nothing is trained yet.
+// Clear a spell's cooldown AFTER the cast that triggered it has finished.
+//
+// Report #59: "Penance has a cooldown when it shouldn't according to the
+// Discipline spec description." Six perks promise "no cooldown" and all six
+// had the same bug -- they called RemoveSpellCooldown from OnPlayerSpellCast,
+// which fires when the cast STARTS. AzerothCore applies the cooldown when the
+// cast finishes, so every one of them was clearing a cooldown that did not
+// exist yet and the real one landed a moment later.
+//
+// Deferring by a tick puts the removal after Spell::finish(). Same deferral
+// this module already uses for every cast that must not run reentrantly, for
+// a different reason but with the same mechanism.
+void ClearCooldownAfterCast(Player* player, uint32 spellId, uint32 category)
+{
+    if (!player)
+        return;
+    ObjectGuid const guid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([guid, spellId, category]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(guid);
+        if (!p || !p->IsInWorld())
+            return;
+        p->RemoveSpellCooldown(spellId, true);
+        if (category)
+            p->RemoveCategoryCooldown(category);
+    }, std::chrono::milliseconds(1));
+}
+
 uint32 BestOwnedOrFirst(Player* player, uint32 firstId)
 {
     uint32 const owned = BestOwned(player, firstId);
@@ -1518,9 +1546,7 @@ void TryRogueCombatAdrenalineRush(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_ENERGY, cost);
-    player->RemoveSpellCooldown(info->Id, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
 }
 
 bool RogueCombatRushUp(Player* player)
@@ -2312,9 +2338,7 @@ void TryHunterSurvivalOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!IsHunterTrapSpell(info))
         return;
-    player->RemoveSpellCooldown(info->Id, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
 }
 
 void ApplyHunterSurvivalTrapRadius(Spell* spell, Player* player, SpellInfo const* info)
@@ -2550,9 +2574,7 @@ void TryWarlockDestroOnCast(Player* player, Spell* spell)
         return;
     if (RankOf(info, SPELL_CHAOS_BOLT_R1))
     {
-        player->RemoveSpellCooldown(info->Id, true);
-        if (uint32 const cat = info->GetCategory())
-            player->RemoveCategoryCooldown(cat);
+        ClearCooldownAfterCast(player, info->Id, info->GetCategory());
         return;
     }
     if (!RankOf(info, SPELL_CONFLAGRATE_R1))
@@ -2634,9 +2656,7 @@ void TryDruidFeralOnCast(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(Powers(info->PowerType), cost);
-    player->RemoveSpellCooldown(info->Id, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
 }
 
 // -------------------------------------------------------------------------
@@ -2651,9 +2671,7 @@ void TryDruidRestOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!info || !RankOf(info, SPELL_WILD_GROWTH_R1))
         return;
-    player->RemoveSpellCooldown(info->Id, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
 }
 
 void ApplyDruidRestWildGrowthTargets(Spell* spell, Player* player, SpellInfo const* info)
@@ -2703,9 +2721,7 @@ void TryPriestDiscOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!info || !RankOf(info, SPELL_PENANCE_R1))
         return;
-    player->RemoveSpellCooldown(info->Id, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
     Unit* target = spell->m_targets.GetUnitTarget();
     uint32 const shield = BestOwned(player, SPELL_POWER_WORD_SHIELD_R1);
     if (target && shield)
