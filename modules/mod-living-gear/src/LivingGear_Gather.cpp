@@ -759,7 +759,35 @@ void TryAutoCatchFish(Player* player)
     GameObject* bobber = FindFishingBobber(player);
     if (!bobber || bobber->getLootState() != GO_READY)
         return;
+    ObjectGuid const bobberGuid = bobber->GetGUID();
     bobber->Use(player); // same as a manual right-click on a biting bobber
+
+    // ...and take the catch. Reported 2026-08-24: "fishing no longer auto-loots
+    // the bobber loot (gear wheel)".
+    //
+    // Not a regression -- it was never implemented. Only the POOL case
+    // (GAMEOBJECT_TYPE_FISHINGHOLE, TryGatherFishHole above) ever auto-stored
+    // anything. Open water takes a different branch inside GameObject::Use:
+    // with no fishing hole in range it calls player->SendLoot(guid,
+    // LOOT_FISHING), which fills the bobber's own loot and opens a window,
+    // and nothing on our side emptied it. Auto-CATCH was added on 2026-08-21;
+    // auto-LOOT of that catch never was, so the rod hooked the fish and then
+    // waited for a click.
+    //
+    // The window has to be released as well as emptied, or the client keeps
+    // showing an open loot frame over a bobber that no longer has anything in
+    // it. Junk (LOOT_FISHING_JUNK) goes through the same path on purpose --
+    // it is still loot, and leaving it behind is the same annoyance.
+    if (GameObject* caught = player->GetMap()->GetGameObject(bobberGuid))
+    {
+        AutoStoreLoot(player, &caught->loot);
+        if (caught->loot.isLooted())
+        {
+            if (player->GetSession() && player->GetLootGUID() == bobberGuid)
+                player->GetSession()->DoLootRelease(bobberGuid);
+            caught->SetLootState(GO_JUST_DEACTIVATED);
+        }
+    }
     QueueFishingRecast(player);
 }
 

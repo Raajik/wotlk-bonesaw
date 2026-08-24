@@ -385,6 +385,24 @@ void TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
     uint32 const stored = StoreFromVault(player, itemId, taken);
     if (stored < taken)
         VaultAdd(accountId, 0, VAULT_REAGENT, itemId, taken - stored); // bag full -- put the remainder back
+
+    // Tell the client the vault got smaller. Reported 2026-08-24: cooking from
+    // reagent-bank materials worked twice, then said "missing reagent: Gooey
+    // Spider Leg" while the recipe still claimed three more were craftable.
+    //
+    // The server was right and the client was stale. The addon adds vault
+    // contents to the craftable count on purpose (GetTradeSkillInfo counts bags
+    // only, and the whole point of the reagent vault is that bag contents are
+    // not the whole story), but VaultRemove updates the database and the
+    // in-memory map and sends NOTHING -- so db.vault kept the pre-craft counts
+    // and kept promising reagents that had already been spent. The manual
+    // withdraw path has always sent this line; this path never did.
+    //
+    // Sending it here also refreshes the Reagents panel, which had the same
+    // stale-count problem after every craft.
+    if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId))
+        SendLine(player, Acore::StringFormat("VLT|{}|{}|{}|{}", uint32(VAULT_REAGENT), itemId,
+            VaultCount(accountId, 0, VAULT_REAGENT, itemId), proto->Name1));
 }
 
 // Called from a core patch in Spell::CheckItems (Spell.cpp), from inside the
@@ -1686,9 +1704,28 @@ void SendAutolootSync(Player* player)
     LivingGearVault::SendAutolootSync(player);
 }
 
+// Bug reports #15 and #55 (and the autoloot half of #46), 2026-08-24.
+//
+// This asked whether the CHARACTER had learned spell 910008. It never can:
+// Autoloot was deliberately taken out of CASTABLE_SPELLS when its redundant
+// spellbook button was removed, and UnlockPerk only learns a spell
+// `if (PerkIsCastable(spellId))`. So the gate demanded something the design
+// guarantees will not exist, and every autoloot path -- chests, quest objects,
+// fishing, corpses -- silently declined for anyone whose character had not
+// learned it back when it still was castable.
+//
+// Measured on the live realm before changing it: 96 accounts own the perk, and
+// of 16 real characters 5 did not know the spell -- including Aela, the
+// character that filed #55 and #51. Those five had autoloot switched off
+// permanently with no way to tell.
+//
+// The other four call sites in this very file (ApplyLootRule, pickpocket,
+// corpse autoloot) already ask LivingGear_HasPerk, i.e. the ACCOUNT. This one
+// was the odd one out -- exactly the "two copies of a helper disagree" hazard
+// ARCHITECTURE.md warns about, and the account/character split from invariant 6.
 bool IsAutolootEnabled(Player* player)
 {
-    if (!player || !player->GetSession() || !player->HasSpell(LivingGearVault::SPELL_AUTOLOOT))
+    if (!player || !player->GetSession() || !LivingGear_HasPerk(player, LivingGearVault::SPELL_AUTOLOOT))
         return false;
     return LivingGearVault::AutolootOn(player->GetSession()->GetAccountId());
 }

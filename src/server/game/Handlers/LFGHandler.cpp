@@ -542,56 +542,35 @@ void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
     SendPacket(&data);
 }
 
-// The role field in SMSG_LFG_PROPOSAL_UPDATE is an INDEX, not a bitmask.
+// What goes in SMSG_LFG_PROPOSAL_UPDATE's role field -- currently the plain
+// AzerothCore role bitmask with the leader bit stripped, i.e. exactly 2, 4 or 8.
 //
-// This was established by reading the client, not by reasoning about it, after
-// two wrong fixes. Interface\FrameXML\LFGFrame.lua:337 hard-errors
+// THIS HAS BEEN WRONG THREE TIMES. The history matters, because each attempt
+// was a theory that fit the evidence available at the time and none of them
+// fixed it:
 //
-//     Interface\FrameXML\LFGFrame.lua:337: Unknown role: UNKNOWN
+//   0.1.72  Narrow a multi-bit mask to one role bit. Error persisted.
+//   0.1.73  Also strip PLAYER_ROLE_LEADER, so exactly 2/4/8 went out. Error
+//           persisted, which should have been impossible under "the client
+//           reads a bitmask" and was the first real sign the model was wrong.
+//   0.1.74  Send 0/1/2 as an INDEX into the role-name table found in Wow.exe
+//           at VA 0xad87b0 (TANK, HEALER, DAMAGER). This made it WORSE and
+//           disproved itself: a rogue -- who cannot queue as tank -- was drawn
+//           with the TANK icon, because 2 (our "damage" index) is
+//           PLAYER_ROLE_TANK in mask terms and that is what the client used.
+//           So the client does read a mask here.
 //
-// on any role string outside GUIDE/TANK/HEALER/DAMAGER, and the string comes
-// from client C code. Wow.exe holds exactly one table of those names -- three
-// pointers at VA 0xad87b0, in this order:
-//
-//     index 0 -> "TANK"    index 1 -> "HEALER"    index 2 -> "DAMAGER"
-//
-// ("GUIDE" does not appear in the 3.3.5 binary at all, and GetLFGProposalMember
-// returns isLeader as its own separate boolean, which is why the leader bit has
-// no business in this field.)
-//
-// The client indexes that table with the number we send. AzerothCore sends the
-// lfg::PLAYER_ROLE_* BITMASK, so what actually reached players was:
-//
-//     TANK   = 2  -> index 2 -> "DAMAGER"   tank draws the dps icon, silently
-//     HEALER = 4  -> out of range -> "UNKNOWN" -> Lua error
-//     DAMAGE = 8  -> out of range -> "UNKNOWN" -> Lua error
-//
-// which matches every observation: the error fired on every pop regardless of
-// what we did to the mask, its count tracked the number of non-tanks in the
-// group, and "healers show as dps" was reported as a bug in its own right.
-//
-// Two earlier attempts missed it because both assumed a bitmask. Narrowing a
-// multi-bit mask to one bit (core-patch 0013) still sent 4 or 8; stripping the
-// leader bit changed 9 to 8, still out of range. The correction log those
-// patches added never fired, which was the clue: the value on the wire was
-// already a single clean role bit and the client still could not read it.
-enum LfgClientRoleIndex : uint32
-{
-    LFG_CLIENT_ROLE_TANK   = 0,
-    LFG_CLIENT_ROLE_HEALER = 1,
-    LFG_CLIENT_ROLE_DAMAGE = 2,
-};
-
-// Mask -> the index the client expects. Damage is the fallback: it is the role
-// every class can fill, and a member who reaches here with no role bits at all
-// is a bug upstream that must not become a Lua error in someone's client.
-static uint32 ProposalRoleIndexForClient(uint8 role)
+// The 0.1.74 attempt is reverted. What remains unexplained is why 0.1.73's
+// clean 2/4/8 still produced "Unknown role: UNKNOWN", so the value is now
+// LOGGED for every member of every proposal rather than reasoned about again.
+// Correlate the log against what the client actually draws, then fix it once.
+static uint8 ProposalRoleForClient(uint8 role)
 {
     if (role & lfg::PLAYER_ROLE_TANK)
-        return LFG_CLIENT_ROLE_TANK;
+        return lfg::PLAYER_ROLE_TANK;
     if (role & lfg::PLAYER_ROLE_HEALER)
-        return LFG_CLIENT_ROLE_HEALER;
-    return LFG_CLIENT_ROLE_DAMAGE;
+        return lfg::PLAYER_ROLE_HEALER;
+    return lfg::PLAYER_ROLE_DAMAGE;
 }
 
 void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
@@ -630,12 +609,12 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
     for (auto const& [pguid, player] : proposal.players)
     {
         // Sort on the index actually sent, so the order matches the icons
-        switch (ProposalRoleIndexForClient(player.role))
+        switch (ProposalRoleForClient(player.role))
         {
-            case LFG_CLIENT_ROLE_TANK:
+            case lfg::PLAYER_ROLE_TANK:
                 tanks.push_back(pguid);
                 break;
-            case LFG_CLIENT_ROLE_HEALER:
+            case lfg::PLAYER_ROLE_HEALER:
                 healers.push_back(pguid);
                 break;
             default:
@@ -652,18 +631,24 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
     {
         lfg::LfgProposalPlayer const& player = proposal.players.find(pguid)->second;
 
-        uint32 const roleIndex = ProposalRoleIndexForClient(player.role);
-        // Only a member with no role bits at all is worth a line now: that is a
-        // real upstream bug (a bot placed in a group outside the queue, or a
-        // proposal formed without CheckGroupRoles running). A multi-bit mask is
-        // no longer notable, because collapsing it is this function's job.
-        if (!(player.role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)))
-            // Error rather than warn on purpose: the unconfigured "lfg" logger
-            // falls back to Logger.root, which only passes error and above.
-            LOG_ERROR("lfg", "SMSG_LFG_PROPOSAL_UPDATE: proposal {} member [{}] has no LFG role at all (mask {}), sending damage",
-                proposal.id, pguid.ToString(), uint32(player.role));
+        uint8 const roleOut = ProposalRoleForClient(player.role);
 
-        data << uint32(roleIndex);                         // Role INDEX, not a mask
+        // TEMPORARY INSTRUMENTATION (2026-08-24). Error level so it survives the
+        // default Logger.root=2 threshold -- there is no Logger.lfg configured.
+        // One line per member per proposal: what the queue recorded, and the
+        // exact number going on the wire. Correlate with the icons the client
+        // draws and with any "Unknown role: UNKNOWN" Lua error, then delete
+        // this and fix the encoding once, with evidence.
+        {
+            std::string who = pguid.ToString();
+            if (Player* member = ObjectAccessor::FindConnectedPlayer(pguid))
+                who = member->GetName();
+            LOG_ERROR("lfg", "LFGPROBE proposal {} member {} guid {} queuedMask {} sending {} self {} group {}",
+                proposal.id, who, pguid.ToString(), uint32(player.role), uint32(roleOut),
+                pguid == guid ? 1 : 0, player.group ? 1 : 0);
+        }
+
+        data << uint32(roleOut);                           // Role
         data << uint8(pguid == guid);                      // Self player
         if (!player.group)                                 // Player not in a group
         {
