@@ -212,6 +212,17 @@ struct PerkCfg
     bool ignoreSpellReqs = true;
     // See ReconcilePerkSpells. Castable perks only, so the cost is bounded.
     bool reconcilePerkSpells = true;
+    // Achievement.dbc points divided by this become spendable skill points,
+    // rounded up. 10 is deliberate: 84% of achievements are worth exactly 10
+    // points, so at this rate one achievement is one skill point and the
+    // conversion needs no explaining. Above 10 the typical achievement pays
+    // nothing at all.
+    uint32 skillPointDivisor = 10;
+    uint32 perkRespecCooldown = 300;
+    // Bump when lg_perk_cost prices change: every account is refunded on its
+    // next login and re-spends at the new rates. Without it, accounts keep
+    // whatever price they bought in at and veterans drift steadily richer.
+    uint32 perkCostEpoch = 1;
 };
 
 PerkCfg g_cfg;
@@ -238,6 +249,25 @@ std::unordered_map<uint32, uint32> g_pullRadiusTick;
 std::unordered_map<uint32, uint32> g_trackOreTick;
 std::unordered_map<uint32, uint32> g_trackHerbTick;
 std::unordered_set<uint32> g_perkLoaded;
+
+// Achievement-funded perk purchases. `prereq` is what orders a track (Cooking
+// 75 -> 150 -> 225); 0 means the node stands alone. Not named `requires`:
+// that is a keyword in C++20, which this module is built as.
+struct PerkPrice
+{
+    uint32 cost = 0;
+    uint32 prereq = 0;
+};
+
+std::unordered_map<uint32, PerkPrice> g_perkPrice;
+std::unordered_map<uint32, uint32> g_achievementValue;
+// Earned points are a join across every character on the account, so they are
+// computed once per account per uptime and invalidated on purchase, respec,
+// and newly completed achievements rather than being re-queried per click.
+std::unordered_map<uint32, uint32> g_earnedCache;
+bool g_hasPerkPriceSchema = false;
+bool g_hasLastRespecCol = false;
+bool g_hasPerkEpochCol = false;
 std::unordered_map<uint32, std::unordered_set<uint32>> g_perks;
 bool g_hasAutoMountCol = false;
 bool g_hasSoloCol = false;
@@ -479,6 +509,335 @@ void ReconcilePerkSpells(Player* player)
         LOG_INFO("module.livinggear",
             "Living Gear: {} learned {} account perk spell(s) it was missing.",
             player->GetName(), learned);
+
+    // The other direction, and the reason a respec can revoke anything at all.
+    // Spells cannot be stripped from an offline alt (same constraint the
+    // account key ring hit), so a respec deletes the rows immediately and each
+    // character sheds its buttons here on next login. Bounded to the priced
+    // set, which is the only thing a respec is allowed to take back.
+    uint32 removed = 0;
+    for (auto const& entry : g_perkPrice)
+    {
+        uint32 const spellId = entry.first;
+        if (!player->HasSpell(spellId) || g_perks[acc].count(spellId))
+            continue;
+        player->removeSpell(spellId, SPEC_MASK_ALL, false);
+        ++removed;
+    }
+    if (removed)
+        LOG_INFO("module.livinggear",
+            "Living Gear: {} lost {} perk spell(s) its account no longer owns.",
+            player->GetName(), removed);
+}
+
+// ---------------------------------------------------------------------------
+// Achievement-funded perk purchases (2026-08-24).
+//
+// Balance is DERIVED, never stored:
+//     balance = EarnedSkillPoints() - SpentSkillPoints()
+// so there is no counter that can drift out of step with the purchase set,
+// double-spend is impossible, and a respec is a DELETE rather than arithmetic.
+//
+// Ownership stays in `lg_account_perk`, untouched -- every rank is already its
+// own spell id, so all existing HasPerk() reads keep working. A perk owned
+// there with no row in `lg_account_perk_purchase` was granted, not bought,
+// which is how every pre-existing unlock grandfathers in at zero cost.
+// ---------------------------------------------------------------------------
+
+void DetectPerkPriceSchema()
+{
+    g_hasPerkPriceSchema = false;
+    g_hasLastRespecCol = false;
+    if (QueryResult t = CharacterDatabase.Query(
+        "SELECT 1 FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_perk_cost'"))
+        g_hasPerkPriceSchema = t->GetRowCount() > 0;
+    if (QueryResult c = CharacterDatabase.Query(
+        "SELECT `COLUMN_NAME` FROM `information_schema`.`COLUMNS` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_meta' "
+        "AND `COLUMN_NAME` IN ('last_respec', 'perk_epoch')"))
+    {
+        do
+        {
+            std::string const col = (*c)[0].Get<std::string>();
+            if (col == "last_respec")
+                g_hasLastRespecCol = true;
+            else if (col == "perk_epoch")
+                g_hasPerkEpochCol = true;
+        }
+        while (c->NextRow());
+    }
+}
+
+void LoadPerkPrices()
+{
+    g_perkPrice.clear();
+    g_achievementValue.clear();
+    g_earnedCache.clear();
+    if (!g_hasPerkPriceSchema)
+        return;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `spell_id`, `cost`, `requires_spell_id` FROM `lg_perk_cost`"))
+    {
+        do
+        {
+            PerkPrice price;
+            price.cost = (*result)[1].Get<uint32>();
+            price.prereq = (*result)[2].Get<uint32>();
+            g_perkPrice[(*result)[0].Get<uint32>()] = price;
+        }
+        while (result->NextRow());
+    }
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `achievement_id`, `skill_points` FROM `lg_achievement_value`"))
+    {
+        do
+            g_achievementValue[(*result)[0].Get<uint32>()] = (*result)[1].Get<uint32>();
+        while (result->NextRow());
+    }
+    LOG_INFO("module.livinggear",
+        "Living Gear: {} perk prices, {} achievement value overrides.",
+        g_perkPrice.size(), g_achievementValue.size());
+}
+
+// Achievement categories are a tree -- Battlegrounds and Arena both roll up to
+// Player vs. Player -- and the multiplier gates want the root.
+uint32 RootAchievementCategory(uint32 categoryId)
+{
+    for (uint8 depth = 0; depth < 10; ++depth)
+    {
+        AchievementCategoryEntry const* cat = sAchievementCategoryStore.LookupEntry(categoryId);
+        if (!cat || cat->parentCategory < 0)
+            break;
+        categoryId = uint32(cat->parentCategory);
+    }
+    return categoryId;
+}
+
+uint32 AchievementSkillValue(AchievementEntry const* entry)
+{
+    if (!entry)
+        return 0;
+    // Overrides first: this is where Feats of Strength and Realm Firsts get a
+    // value, since every one of them awards 0 points in Achievement.dbc.
+    auto const itr = g_achievementValue.find(entry->ID);
+    if (itr != g_achievementValue.end())
+        return itr->second;
+    uint32 const divisor = g_cfg.skillPointDivisor ? g_cfg.skillPointDivisor : 10;
+    return (entry->points + divisor - 1) / divisor;   // round up
+}
+
+// Account-wide and DISTINCT: two characters that both earned "Level 10" pay
+// once. Counting per character instead would make levelling alts the cheapest
+// way to farm the currency.
+uint32 EarnedSkillPoints(uint32 accountId, std::unordered_map<uint32, uint32>* byCategory = nullptr)
+{
+    if (!byCategory)
+    {
+        auto const cached = g_earnedCache.find(accountId);
+        if (cached != g_earnedCache.end())
+            return cached->second;
+    }
+
+    uint32 earned = 0;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT DISTINCT ca.`achievement` FROM `character_achievement` ca "
+        "JOIN `characters` c ON c.`guid` = ca.`guid` WHERE c.`account` = {}", accountId))
+    {
+        do
+        {
+            AchievementEntry const* entry = sAchievementStore.LookupEntry((*result)[0].Get<uint16>());
+            uint32 const value = AchievementSkillValue(entry);
+            if (!value)
+                continue;
+            earned += value;
+            if (byCategory)
+                (*byCategory)[RootAchievementCategory(entry->categoryId)] += value;
+        }
+        while (result->NextRow());
+    }
+    g_earnedCache[accountId] = earned;
+    return earned;
+}
+
+uint32 SpentSkillPoints(uint32 accountId)
+{
+    if (!g_hasPerkPriceSchema)
+        return 0;
+    if (QueryResult result = CharacterDatabase.Query(
+        // CAST so the column comes back as an integer type. A bare SUM() is
+        // DECIMAL, which Field::Get<uint64> has no business reading.
+        "SELECT CAST(COALESCE(SUM(`paid`), 0) AS UNSIGNED) "
+        "FROM `lg_account_perk_purchase` WHERE `account_id` = {}",
+        accountId))
+        return uint32((*result)[0].Get<uint64>());
+    return 0;
+}
+
+uint32 SkillPointBalance(uint32 accountId)
+{
+    uint32 const earned = EarnedSkillPoints(accountId);
+    uint32 const spent = SpentSkillPoints(accountId);
+    return earned > spent ? earned - spent : 0;
+}
+
+bool PurchaseRank(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetSession() || !g_hasPerkPriceSchema)
+        return false;
+    uint32 const acc = player->GetSession()->GetAccountId();
+
+    auto const itr = g_perkPrice.find(spellId);
+    if (itr == g_perkPrice.end() || HasPerk(player, spellId))
+        return false;
+    if (itr->second.prereq && !HasPerk(player, itr->second.prereq))
+        return false;
+    if (SkillPointBalance(acc) < itr->second.cost)
+        return false;
+
+    // Storing what was actually paid, rather than re-reading lg_perk_cost at
+    // refund time, is what lets prices be retuned later without retroactively
+    // overdrawing accounts that bought in at the old rate.
+    CharacterDatabase.DirectExecute(
+        "INSERT INTO `lg_account_perk_purchase` (`account_id`, `spell_id`, `paid`) "
+        "VALUES ({}, {}, {})", acc, spellId, itr->second.cost);
+
+    UnlockPerk(player, spellId, nullptr);
+    return true;
+}
+
+uint32 LoadLastRespec(uint32 accountId)
+{
+    if (!g_hasLastRespecCol)
+        return 0;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `last_respec` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+        return (*result)[0].Get<uint32>();
+    return 0;
+}
+
+// Account-wide, and persisted rather than held in memory. An in-memory
+// cooldown would reset on every worldserver restart, and this realm restarts
+// on every ship -- which would make it trivially bypassable on patch day.
+bool CanRespec(uint32 accountId, uint32& secondsLeft)
+{
+    secondsLeft = 0;
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    uint32 const last = LoadLastRespec(accountId);
+    if (last && now < last + g_cfg.perkRespecCooldown)
+    {
+        secondsLeft = (last + g_cfg.perkRespecCooldown) - now;
+        return false;
+    }
+    return true;
+}
+
+// Full-only, never per-track. With prereq-ordered tracks a partial refund
+// would have to walk the dependency graph and cascade dependents; refunding
+// Cooking 150 while 225 is still owned leaves the track corrupt. All-or-
+// nothing sidesteps that entire class of bug.
+void RespecPerks(uint32 accountId)
+{
+    if (!g_hasPerkPriceSchema)
+        return;
+
+    auto trans = CharacterDatabase.BeginTransaction();
+    // Revoke only what was bought. Condition-granted and grandfathered rows
+    // have no purchase row and must survive untouched -- that set difference
+    // is the whole reason purchases live in their own table.
+    trans->Append(
+        "DELETE p FROM `lg_account_perk` p "
+        "JOIN `lg_account_perk_purchase` q "
+        "  ON q.`account_id` = p.`account_id` AND q.`spell_id` = p.`spell_id` "
+        "WHERE p.`account_id` = {}", accountId);
+    trans->Append("DELETE FROM `lg_account_perk_purchase` WHERE `account_id` = {}", accountId);
+    CharacterDatabase.CommitTransaction(trans);
+
+    g_perkLoaded.erase(accountId);
+    g_perks.erase(accountId);
+    g_earnedCache.erase(accountId);
+}
+
+void SaveLastRespec(uint32 accountId, uint32 when)
+{
+    if (!g_hasLastRespecCol)
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT INTO `lg_account_meta` (`account_id`, `last_respec`) VALUES ({}, {}) "
+        "ON DUPLICATE KEY UPDATE `last_respec` = {}", accountId, when, when);
+}
+
+uint32 LoadPerkEpoch(uint32 accountId)
+{
+    if (!g_hasPerkEpochCol)
+        return 0;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `perk_epoch` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+        return (*result)[0].Get<uint32>();
+    return 0;
+}
+
+void SavePerkEpoch(uint32 accountId, uint32 epoch)
+{
+    if (!g_hasPerkEpochCol)
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT INTO `lg_account_meta` (`account_id`, `perk_epoch`) VALUES ({}, {}) "
+        "ON DUPLICATE KEY UPDATE `perk_epoch` = {}", accountId, epoch, epoch);
+}
+
+// The client cannot price anything on its own -- lg_perk_cost is the only
+// source of truth, and it is meant to be retuned without shipping a new addon.
+// Batched for the same reason PKALL is: the addon-whisper channel silently
+// truncates around 255 bytes.
+void SendPerkCosts(Player* player)
+{
+    if (!player || !player->GetSession() || g_perkPrice.empty())
+        return;
+    std::string batch;
+    for (auto const& entry : g_perkPrice)
+    {
+        std::string const next = Acore::StringFormat("{}:{}:{}",
+            entry.first, entry.second.cost, entry.second.prereq);
+        if (!batch.empty() && batch.size() + 1 + next.size() > 200)
+        {
+            SendLine(player, "PKCOST|" + batch);
+            batch.clear();
+        }
+        if (!batch.empty())
+            batch += ',';
+        batch += next;
+    }
+    if (!batch.empty())
+        SendLine(player, "PKCOST|" + batch);
+}
+
+void SendPerkPoints(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const acc = player->GetSession()->GetAccountId();
+    uint32 const earned = EarnedSkillPoints(acc);
+    uint32 const spent = SpentSkillPoints(acc);
+    SendLine(player, Acore::StringFormat("PKPTS|{}|{}|{}",
+        earned > spent ? earned - spent : 0, earned, spent));
+}
+
+// Raising LivingGear.Perks.CostEpoch past what an account last saw refunds it
+// in full on next login. Deliberately bypasses the respec cooldown: this is
+// not the player's choice and must not burn their own respec.
+void ApplyPerkEpoch(Player* player)
+{
+    if (!player || !player->GetSession() || !g_hasPerkPriceSchema || !g_hasPerkEpochCol)
+        return;
+    uint32 const acc = player->GetSession()->GetAccountId();
+    if (LoadPerkEpoch(acc) >= g_cfg.perkCostEpoch)
+        return;
+    uint32 const spent = SpentSkillPoints(acc);
+    RespecPerks(acc);
+    SavePerkEpoch(acc, g_cfg.perkCostEpoch);
+    if (spent)
+        Say(player, "|cff66ccff[Account Perks]|r Perk costs changed - your points have been refunded.");
 }
 
 // A player's own DisplayId only carries the bare racial body model --
@@ -1918,6 +2277,8 @@ void AutoQuestFinish(Player* player)
     Say(player, Acore::StringFormat("[Quests] Summoned {} turn-in NPC(s).", spawned).c_str());
 }
 
+void SendPerkSync(Player* player);   // defined below; the respec path re-syncs
+
 bool HandleLgChat(Player* player, std::string msg)
 {
     if (!player || !player->GetSession())
@@ -2015,6 +2376,40 @@ bool HandleLgChat(Player* player, std::string msg)
                 "ON DUPLICATE KEY UPDATE `solo_queue` = {}",
                 acc, v ? 1 : 0, v ? 1 : 0);
         SendLine(player, Acore::StringFormat("SQ|{}", v ? 1 : 0));
+        return true;
+    }
+    if (msg == "PERKPTS")
+    {
+        SendPerkPoints(player);
+        return true;
+    }
+    if (sscanf(msg.c_str(), "PERKBUY|%u", &v) == 1)
+    {
+        // An addon whisper is not a trusted boundary. PurchaseRank re-checks
+        // the price table, the prerequisite and the balance server-side, so a
+        // crafted PERKBUY can neither conjure a perk nor overdraw an account.
+        if (!PurchaseRank(player, v))
+            Say(player, "|cff66ccff[Account Perks]|r You cannot buy that yet.");
+        SendPerkPoints(player);
+        return true;
+    }
+    if (msg == "PERKRESPEC")
+    {
+        uint32 left = 0;
+        if (!CanRespec(acc, left))
+        {
+            Say(player, Acore::StringFormat(
+                "|cff66ccff[Account Perks]|r You can respec again in {} second(s).", left).c_str());
+            return true;
+        }
+        RespecPerks(acc);
+        SaveLastRespec(acc, uint32(GameTime::GetGameTime().count()));
+        // Strips the buttons for anything just revoked on this character;
+        // other characters on the account shed theirs at their next login.
+        ReconcilePerkSpells(player);
+        Say(player, "|cff66ccff[Account Perks]|r Perks refunded.");
+        SendPerkSync(player);
+        SendPerkPoints(player);
         return true;
     }
     if (msg == "ARMOPEN")
@@ -2132,6 +2527,8 @@ void SendPerkSync(Player* player)
         if (!ids.empty())
             SendLine(player, "PKALL|" + ids);
     }
+    SendPerkCosts(player);
+    SendPerkPoints(player);
     SendLine(player, Acore::StringFormat("JMP|{}|0", g_jumpMode[acc]));
     SendLine(player, Acore::StringFormat("AM|{}", g_autoMountOn[acc] ? 1 : 0));
     SendLine(player, Acore::StringFormat("PULL|{}", g_pullRadiusOn[acc] ? 1 : 0));
@@ -2228,7 +2625,10 @@ public:
     {
         if (!player || !player->GetSession())
             return;
-        SendPerkSync(player);
+        // Before the sync: a price-epoch refund revokes perks, and the sync
+        // is what tells the client what is actually owned afterwards.
+        ApplyPerkEpoch(player);
+        SendPerkSync(player);   // sends PKCOST + PKPTS too
         CatchUpProfession(player);
         if (HasPerk(player, SPELL_SWIM))
             player->CastSpell(player, SPELL_SWIM, true);
@@ -2991,6 +3391,13 @@ void LoadPerkConfig()
     g_cfg.autoMount = sConfigMgr->GetOption<bool>("LivingGear.AutoMount", true);
     g_cfg.dungeonPar = sConfigMgr->GetOption<uint32>("LivingGear.DungeonTimer.DefaultParSec", 1800);
     g_cfg.curatorTick = sConfigMgr->GetOption<uint32>("LivingGear.CollectionPassive.TickMs", 60000);
+    g_cfg.skillPointDivisor = sConfigMgr->GetOption<uint32>("LivingGear.Perks.SkillPointDivisor", 10);
+    if (!g_cfg.skillPointDivisor)
+        g_cfg.skillPointDivisor = 10;
+    g_cfg.perkRespecCooldown = sConfigMgr->GetOption<uint32>("LivingGear.Perks.RespecCooldown", 300);
+    g_cfg.perkCostEpoch = sConfigMgr->GetOption<uint32>("LivingGear.Perks.CostEpoch", 1);
+    DetectPerkPriceSchema();
+    LoadPerkPrices();
     g_hasZoneScale = false;
     if (QueryResult t = WorldDatabase.Query(
         "SELECT 1 FROM `information_schema`.`TABLES` "

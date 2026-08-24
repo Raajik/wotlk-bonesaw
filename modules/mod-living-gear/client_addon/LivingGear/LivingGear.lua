@@ -627,6 +627,21 @@ local function SendLine(line)
     end
 end
 
+-- Refund is all-or-nothing and cannot be undone cheaply (there is a cooldown
+-- on the server), so it asks first. Perks earned by playing are untouched --
+-- the server only revokes rows that have a matching purchase.
+StaticPopupDialogs["LG_PERK_RESPEC"] = {
+    text = "Refund every perk you have bought and get those points back?\n\nPerks you earned by playing are not affected.",
+    button1 = YES,
+    button2 = NO,
+    OnAccept = function()
+        SendLine("PERKRESPEC")
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+}
+
 function LG2.IsCriticalChatText(text)
     if not text then
         return false
@@ -963,6 +978,38 @@ end
 
 local function PerkKnown(id)
     return (tonumber(db.perks[id]) or 0) == 1
+end
+
+-- Prices come from the server (lg_perk_cost), never from this file: they are
+-- meant to be retuned without shipping a new addon. A perk with no price row
+-- is not purchasable at all -- that is how the multiplier tracks stay gated on
+-- their conditions instead of showing up as something to buy.
+function LG2.PerkCost(id)
+    local c = db.cost and db.cost[id]
+    return c and c.cost or nil
+end
+
+function LG2.PerkPoints()
+    local p = db.points or {}
+    return tonumber(p.avail) or 0, tonumber(p.earned) or 0, tonumber(p.spent) or 0
+end
+
+function LG2.PerkPrereqOk(id)
+    local c = db.cost and db.cost[id]
+    local need = c and tonumber(c.prereq) or 0
+    return need == 0 or PerkKnown(need)
+end
+
+-- Buyable means all four: priced, not already owned, prerequisite held, and
+-- affordable. The server re-checks every one of these -- this only decides
+-- whether the pip lights up.
+function LG2.PerkBuyable(id)
+    local cost = LG2.PerkCost(id)
+    if not cost or PerkKnown(id) or not LG2.PerkPrereqOk(id) then
+        return false
+    end
+    local avail = LG2.PerkPoints()
+    return avail >= cost
 end
 
 function LG2.NextLocked(ticks)
@@ -1884,6 +1931,19 @@ local function LayoutWorld()
         end
         Solid(btn.bg, btn._ir, btn._ig, btn._ib, 1)
     end
+    if ui.worldPoints then
+        local avail, earned, spent = LG2.PerkPoints()
+        ui.worldPoints:SetText(string.format(
+            "|cffffd966%d|r to spend   |cff777777%d earned / %d spent|r", avail, earned, spent))
+    end
+    if ui.worldRespec then
+        local _, _, spent = LG2.PerkPoints()
+        if spent > 0 then
+            ui.worldRespec:Show()
+        else
+            ui.worldRespec:Hide()
+        end
+    end
     for t = 1, #WORLD_TRACKS do
         local track = WORLD_TRACKS[t]
         local row = ui.worldTracks[t]
@@ -1912,12 +1972,13 @@ local function LayoutWorld()
         end
         -- Bar, count and next-reward line: the three things the pips alone
         -- could never say.
-        local got, total, nextHow = 0, #track.ticks, nil
+        local got, total, nextHow, nextId = 0, #track.ticks, nil, nil
         for i = 1, total do
             if PerkKnown(track.ticks[i].id) then
                 got = got + 1
             elseif not nextHow then
                 nextHow = track.ticks[i].how
+                nextId = track.ticks[i].id
             end
         end
         row.count:SetText(got .. " / " .. total)
@@ -1925,17 +1986,52 @@ local function LayoutWorld()
         -- overall progress, so a track earned out of order still reads
         -- correctly -- which is the one thing the old tick marks did that a
         -- plain percentage bar could not.
+        local avail = LG2.PerkPoints()
         for i = 1, #row.segs do
+            local seg = row.segs[i]
             local info = track.ticks[i]
+            local cost = info and LG2.PerkCost(info.id) or nil
             if info and PerkKnown(info.id) then
-                Solid(row.segs[i], 0.28, 0.62, 0.32, 1)
+                Solid(seg.bg, 0.28, 0.62, 0.32, 1)
+                seg.tip = info.name .. " - " .. info.how .. "|n|cff7fdc7fOwned.|r"
+            elseif info and LG2.PerkBuyable(info.id) then
+                -- Gold, and the only state that is clickable.
+                Solid(seg.bg, 0.85, 0.70, 0.25, 1)
+                seg.tip = info.name .. " - " .. info.how
+                    .. "|n|cffffd966Costs " .. cost .. " points. Click to unlock.|r"
+            elseif info and cost then
+                Solid(seg.bg, 0.10, 0.10, 0.12, 1)
+                if not LG2.PerkPrereqOk(info.id) then
+                    seg.tip = info.name .. " - " .. info.how
+                        .. "|n|cff999999Unlock the previous rank first.|r"
+                else
+                    seg.tip = info.name .. " - " .. info.how
+                        .. "|n|cff999999Costs " .. cost .. " points - you have " .. avail .. ".|r"
+                end
+            elseif info then
+                -- Priced nowhere, so it is not for sale: these are the tracks
+                -- still earned by playing (Honor, Reputation, Factions,
+                -- Leveling, Professions). Deliberately a different colour from
+                -- "you cannot afford it", because it is a different thing.
+                Solid(seg.bg, 0.16, 0.18, 0.26, 1)
+                seg.tip = info.name .. " - " .. info.how .. "|n|cff8a9bc4Earned by playing.|r"
             else
-                Solid(row.segs[i], 0.07, 0.07, 0.08, 1)
+                Solid(seg.bg, 0.07, 0.07, 0.08, 1)
+                seg.tip = nil
             end
         end
         if nextHow then
-            row.next:SetText("Next: " .. nextHow)
-            row.next:SetTextColor(0.52, 0.52, 0.58, 1)
+            local cost = nextId and LG2.PerkCost(nextId) or nil
+            if cost and LG2.PerkBuyable(nextId) then
+                row.next:SetText(string.format("Next (|cffffd966%d pts|r): %s", cost, nextHow))
+                row.next:SetTextColor(0.62, 0.62, 0.68, 1)
+            elseif cost then
+                row.next:SetText(string.format("Next (%d pts): %s", cost, nextHow))
+                row.next:SetTextColor(0.52, 0.52, 0.58, 1)
+            else
+                row.next:SetText("Next: " .. nextHow)
+                row.next:SetTextColor(0.52, 0.52, 0.58, 1)
+            end
         else
             row.next:SetText("Complete.")
             row.next:SetTextColor(0.42, 0.62, 0.45, 1)
@@ -3469,7 +3565,8 @@ function LG2.BuildWorldPanel(f)
     -- 56 rather than 44: the "Next" line gets two lines to itself now instead
     -- of being truncated mid-sentence.
     local CARD_H = 56
-    local BAR_X, BAR_W, BAR_H = 204, 150, 10
+    -- 13 rather than 10: these segments are click targets now, not decoration.
+    local BAR_X, BAR_W, BAR_H = 204, 150, 13
     local trackY = ui.worldActionTop - actionRows * 22 - 34
 
     -- Rule sits ABOVE the heading, not below it. They were the wrong way round.
@@ -3480,6 +3577,22 @@ function LG2.BuildWorldPanel(f)
     ui.worldSectionProgress = Font(content, 10, 0.5, 0.68, 0.92)
     ui.worldSectionProgress:SetPoint("TOPLEFT", 6, trackY + 22)
     ui.worldSectionProgress:SetText("PROGRESSION")
+
+    ui.worldPoints = Font(content, 11, 0.95, 0.82, 0.35)
+    ui.worldPoints:SetPoint("TOPLEFT", 122, trackY + 21)
+    ui.worldPoints:SetJustifyH("LEFT")
+
+    ui.worldRespec = CreateFrame("Button", nil, content)
+    ui.worldRespec:SetSize(84, 18)
+    ui.worldRespec:SetPoint("TOPLEFT", 422, trackY + 26)
+    StyleBtn(ui.worldRespec, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    ui.worldRespec.label = Font(ui.worldRespec, 10, 0.9, 0.9, 0.9)
+    ui.worldRespec.label:SetPoint("CENTER", 0, 0)
+    ui.worldRespec.label:SetJustifyH("CENTER")
+    ui.worldRespec.label:SetText("Refund all")
+    ui.worldRespec:SetScript("OnClick", function()
+        StaticPopup_Show("LG_PERK_RESPEC")
+    end)
 
     for t = 1, #WORLD_TRACKS do
         local track = WORLD_TRACKS[t]
@@ -3508,10 +3621,35 @@ function LG2.BuildWorldPanel(f)
         local segW = math.max(2, math.floor((BAR_W - gap * (n - 1)) / n))
         row.segs = {}
         for i = 1, n do
-            local seg = row:CreateTexture(nil, "ARTWORK")
+            -- A Button rather than a Texture: each segment is the buy control
+            -- for its own rank. The server re-validates every purchase, so a
+            -- lit pip is a hint, not an authority.
+            local seg = CreateFrame("Button", nil, row)
             seg:SetPoint("TOPLEFT", BAR_X + (i - 1) * (segW + gap), -6)
             seg:SetSize(segW, BAR_H)
-            Solid(seg, 0.07, 0.07, 0.08, 1)
+            seg.bg = seg:CreateTexture(nil, "ARTWORK")
+            seg.bg:SetAllPoints(seg)
+            Solid(seg.bg, 0.07, 0.07, 0.08, 1)
+            seg.trackIndex = t
+            seg.tickIndex = i
+            seg:SetScript("OnClick", function(self)
+                local tk = WORLD_TRACKS[self.trackIndex]
+                local info = tk and tk.ticks[self.tickIndex]
+                if info and LG2.PerkBuyable(info.id) then
+                    SendLine("PERKBUY|" .. tostring(info.id))
+                end
+            end)
+            seg:SetScript("OnEnter", function(self)
+                if not self.tip then
+                    return
+                end
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText(self.tip, 1, 1, 1, 1, true)
+                GameTooltip:Show()
+            end)
+            seg:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
             row.segs[i] = seg
         end
 
@@ -4381,6 +4519,30 @@ function LG2.HandleAddon(prefix, message)
     local p = LG2.SplitPipe(message)
     if p[1] == "PK" then
         db.perks[tonumber(p[2]) or 0] = tonumber(p[3]) or 0
+        return
+    end
+    if p[1] == "PKPTS" then
+        db.points = {
+            avail = tonumber(p[2]) or 0,
+            earned = tonumber(p[3]) or 0,
+            spent = tonumber(p[4]) or 0,
+        }
+        LayoutRows()
+        return
+    end
+    if p[1] == "PKCOST" then
+        -- Additive across the burst, like PKALL: the server splits this over
+        -- several lines because the addon-whisper channel truncates near 255
+        -- bytes, so clearing here would drop every batch but the last.
+        db.cost = db.cost or {}
+        for entry in string.gmatch(p[2] or "", "[^,]+") do
+            local id, cost, prereq = string.match(entry, "^(%d+):(%d+):(%d+)$")
+            id = tonumber(id)
+            if id then
+                db.cost[id] = { cost = tonumber(cost) or 0, prereq = tonumber(prereq) or 0 }
+            end
+        end
+        LayoutRows()
         return
     end
     if p[1] == "PKALL" then
@@ -6207,6 +6369,37 @@ function Preview.Toggle()
     Preview.frame:Show()
     PV_Show(Preview.current or 1)
 end
+
+-- Perks are bought with achievement points, so the button to spend them
+-- belongs where they are earned. AchievementFrame is load-on-demand, which is
+-- why this waits for ADDON_LOADED instead of being built at login.
+local achHook = CreateFrame("Frame")
+achHook:RegisterEvent("ADDON_LOADED")
+achHook:SetScript("OnEvent", function(self, _, name)
+    if name ~= "Blizzard_AchievementUI" or not AchievementFrame then
+        return
+    end
+    self:UnregisterEvent("ADDON_LOADED")
+    local btn = CreateFrame("Button", nil, AchievementFrame)
+    btn:SetSize(104, 20)
+    btn:SetPoint("TOPRIGHT", AchievementFrame, "TOPRIGHT", -62, -18)
+    local bg = btn:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(btn)
+    bg:SetTexture(0.16, 0.16, 0.16)
+    local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    label:SetPoint("CENTER", 0, 0)
+    label:SetText("Account Perks")
+    btn:SetScript("OnClick", function()
+        db.tab = "world"
+        LG2.OpenWindow()
+    end)
+    btn:SetScript("OnEnter", function()
+        bg:SetTexture(0.24, 0.24, 0.24)
+    end)
+    btn:SetScript("OnLeave", function()
+        bg:SetTexture(0.16, 0.16, 0.16)
+    end)
+end)
 
 SLASH_LGPREVIEW1 = "/lgpreview"
 SLASH_LGPREVIEW2 = "/lgpv"
