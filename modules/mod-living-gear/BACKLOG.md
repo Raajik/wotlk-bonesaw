@@ -4,7 +4,27 @@ Ordered by importance, not by size.
 
 ---
 
-## 1. Audit every class spec, one at a time — HIGH
+## 1. Audit every class spec, one at a time — DONE (2026-08-23), fixes unshipped
+
+**Results in `CLASS-PERK-AUDIT.md`.** All 30 specs covered, ten checks each plus
+an eleventh added during the work ("does the spec grant the prerequisites its
+own implementation reaches for?").
+
+Four perk halves were confirmed completely dead, and bug #59 turned out to have
+been fixed in 6 places and left in 19. All fixed in code and compiling; none
+shipped. What remains is the live in-game spot checks listed at the end of that
+file — reading proved the mechanisms, only playing proves the fixes.
+
+The audit also produced the grant rule now written at the top of
+`CLASS_PERK_GRANTS`: **picking a spec grants every ability its description names
+and every ability its implementation reaches for**, so a spec is playable from
+level 1 instead of assembling itself over 50 levels.
+
+Original brief, kept because the ten checks are still the right ten:
+
+<details>
+<summary>Original item 1</summary>
+
 
 **Why this is top of the list.** Class perks have failed one spec at a time for
 weeks, and every single failure was a different link in the same chain being
@@ -35,6 +55,14 @@ class of bug.
 
 Suggested output: a table in this file, one row per spec, ten columns, so the
 next person can see what was actually verified rather than trusting that it was.
+
+</details>
+
+**Lesson worth keeping:** all four audit tools reported clean while four perk
+halves were completely dead. Mechanical audits answer "is this id mentioned
+somewhere?", and every one of these failures was "mentioned, in a place that
+never executes." Static checking finds candidates; only reading the execution
+path or playing the game confirms behaviour.
 
 ---
 

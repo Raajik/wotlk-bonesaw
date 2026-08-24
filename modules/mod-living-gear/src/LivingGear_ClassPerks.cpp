@@ -139,8 +139,8 @@ uint32 const SPELL_MIRROR_IMAGE = 55342;
 uint32 const SPELL_LIVING_BOMB = 44457;
 uint32 const SPELL_MAGE_COMBUSTION = 11129;
 uint32 const SPELL_ICE_LANCE_R1 = 30455;
-uint32 const SPELL_ICE_LANCE_R2 = 42913;
-uint32 const SPELL_ICE_LANCE_R3 = 42914;
+// Ice Lance ranks 2/3 (42913/42914) used to be named here for a hand-written
+// level table. BestOwnedOrFirst walks the chain from rank 1 instead.
 uint32 const SPELL_BLIZZARD_RANKS[] = { 10, 6141, 8427, 10185, 10186, 10187, 27085, 42939, 42940 };
 uint32 const SPELL_FIRE_BLAST_R1 = 2136;
 uint32 const SPELL_ARCANE_POWER = 12042;
@@ -181,6 +181,8 @@ uint32 const NPC_GHOUL_DPS = 910204;
 // Hunter
 uint32 const SPELL_BESTIAL_WRATH = 19574;
 uint32 const SPELL_EXPLOSIVE_SHOT_R1 = 53301;
+// The spell the core casts to deal Explosive Shot's damage, for all ranks.
+uint32 const SPELL_EXPLOSIVE_SHOT_DAMAGE = 53352;
 uint32 const SPELL_HUNTER_TRAP_FIRST_RANKS[] = { 13795 /*Immolation*/, 1499 /*Freezing*/, 13809 /*Frost*/, 13813 /*Explosive*/ };
 uint32 const SPELL_SNAKE_TRAP = 34600; // no rank chain
 // Shaman
@@ -206,9 +208,15 @@ uint32 const SPELL_POWER_WORD_SHIELD_R1 = 17;
 uint32 const SPELL_GUARDIAN_SPIRIT = 47788;
 uint32 const SPELL_SHADOWFIEND = 34433;
 uint32 const SPELL_MIND_FLAY_R1 = 15407;
+// The spell that actually carries Mind Flay's damage, for all nine ranks.
+uint32 const SPELL_MIND_FLAY_DAMAGE = 58381;
 // Death Knight
 uint32 const SPELL_DANCING_RUNE_WEAPON = 49028;
 uint32 const SPELL_HUNGERING_COLD = 49203;
+// Declared here rather than below CLASS_PERK_GRANTS: DK Frost grants both, so
+// the table needs them in scope.
+uint32 const SPELL_FROST_STRIKE_R1 = 49143;
+uint32 const SPELL_OBLITERATE_R1 = 49020;
 
 // ---------------------------------------------------------------------
 // What each spec hands you when you pick it.
@@ -242,54 +250,115 @@ uint32 const SPELL_HEMORRHAGE_G = 16511;        // RANK 1 -- verified in Spell.d
 // rogue would hand over something unusable. Take rank ids from the DBC, not
 // from a player's link.
 uint32 const SPELL_SHADOWSTEP_G = 36554;        // report #42's own link
+// Retribution's Exorcism splash lives in LivingGear_Next.cpp (SPELL_EXORCISM),
+// which is a separate translation unit, so the id is repeated here rather than
+// shared. Verified against Spell.dbc (name "Exorcism") and spell_ranks (rank 1
+// of its own chain) rather than copied from the abandoned backup file.
+uint32 const SPELL_EXORCISM_R1 = 879;
+
+// Widened from 3 to 8 when the grant rule changed to "everything the spec
+// needs" (below). Survival alone hands over Explosive Shot plus five traps.
+uint32 const MAX_CLASS_PERK_GRANT_SPELLS = 8;
 
 struct ClassPerkGrant
 {
     uint32 perk;
-    uint32 spells[3];   // rank-1 ids, 0-terminated
+    uint32 spells[MAX_CLASS_PERK_GRANT_SPELLS];   // rank-1 ids, 0-terminated
 };
 
-// A spec with no entry grants nothing, which is correct for the ones that only
-// amplify abilities the class already has (Fury's Titan's Grip stacks, the
-// Warlock DoT spread). Specs whose description says "Learn X" MUST appear here.
+// THE RULE (set 2026-08-23): picking a spec grants every ability its
+// description names AND every ability its implementation reaches for.
+//
+// The point is that you can play the spec from level 1 instead of spending 50+
+// levels waiting for it to become the thing the tooltip described. A perk that
+// silently does nothing because the player has not trained its trigger yet is
+// indistinguishable from a broken perk -- and the audit found six specs in
+// exactly that state (Fire had no Fire Blast to detonate with, Destruction
+// granted nothing at all while promising two talent spells).
+//
+// So "amplifier" specs still grant what they amplify: Fury multiplies Rend, so
+// Fury hands you Rend. The only spells deliberately absent are ones every
+// character of that class already has at level 1 (Fireball, Power Word: Shield)
+// and pure passives with no spell to learn (Titan's Grip, the Eclipse auras,
+// which are cast rather than trained).
+//
+// Rank-1 ids only -- ApplyClassPerkSpells runs BestRankForLevel over each, so
+// the character always receives the best rank they qualify for and is topped up
+// on every login as they level.
 ClassPerkGrant const CLASS_PERK_GRANTS[] =
 {
     { SPELL_PALADIN_HOLY,        { SPELL_CONSECRATION_R1, SPELL_HOLY_SHOCK_R1, 0 } },
     { SPELL_PALADIN_PROTECTION,  { SPELL_AVENGERS_SHIELD, SPELL_DEVOTION_AURA, 0 } },
-    { SPELL_PALADIN_RETRIBUTION, { SPELL_CRUSADER_STRIKE_G, SPELL_DIVINE_STORM_G, 0 } },
-    { SPELL_WARRIOR_ARMS,        { SPELL_BLADESTORM, 0, 0 } },
-    { SPELL_WARRIOR_PROTECTION,  { SPELL_SHOCKWAVE, 0, 0 } },
+    // Retribution's third clause is "Crusader Strike also casts Exorcism".
+    { SPELL_PALADIN_RETRIBUTION, { SPELL_CRUSADER_STRIKE_G, SPELL_DIVINE_STORM_G,
+                                   SPELL_EXORCISM_R1, 0 } },
+    // Arms autocasts Whirlwind and Thunder Clap while Bladestorm spins
+    // (TickWarriorArmsBladestorm reaches for both via BestOwned, which returns
+    // 0 -- silently doing nothing -- for a warrior who has not trained them).
+    { SPELL_WARRIOR_ARMS,        { SPELL_BLADESTORM, SPELL_WHIRLWIND,
+                                   SPELL_THUNDER_CLAP, 0 } },
+    // Protection doubles Thunder Clap's radius and makes it apply Rend.
+    { SPELL_WARRIOR_PROTECTION,  { SPELL_SHOCKWAVE, SPELL_THUNDER_CLAP,
+                                   SPELL_REND, 0 } },
     { SPELL_ROGUE_ASSASSINATION, { SPELL_ENVENOM_R1, 0, 0 } },
     { SPELL_ROGUE_COMBAT,        { SPELL_BLADE_FLURRY, SPELL_KILLING_SPREE,
-                                   SPELL_ADRENALINE_RUSH_R1 } },
+                                   SPELL_ADRENALINE_RUSH_R1, 0 } },
     { SPELL_ROGUE_SUBTLETY,      { SPELL_HEMORRHAGE_G, SPELL_SHADOWSTEP_G, 0 } },
     { SPELL_MAGE_ARCANE,         { SPELL_ARCANE_POWER, SPELL_MIRROR_IMAGE, 0 } },
-    { SPELL_MAGE_FIRE,           { SPELL_LIVING_BOMB, 0, 0 } },
+    // Fire Blast is the detonator (TryMageFireDetonate) and was the best half
+    // of the perk. Ungranted, it did not exist below the level it is trained.
+    { SPELL_MAGE_FIRE,           { SPELL_LIVING_BOMB, SPELL_FIRE_BLAST_R1, 0 } },
     // Report #54: "Blizzard was not un-learned when i swapped specs." Frost had
     // no entry here because GrantMageFrostBlizzard already existed -- and that
     // legacy path hands the spell over WITHOUT recording it in
     // lg_char_class_grant, so the revoke had nothing to act on. Anything a perk
     // grants has to come through this table or it can never be taken back.
-    { SPELL_MAGE_FROST,          { SPELL_BLIZZARD_RANKS[0], 0, 0 } },
-    { SPELL_HUNTER_MARKSMANSHIP, { SPELL_CHIMERA_SHOT, 0, 0 } },
+    // Ice Lance is the cleave half of the perk (TickMageFrostIceLance).
+    { SPELL_MAGE_FROST,          { SPELL_BLIZZARD_RANKS[0], SPELL_ICE_LANCE_R1, 0 } },
+    // Chimera Shot refreshes Serpent Sting; the proc casts Aimed Shot.
+    { SPELL_HUNTER_MARKSMANSHIP, { SPELL_CHIMERA_SHOT, SPELL_SERPENT_STING_R1,
+                                   SPELL_AIMED_SHOT_R1, 0 } },
     { SPELL_HUNTER_BEAST_MASTERY,{ SPELL_BESTIAL_WRATH, 0, 0 } },
-    { SPELL_HUNTER_SURVIVAL,     { SPELL_EXPLOSIVE_SHOT_R1, 0, 0 } },
-    { SPELL_SHAMAN_ELEMENTAL,    { SPELL_THUNDERSTORM, 0, 0 } },
+    // "Traps lose their cooldown and get a bigger blast radius" -- all five,
+    // or the perk only applies to whichever ones happened to be trained.
+    { SPELL_HUNTER_SURVIVAL,     { SPELL_EXPLOSIVE_SHOT_R1,
+                                   SPELL_HUNTER_TRAP_FIRST_RANKS[0],
+                                   SPELL_HUNTER_TRAP_FIRST_RANKS[1],
+                                   SPELL_HUNTER_TRAP_FIRST_RANKS[2],
+                                   SPELL_HUNTER_TRAP_FIRST_RANKS[3],
+                                   SPELL_SNAKE_TRAP, 0 } },
+    // Lava Burst is doubled and Chain Lightning loses its target cap.
+    { SPELL_SHAMAN_ELEMENTAL,    { SPELL_THUNDERSTORM, SPELL_LAVA_BURST_R1,
+                                   SPELL_CHAIN_LIGHTNING_R1, 0 } },
     { SPELL_SHAMAN_ENHANCEMENT,  { SPELL_FERAL_SPIRIT, SPELL_STORMSTRIKE, 0 } },
-    { SPELL_SHAMAN_RESTORATION,  { SPELL_RIPTIDE, 0, 0 } },
+    // "Chain Heal has no bounce cap."
+    { SPELL_SHAMAN_RESTORATION,  { SPELL_RIPTIDE, SPELL_CHAIN_HEAL_R1, 0 } },
     { SPELL_DK_UNHOLY,           { SPELL_SUMMON_GARGOYLE, SPELL_ARMY_OF_THE_DEAD, 0 } },
     { SPELL_DK_BLOOD,            { SPELL_DANCING_RUNE_WEAPON, 0, 0 } },
-    { SPELL_DK_FROST,            { SPELL_HUNGERING_COLD, 0, 0 } },
+    // "Frost Strike and Obliterate deal double damage."
+    { SPELL_DK_FROST,            { SPELL_HUNGERING_COLD, SPELL_FROST_STRIKE_R1,
+                                   SPELL_OBLITERATE_R1, 0 } },
     { SPELL_WARLOCK_DEMONOLOGY,  { SPELL_METAMORPHOSIS, 0, 0 } },
+    // Was empty. The entire perk is Chaos Bolt + Conflagrate, both talents, so
+    // an untalented Destruction warlock had a perk that did literally nothing.
+    { SPELL_WARLOCK_DESTRUCTION, { SPELL_CHAOS_BOLT_R1, SPELL_CONFLAGRATE_R1, 0 } },
+    // Fury multiplies Rend and Deep Wounds. Deep Wounds is a pure talent with
+    // no castable spell to learn, so only Rend can be handed over.
+    { SPELL_WARRIOR_FURY,        { SPELL_REND, 0, 0 } },
     { SPELL_DRUID_BALANCE,       { SPELL_STARFALL, 0, 0 } },
     { SPELL_DRUID_FERAL,         { SPELL_BERSERK_DRUID, 0, 0 } },
-    { SPELL_DRUID_RESTORATION,   { SPELL_WILD_GROWTH_R1, 0, 0 } },
+    // "Rejuvenation spreads to injured allies within 15 yards every 3 sec."
+    { SPELL_DRUID_RESTORATION,   { SPELL_WILD_GROWTH_R1, SPELL_REJUVENATION_R1, 0 } },
     { SPELL_PRIEST_DISCIPLINE,   { SPELL_PENANCE_R1, 0, 0 } },
     { SPELL_PRIEST_HOLY,         { SPELL_GUARDIAN_SPIRIT, 0, 0 } },
-    { SPELL_PRIEST_SHADOW,       { SPELL_SHADOWFIEND, 0, 0 } },
+    // "Mind Flay deals quadruple damage."
+    { SPELL_PRIEST_SHADOW,       { SPELL_SHADOWFIEND, SPELL_MIND_FLAY_R1, 0 } },
+    // Warlock Affliction is the ONLY spec with no entry, and that is correct
+    // under the rule above: it names no ability at all ("your DoTs spread...",
+    // "DoT tick damage is increased by your haste") and amplifies whatever the
+    // warlock already has. Corruption is baseline and arrives early, so there
+    // is nothing to hand over. Do not add an entry just to make 30/30.
 };
-uint32 const SPELL_FROST_STRIKE_R1 = 49143;
-uint32 const SPELL_OBLITERATE_R1 = 49020;
 
 float const CLASS_PERK_RANGE = 15.0f;
 uint32 const MAGE_ARCANE_LINGER_MS = 60000;
@@ -825,12 +894,12 @@ void ApplyClassPerkSpells(Player* player, uint32 prevPerk, uint32 newPerk)
     uint32 const* incoming = GrantsFor(newPerk);
     std::unordered_set<uint32> keep;
     if (incoming)
-        for (uint8 i = 0; i < 3 && incoming[i]; ++i)
+        for (uint8 i = 0; i < MAX_CLASS_PERK_GRANT_SPELLS && incoming[i]; ++i)
             keep.insert(BestRankForLevel(incoming[i], level));
 
     if (uint32 const* outgoing = GrantsFor(prevPerk))
     {
-        for (uint8 i = 0; i < 3 && outgoing[i]; ++i)
+        for (uint8 i = 0; i < MAX_CLASS_PERK_GRANT_SPELLS && outgoing[i]; ++i)
         {
             // Every rank, because the character may have levelled since.
             for (uint32 id = outgoing[i]; id; id = sSpellMgr->GetNextSpellInChain(id))
@@ -929,7 +998,6 @@ void GrantAndBroadcastClassPerks(Player* player)
 }
 
 void ApplyRogueCombatBladeFlurry(Player* player); // defined below, near TickRogueCombat
-void GrantMageFrostBlizzard(Player* player); // defined below, near IsBlizzardRank
 
 void SelectClassPerk(Player* player, uint32 spellId)
 {
@@ -1030,9 +1098,7 @@ void TryMageArcaneOnCast(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_MANA, cost);
-    player->RemoveSpellCooldown(SPELL_ARCANE_POWER, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_ARCANE_POWER, info->GetCategory());
 }
 
 // Observed from the update loop rather than by touching the aura's lifetime
@@ -1251,33 +1317,13 @@ bool IsBlizzardRank(uint32 spellId)
     return false;
 }
 
-// Blizzard is a real base-game spell mages only learn from a trainer at
-// specific levels -- picking the Frost class perk edits its behavior
-// (see PatchBlizzardServerSide) but never actually gave anyone the spell,
-// so characters who hadn't separately trained it had no way to use or
-// even test the perk. Grant the highest rank they qualify for. Standard
-// WotLK level breakpoints, matching SPELL_BLIZZARD_RANKS' rank 1-9 order.
-uint32 BlizzardRankForLevel(uint8 level)
-{
-    if (level >= 77) return SPELL_BLIZZARD_RANKS[8];
-    if (level >= 68) return SPELL_BLIZZARD_RANKS[7];
-    if (level >= 58) return SPELL_BLIZZARD_RANKS[6];
-    if (level >= 50) return SPELL_BLIZZARD_RANKS[5];
-    if (level >= 44) return SPELL_BLIZZARD_RANKS[4];
-    if (level >= 38) return SPELL_BLIZZARD_RANKS[3];
-    if (level >= 32) return SPELL_BLIZZARD_RANKS[2];
-    if (level >= 26) return SPELL_BLIZZARD_RANKS[1];
-    return SPELL_BLIZZARD_RANKS[0];
-}
-
-void GrantMageFrostBlizzard(Player* player)
-{
-    if (!player || GetClassPerk(player) != SPELL_MAGE_FROST)
-        return;
-    uint32 const rank = BlizzardRankForLevel(player->GetLevel());
-    if (!player->HasSpell(rank))
-        player->learnSpell(rank);
-}
+// GrantMageFrostBlizzard and BlizzardRankForLevel used to live here. They were
+// the legacy grant path from report #54 -- they handed Blizzard over WITHOUT
+// recording it in lg_char_class_grant, so switching spec could never take it
+// back. CLASS_PERK_GRANTS replaced them and both had already lost every call
+// site; deleted so nobody wires a second, unrecorded grant path back up.
+// BlizzardRankForLevel was also a hardcoded rank table (invariant 3);
+// BestRankForLevel walks spell_ranks properly and is what the table uses.
 
 void TryMageFrostBlizzardLinger(Player* player, Spell* spell)
 {
@@ -1382,14 +1428,11 @@ void ApplyMageFrostDamage(Unit* attacker, int32& damage, SpellInfo const* info)
     damage *= int32(MAGE_DAMAGE_MULT);
 }
 
-uint32 IceLanceForLevel(uint8 level)
-{
-    if (level >= 78)
-        return SPELL_ICE_LANCE_R3;
-    if (level >= 72)
-        return SPELL_ICE_LANCE_R2;
-    return SPELL_ICE_LANCE_R1;
-}
+// Was a hand-written level table (78 -> r3, 72 -> r2, else r1), which is
+// invariant 3's "never hardcode a spell rank" and the exact shape that pinned
+// Living Bomb to rank 1 in report #38. Frost now grants Ice Lance through
+// CLASS_PERK_GRANTS, so BestOwnedOrFirst walks the real chain and always
+// returns the best rank the mage actually knows.
 
 void TickMageFrostIceLance(Player* player, MageState& st, uint32 diff)
 {
@@ -1402,7 +1445,7 @@ void TickMageFrostIceLance(Player* player, MageState& st, uint32 diff)
     uint32 const guid = player->GetGUID().GetCounter();
     if (!g_reentryGuard.insert(guid).second)
         return;
-    uint32 const ice = IceLanceForLevel(player->GetLevel());
+    uint32 const ice = BestOwnedOrFirst(player, SPELL_ICE_LANCE_R1);
     ForEachHostileInRange(player, CLASS_PERK_RANGE, [player, ice](Unit* target)
     {
         player->CastSpell(target, ice, true);
@@ -1702,9 +1745,7 @@ void TryWarriorArmsOnCast(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_RAGE, cost);
-    player->RemoveSpellCooldown(SPELL_BLADESTORM, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_BLADESTORM, info->GetCategory());
 }
 
 // -------------------------------------------------------------------------
@@ -1772,14 +1813,28 @@ void TickWarriorFury(Player* player)
     }
 }
 
-void ApplyFuryBleedDamage(Unit* attacker, int32& damage, SpellInfo const* info)
+// Rend and Deep Wounds are pure SPELL_AURA_PERIODIC_DAMAGE auras (verified in
+// Spell.dbc: both are Effect_1 = APPLY_AURA, Aura = 3). Periodic ticks are
+// dealt in SpellAuraEffects.cpp and reach ModifyPeriodicDamageAurasTick;
+// ModifySpellDamageTaken is only ever called from
+// Unit::CalculateSpellDamageTaken, which handles DIRECT spell damage. This
+// multiplier was registered on the direct hook alone, so it never fired once.
+//
+// Mage Fire is the pattern to copy: it registers both halves, because Living
+// Bomb has a periodic tick AND a direct explosion. Rend and Deep Wounds have
+// only the tick, so only the periodic form is needed here.
+bool IsFuryBleed(Player* player, SpellInfo const* info)
 {
-    if (!attacker || damage <= 0 || !info)
+    if (!player || !info || GetClassPerk(player) != SPELL_WARRIOR_FURY)
+        return false;
+    return RankOf(info, SPELL_REND) || info->Id == SPELL_DEEP_WOUNDS_DOT;
+}
+
+void ApplyFuryBleedPeriodic(Unit* attacker, uint32& damage, SpellInfo const* info)
+{
+    if (!attacker || !damage)
         return;
-    Player* player = attacker->ToPlayer();
-    if (!player || GetClassPerk(player) != SPELL_WARRIOR_FURY)
-        return;
-    if (RankOf(info, SPELL_REND) || info->Id == SPELL_DEEP_WOUNDS_DOT)
+    if (IsFuryBleed(attacker->ToPlayer(), info))
         damage *= 4;
 }
 
@@ -1828,9 +1883,7 @@ void TryWarriorProtOnCast(Player* player, Spell* spell)
         return;
     if (info->Id == SPELL_SHOCKWAVE)
     {
-        player->RemoveSpellCooldown(SPELL_SHOCKWAVE, true);
-        if (uint32 const cat = info->GetCategory())
-            player->RemoveCategoryCooldown(cat);
+        ClearCooldownAfterCast(player, SPELL_SHOCKWAVE, info->GetCategory());
         return;
     }
     if (RankOf(info, SPELL_THUNDER_CLAP))
@@ -1879,9 +1932,7 @@ void TryHunterMMOnCast(Player* player, Spell* spell)
         return;
     if (info->Id == SPELL_CHIMERA_SHOT)
     {
-        player->RemoveSpellCooldown(SPELL_CHIMERA_SHOT, true);
-        if (uint32 const cat = info->GetCategory())
-            player->RemoveCategoryCooldown(cat);
+        ClearCooldownAfterCast(player, SPELL_CHIMERA_SHOT, info->GetCategory());
         if (Unit* target = spell->m_targets.GetUnitTarget())
         {
             uint32 const sting = BestOwned(player, SPELL_SERPENT_STING_R1);
@@ -1914,9 +1965,7 @@ void TryShamanElementalOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!info || info->Id != SPELL_THUNDERSTORM)
         return;
-    player->RemoveSpellCooldown(SPELL_THUNDERSTORM, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_THUNDERSTORM, info->GetCategory());
 }
 
 void ApplyShamanElementalLavaBurstDamage(Unit* attacker, int32& damage, SpellInfo const* info)
@@ -2016,16 +2065,12 @@ void TryDkUnholyOnCast(Player* player, Spell* spell)
         return;
     if (info->Id == SPELL_SUMMON_GARGOYLE)
     {
-        player->RemoveSpellCooldown(SPELL_SUMMON_GARGOYLE, true);
-        if (uint32 const cat = info->GetCategory())
-            player->RemoveCategoryCooldown(cat);
+        ClearCooldownAfterCast(player, SPELL_SUMMON_GARGOYLE, info->GetCategory());
         return;
     }
     if (info->Id != SPELL_ARMY_OF_THE_DEAD)
         return;
-    player->RemoveSpellCooldown(SPELL_ARMY_OF_THE_DEAD, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_ARMY_OF_THE_DEAD, info->GetCategory());
     // Deferred: OnPlayerSpellCast fires mid-way through the triggering
     // spell's own Spell::cast() (see the reentrancy notes elsewhere in this
     // codebase / Bonesaw.md "Reentrant hook execution"), and summoning 5
@@ -2290,9 +2335,7 @@ void TryHunterBmOnCast(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_FOCUS, cost);
-    player->RemoveSpellCooldown(SPELL_BESTIAL_WRATH, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_BESTIAL_WRATH, info->GetCategory());
     // Deferred for the same reason as the Army of the Dead group summon --
     // see TryDkUnholyOnCast below.
     ObjectGuid playerGuid = player->GetGUID();
@@ -2309,9 +2352,16 @@ void TryHunterBmOnCast(Player* player, Spell* spell)
 // "Explosive Shot deals double damage. Traps lose their cooldown and get a
 // bigger blast radius. You are immune to your own trap damage."
 // -------------------------------------------------------------------------
+// Explosive Shot does not deal its own damage. Its PERIODIC_DUMMY aura casts
+// spell 53352 instead -- hardcoded in the core for every rank
+// (SpellAuraEffects.cpp:5953) -- and 53352 is NOT in 53301's rank chain
+// (spell_ranks: 53301 -> 60051, 60052, 60053). Matching only on RankOf meant
+// this multiplier never saw a single damage event.
 void ApplyHunterSurvivalExplosiveShotDamage(Unit* attacker, int32& damage, SpellInfo const* info)
 {
-    if (!attacker || damage <= 0 || !info || !RankOf(info, SPELL_EXPLOSIVE_SHOT_R1))
+    if (!attacker || damage <= 0 || !info)
+        return;
+    if (info->Id != SPELL_EXPLOSIVE_SHOT_DAMAGE && !RankOf(info, SPELL_EXPLOSIVE_SHOT_R1))
         return;
     Player* player = attacker->ToPlayer();
     if (!player || GetClassPerk(player) != SPELL_HUNTER_SURVIVAL)
@@ -2377,16 +2427,12 @@ void TryShamanEnhOnCast(Player* player, Spell* spell)
     {
         if (int32 const cost = spell->GetPowerCost())
             player->ModifyPower(POWER_MANA, cost);
-        player->RemoveSpellCooldown(SPELL_FERAL_SPIRIT, true);
-        if (uint32 const cat = info->GetCategory())
-            player->RemoveCategoryCooldown(cat);
+        ClearCooldownAfterCast(player, SPELL_FERAL_SPIRIT, info->GetCategory());
         return;
     }
     if (info->Id == SPELL_STORMSTRIKE)
     {
-        player->RemoveSpellCooldown(SPELL_STORMSTRIKE, true);
-        if (uint32 const cat = info->GetCategory())
-            player->RemoveCategoryCooldown(cat);
+        ClearCooldownAfterCast(player, SPELL_STORMSTRIKE, info->GetCategory());
     }
 }
 
@@ -2434,9 +2480,7 @@ void TryShamanRestOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!info || info->Id != SPELL_RIPTIDE)
         return;
-    player->RemoveSpellCooldown(SPELL_RIPTIDE, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_RIPTIDE, info->GetCategory());
     Unit* target = spell->m_targets.GetUnitTarget();
     if (!target)
         return;
@@ -2533,9 +2577,7 @@ void TryWarlockDemoOnCast(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_MANA, cost);
-    player->RemoveSpellCooldown(SPELL_METAMORPHOSIS, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_METAMORPHOSIS, info->GetCategory());
 }
 
 void ApplyWarlockDemoPetDamage(Unit* attacker, uint32& damage)
@@ -2606,9 +2648,7 @@ void TryDruidBalanceOnCast(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_MANA, cost);
-    player->RemoveSpellCooldown(SPELL_STARFALL, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_STARFALL, info->GetCategory());
 }
 
 void TickDruidBalanceEclipse(Player* player, TickState& st, uint32 diff)
@@ -2645,9 +2685,7 @@ void TryDruidFeralOnCast(Player* player, Spell* spell)
         return;
     if (GetClassPerk(player) == SPELL_DRUID_FERAL && info->Id == SPELL_BERSERK_DRUID)
     {
-        player->RemoveSpellCooldown(SPELL_BERSERK_DRUID, true);
-        if (uint32 const cat = info->GetCategory())
-            player->RemoveCategoryCooldown(cat);
+        ClearCooldownAfterCast(player, SPELL_BERSERK_DRUID, info->GetCategory());
         return;
     }
     if (GetClassPerk(player) != SPELL_DRUID_FERAL || info->SpellFamilyName != SPELLFAMILY_DRUID)
@@ -2740,9 +2778,7 @@ void TryPriestHolyOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!info || info->Id != SPELL_GUARDIAN_SPIRIT)
         return;
-    player->RemoveSpellCooldown(SPELL_GUARDIAN_SPIRIT, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_GUARDIAN_SPIRIT, info->GetCategory());
     Unit* target = spell->m_targets.GetUnitTarget();
     if (!target)
         return;
@@ -2774,14 +2810,18 @@ void TryPriestShadowOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!info || info->Id != SPELL_SHADOWFIEND)
         return;
-    player->RemoveSpellCooldown(SPELL_SHADOWFIEND, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_SHADOWFIEND, info->GetCategory());
 }
 
+// Mind Flay's damage arrives as its PERIODIC_TRIGGER_SPELL_WITH_VALUE effect
+// casting spell 58381 -- the same id for all nine ranks (verified by reading
+// EffectTriggerSpell out of Spell.dbc for each). 58381 is not in the rank chain
+// (spell_ranks: 15407 -> 17311 ... 48156), so RankOf alone never matched.
 void ApplyPriestShadowMindFlayDamage(Unit* attacker, int32& damage, SpellInfo const* info)
 {
-    if (!attacker || damage <= 0 || !info || !RankOf(info, SPELL_MIND_FLAY_R1))
+    if (!attacker || damage <= 0 || !info)
+        return;
+    if (info->Id != SPELL_MIND_FLAY_DAMAGE && !RankOf(info, SPELL_MIND_FLAY_R1))
         return;
     Player* player = attacker->ToPlayer();
     if (!player || GetClassPerk(player) != SPELL_PRIEST_SHADOW)
@@ -2808,9 +2848,7 @@ void TryDkBloodOnCast(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_RUNIC_POWER, cost);
-    player->RemoveSpellCooldown(SPELL_DANCING_RUNE_WEAPON, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_DANCING_RUNE_WEAPON, info->GetCategory());
 }
 
 void NoteDkBloodMeleeHit(Player* player, uint32 damage)
@@ -2838,9 +2876,7 @@ void TryDkFrostOnCast(Player* player, Spell* spell)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_RUNIC_POWER, cost);
-    player->RemoveSpellCooldown(SPELL_HUNGERING_COLD, true);
-    if (uint32 const cat = info->GetCategory())
-        player->RemoveCategoryCooldown(cat);
+    ClearCooldownAfterCast(player, SPELL_HUNGERING_COLD, info->GetCategory());
 }
 
 void ApplyDkFrostDamage(Unit* attacker, int32& damage, SpellInfo const* info)
@@ -3109,14 +3145,15 @@ public:
         else if (selected == SPELL_ROGUE_COMBAT)
         {
             TickRogueCombatAdrenalineRush(player);
+            // Was a second `else if (selected == SPELL_ROGUE_COMBAT)` further
+            // down this same chain, which is unreachable -- so Combat's entire
+            // "+50% energy regeneration" clause never ran. Merged into the one
+            // branch that is actually entered.
+            TickRogueCombat(player, g_rogue[player->GetGUID().GetCounter()], diff);
         }
         else if (selected == SPELL_WARRIOR_ARMS)
         {
             TickWarriorArmsBladestorm(player, g_bladestormTick[player->GetGUID().GetCounter()], diff);
-        }
-        else if (selected == SPELL_ROGUE_COMBAT)
-        {
-            TickRogueCombat(player, g_rogue[player->GetGUID().GetCounter()], diff);
         }
         else if (selected == SPELL_SHAMAN_ENHANCEMENT)
         {
@@ -3236,7 +3273,6 @@ public:
         if (!attacker || damage <= 0 || !spellInfo)
             return;
         ApplyProtShockwaveDamage(attacker, damage, spellInfo);
-        ApplyFuryBleedDamage(attacker, damage, spellInfo);
         ApplyShamanElementalLavaBurstDamage(attacker, damage, spellInfo);
         ApplyHunterSurvivalExplosiveShotDamage(attacker, damage, spellInfo);
         ApplyPriestShadowMindFlayDamage(attacker, damage, spellInfo);
@@ -3267,6 +3303,7 @@ public:
             return;
         ApplyWarlockAfflictionHaste(target, attacker, damage, spellInfo);
         ApplyMageFirePeriodic(attacker, damage, spellInfo);
+        ApplyFuryBleedPeriodic(attacker, damage, spellInfo);
     }
 };
 

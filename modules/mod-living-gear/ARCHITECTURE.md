@@ -37,11 +37,21 @@ both have caused real bugs:
 
 Everything in the `910xxx` range looks alike and behaves very differently.
 
-**Castable perks (15).** Real spellbook buttons. The only ones with a
-`SkillLineAbility.dbc` row, which is what makes a learned spell appear at all.
-The list lives in three places and they must agree: `CASTABLE_SPELLS` in
-`tools/client-patch/build_patch.py`, `PerkIsCastable()` in `Perks.cpp`, and
-`CASTABLE` in `tools/perk_grant_audit.py`.
+**Castable perks (15).** Learned as real spells. A `SkillLineAbility.dbc` row is
+what makes a learned spell actually appear in the spellbook, and only **12** of
+the 15 have one. The other three -- **910008 `*Autoloot`, 910092 `*Solo Queue`,
+910105 `*Auto-Mount`** -- are deliberately buttonless: they are passive toggles
+that the server needs the character to *know*, but that the player never presses.
+That asymmetry is intended (confirmed 2026-08-23); do not "reconcile" the lists
+by giving them buttons.
+
+The list lives in three places: `PerkIsCastable()` in `Perks.cpp` (all 15 --
+governs what gets learned), `CASTABLE_SPELLS` in
+`tools/client-patch/build_patch.py` (the 12 -- governs which get a button), and
+`CASTABLE` in `tools/perk_grant_audit.py` (the 12 -- governs what the audit
+expects to find on a character). Learning and button-having are different
+questions, so those two counts are allowed to differ; what must never differ is
+`build_patch.py` against `perk_grant_audit.py`.
 
 **Badges (~130).** Flags the module reads. No `SkillLineAbility` row, so they
 appear nowhere and learning one only spams chat. **Never learn a badge.**

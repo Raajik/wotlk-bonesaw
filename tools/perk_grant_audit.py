@@ -75,26 +75,44 @@ def run_sql(sql):
     return [l for l in proc.stdout.splitlines() if l.strip()]
 
 
+# Playerbot characters are excluded from every count below.
+#
+# 2026-08-23: this tool reported "910090 missing on 645 / 953 characters" and
+# that number is real but almost entirely meaningless -- 642 of the 645 were
+# RNDBOT accounts. Bots do not keep these spells: ReconcilePerkSpells learns
+# them at login (the log shows it doing exactly that, five at a time), the
+# playerbot system owns the bot's spellbook, and a `saveall` does not persist
+# them, so the same bots are "repaired" every login forever and the DB never
+# changes. The three real characters behind that 645 were fixed by logging in.
+#
+# Counting bots therefore buried a 3-character problem under a 645-character
+# headline, which is the opposite of what an audit is for. Real accounts only.
+BOT_FILTER = ("JOIN acore_auth.account a ON a.id = c.account "
+              "AND a.username NOT LIKE 'RNDBOT%' ")
+
+
 def by_perk():
+    head = ("SELECT CONCAT_WS('%s', p.spell_id, "
+            "  SUM(CASE WHEN cs.spell IS NULL THEN 1 ELSE 0 END), COUNT(*)) "
+            "FROM characters c " % SEP)
     return run_sql(
-        "SELECT CONCAT_WS('%s', p.spell_id, "
-        "  SUM(CASE WHEN cs.spell IS NULL THEN 1 ELSE 0 END), COUNT(*)) "
-        "FROM characters c "
+        head + BOT_FILTER +
         "JOIN lg_account_perk p ON p.account_id = c.account "
         "LEFT JOIN character_spell cs ON cs.guid = c.guid AND cs.spell = p.spell_id "
-        "GROUP BY p.spell_id ORDER BY p.spell_id;" % SEP)
+        "GROUP BY p.spell_id ORDER BY p.spell_id;")
 
 
 def by_character():
+    head = ("SELECT CONCAT_WS('%s', c.name, c.account, "
+            "  SUM(CASE WHEN cs.spell IS NULL THEN 1 ELSE 0 END), COUNT(*)) "
+            "FROM characters c " % SEP)
     return run_sql(
-        "SELECT CONCAT_WS('%s', c.name, c.account, "
-        "  SUM(CASE WHEN cs.spell IS NULL THEN 1 ELSE 0 END), COUNT(*)) "
-        "FROM characters c "
+        head + BOT_FILTER +
         "JOIN lg_account_perk p ON p.account_id = c.account "
         "LEFT JOIN character_spell cs ON cs.guid = c.guid AND cs.spell = p.spell_id "
         "GROUP BY c.guid, c.name, c.account "
         "HAVING SUM(CASE WHEN cs.spell IS NULL THEN 1 ELSE 0 END) > 0 "
-        "ORDER BY 3 DESC LIMIT 40;" % SEP)
+        "ORDER BY 3 DESC LIMIT 40;")
 
 
 def parse(rows):
