@@ -6,10 +6,24 @@ disable-model-invocation: true
 
 # Ship Bonesaw
 
-The user has explicitly asked to ship -- `disable-model-invocation` means this
-cannot start any other way. This is the only skill allowed to touch the live
-realm. Work through the phases in order and **stop at the first
-failure** - do not carry on to a later phase to "get most of it out".
+## Stop unless the user asked for this
+
+This is the only skill allowed to touch the live realm.
+
+`disable-model-invocation: true` in the frontmatter enforces that under Claude
+Code, but **it is not honoured by every runtime** - Pi, for one, reads the same
+SKILL.md and ignores that key, which means the model can reach this file on its
+own. So the guarantee has to live in the instructions too:
+
+**Before Phase 0, confirm the user actually asked to ship in their most recent
+message** - `/bonesaw-ship`, "ship it", "deploy", "push it live". If they did
+not, say so and stop. Do not ship because the work looks finished, because the
+status output says there are unshipped commits, or because a previous message
+said to ship something earlier in the session. Authorisation is per-ship and
+does not carry forward.
+
+Work through the phases in order and **stop at the first failure** - do not
+carry on to a later phase to "get most of it out".
 
 Announce which phase you are entering as you go, so an interrupted ship can be
 resumed from a known point.
