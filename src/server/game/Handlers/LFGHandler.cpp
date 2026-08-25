@@ -26,6 +26,7 @@
 #include "ScriptMgr.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <sstream>
 
 void BuildPlayerLockDungeonBlock(WorldPacket& data, lfg::LfgLockMap const& lock)
 {
@@ -667,6 +668,26 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
         }
         data << uint8(player.accept != lfg::LFG_ANSWER_PENDING);// Answered
         data << uint8(player.accept == lfg::LFG_ANSWER_AGREE);  // Accepted
+    }
+    // Byte-level capture of the finished packet. Four theories about the role
+    // VALUE have now been disproved -- the last one sent slot 1 as TANK and
+    // slot 2 as HEALER, the client drew both correctly, and it still threw
+    // "Unknown role: UNKNOWN" twice. So the value is not the problem and the
+    // only honest next step is to read exactly what the client is handed.
+    //
+    // Expected layout (TrinityCore/AC 3.3.5):
+    //   uint32 dungeonEntry, uint8 state, uint32 proposalId, uint32 encounters,
+    //   uint8 silent, uint8 memberCount,
+    //   then per member: uint32 role, uint8 self, uint8 inDungeon,
+    //                    uint8 sameGroup, uint8 answered, uint8 accepted
+    // so the size must be 15 + 9 * memberCount.
+    {
+        std::ostringstream hex;
+        for (size_t i = 0; i < data.size(); ++i)
+            hex << Acore::StringFormat("{:02X} ", uint32(data.contents()[i]));
+        LOG_ERROR("lfg", "LFGBYTES proposal {} members {} size {} expected {} | {}",
+            proposal.id, uint32(proposal.players.size()), uint32(data.size()),
+            15 + 9 * uint32(proposal.players.size()), hex.str());
     }
     SendPacket(&data);
 }

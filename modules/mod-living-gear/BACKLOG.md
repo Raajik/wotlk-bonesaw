@@ -66,6 +66,50 @@ path or playing the game confirms behaviour.
 
 ---
 
+## 1. LFG "Unknown role: UNKNOWN" -- OPEN, three wrong fixes so far
+
+The dungeon-ready pop-up throws `LFGFrame.lua:337: Unknown role: UNKNOWN` on
+every pop. Fixed three times and still live; each fix assumed the role VALUE was
+wrong and each was disproved:
+
+  0.1.72 narrow a multi-bit mask to one bit   -- still errored
+  0.1.73 also strip PLAYER_ROLE_LEADER        -- still errored
+  0.1.74 send an index (0/1/2) not a mask     -- WORSE, reverted in 0.1.76
+         (a rogue drew the tank icon, proving the client reads a mask)
+
+**ROOT CAUSE PROVEN 2026-08-24, client-side measurement.** With the ready
+window up, `GetLFGProposalMember(1..5)` returned:
+
+    1  TANK        <- real member
+    2  DAMAGER     <- real member
+    3  UNKNOWN     <- empty
+    4  UNKNOWN     <- empty
+    5  UNKNOWN     <- empty
+    numMembers = 5
+
+The packet contained TWO members and was provably well-formed: LFGBYTES showed
+size 33, expected 33, valid roles (4 = healer, 8 = damage) and correct self
+flags. **The client reports numMembers = 5 regardless**, and
+`LFDDungeonReadyPopup_Update` loops `for i=1, numMembers`, so it asks for five
+members and `GetTexCoordsForRole` throws on every empty one.
+
+So the 3.3.5 client requires a 5-man proposal to CONTAIN FIVE MEMBERS. The role
+value was never the problem, which is why four different encodings failed
+identically and why forcing tank/healer into slots 1-2 changed nothing.
+
+**The fix is therefore to stop sending incomplete proposals for 5-man
+dungeons** -- either by requiring a full group before a proposal forms, or by
+padding the proposal with bots at creation. That is also what the playerbot fill
+was meant to achieve; it currently runs in `LFGMgr::MakeNewGroup`, i.e. AFTER
+acceptance, so the ready window never contains the bots.
+
+**Pending config decision (agreed 2026-08-24, apply WITH the fix, not before):**
+`AiPlayerbot.LfgDungeonBotFillSec` -> **10**. The live conf says 5, the code
+default is 15, and the intent was 15; 10 is the agreed middle. Left alone for
+now so it does not muddy the diagnostic.
+
+---
+
 ## 1a. Kill XP, Wayfarer and bot roles — DONE (2026-08-23), unshipped
 
 Four things, all built and compiling, none shipped.
