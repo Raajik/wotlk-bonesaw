@@ -232,9 +232,11 @@ local WORLD_TRACKS = {
         -- LivingGear_Perks.cpp, not deleted, so it can come back as a real
         -- mounted button if that is ever judged worth doing.
         ticks = {
-            { id = 910038, name = "Wayfarer", how = "Explore your home zone, or earn Going Down?. Balances up to 50% movement speed against 50% damage -- see the slider at the top of this tab.", bonus = 50 },
-            { id = 910176, name = "Wayfarer: Wide", how = "Explore Eastern Kingdoms or Explore Kalimdor. The Wayfarer balance reaches 75%.", bonus = 75 },
-            { id = 910177, name = "Wayfarer: Full", how = "Explore Outland or Explore Northrend. The Wayfarer balance reaches the full 100%.", bonus = 100 },
+            { id = 910038, name = "Wayfarer 1", how = "Explore your home zone, or earn Going Down?. Movement speed +20% on foot, mounted and flying.", bonus = 20 },
+            { id = 910176, name = "Wayfarer 2", how = "Explore Eastern Kingdoms or Explore Kalimdor. Movement speed +40%.", bonus = 40 },
+            { id = 910177, name = "Wayfarer 3", how = "Explore Outland or Explore Northrend. Movement speed +60%.", bonus = 60 },
+            { id = 910039, name = "Wayfarer 4", how = "Movement speed +80% on foot, mounted and flying.", bonus = 80 },
+            { id = 910040, name = "Wayfarer 5", how = "Movement speed +100% on foot, mounted and flying.", bonus = 100 },
         },
     },
     {
@@ -1971,21 +1973,21 @@ local function RefreshWayfarer()
     if not ui.waySlider then
         return
     end
+    -- The dial is retired. Wayfarer is a straight five-rank speed track now, so
+    -- there is nothing left to balance and the slider would only offer a choice
+    -- that no longer exists. Hidden rather than deleted so the surrounding
+    -- layout anchors stay exactly where they were.
+    ui.waySlider:Hide()
     local way = db.way or {}
     local cap = way.cap or 0
     if cap <= 0 then
         ui.wayDesc:SetText("Locked - explore your home zone, or earn Going Down?")
         ui.wayDesc:SetTextColor(0.45, 0.45, 0.45, 1)
-        ui.waySlider:EnableMouse(false)
-        ui.waySlider:SetValue(way.pct or 0)
         return
     end
-    ui.waySlider:EnableMouse(true)
+    ui.wayDesc:SetText(string.format(
+        "Movement speed |cff4fd14f+%d%%|r on foot, mounted and flying.", cap))
     ui.wayDesc:SetTextColor(0.5, 0.5, 0.55, 1)
-    -- Setting the value fires OnValueChanged, which repaints the description
-    -- through PreviewWayfarer, so this is the only line that has to run.
-    ui.waySlider:SetValue(way.pct or 0)
-    LG2.PreviewWayfarer(way.pct or 0)
 end
 
 function LG2.PreviewWayfarer(value)

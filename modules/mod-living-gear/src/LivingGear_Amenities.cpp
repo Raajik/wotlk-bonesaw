@@ -77,9 +77,11 @@ uint32 const SPELL_FLIGHT = 910009;
 //
 // 910176 and 910177 are badges: they own no aura and only widen the range.
 uint32 const SPELL_WAYFARER = 910038;
-uint32 const SPELL_WAYFARER_FOCUS = 910175;
+uint32 const SPELL_WAYFARER_FOCUS = 910175;   // retired -- removed on sight, see ApplyWayfarer
 uint32 const SPELL_WAYFARER_WIDE = 910176;
 uint32 const SPELL_WAYFARER_FULL = 910177;
+uint32 const SPELL_WAYFARER_R4 = 910039;
+uint32 const SPELL_WAYFARER_R5 = 910040;
 uint32 const SPELL_AUTO_QUEST = 910090;
 
 uint32 const NPC_AH_ALLIANCE = 8670;
@@ -321,7 +323,7 @@ struct WayfarerTier
 
 std::vector<WayfarerTier> const WAYFARER_TIERS =
 {
-    { SPELL_WAYFARER, 50, "*Wayfarer",
+    { SPELL_WAYFARER, 20, "*Wayfarer",
       { 964,   // Going Down?           -- fall 65 yards and live
         776,   // Explore Elwynn Forest
         627,   // Explore Dun Morogh
@@ -332,14 +334,19 @@ std::vector<WayfarerTier> const WAYFARER_TIERS =
         768,   // Explore Tirisfal Glades
         859 }  // Explore Eversong Woods
     },
-    { SPELL_WAYFARER_WIDE, 75, "*Wayfarer: Wide",
+    { SPELL_WAYFARER_WIDE, 40, "*Wayfarer 2",
       { 42,    // Explore Eastern Kingdoms
         43 }   // Explore Kalimdor
     },
-    { SPELL_WAYFARER_FULL, 100, "*Wayfarer: Full",
+    { SPELL_WAYFARER_FULL, 60, "*Wayfarer 3",
       { 44,    // Explore Outland
         45 }   // Explore Northrend
     },
+    // Ranks 4 and 5 carry no achievement route on purpose -- they are bought
+    // with skill points like the rest of the progression tracks. The three
+    // above keep theirs so nobody loses a rank they already earned.
+    { SPELL_WAYFARER_R4, 80, "*Wayfarer 4", { } },
+    { SPELL_WAYFARER_R5, 100, "*Wayfarer 5", { } },
 };
 
 // Character guid -> percentage of the dial spent on DAMAGE (0-100).
@@ -395,10 +402,13 @@ void ApplyWayfarer(Player* player)
     // The dial is always the full 0-100 split; the tier caps how far either
     // END of it can actually reach, so a tier 1 character slides between
     // +50 speed / +50 damage rather than between +100 and 0.
-    int32 const dmgPct = int32(damage * cap / 100);
-    int32 const speedPct = int32((100 - damage) * cap / 100);
-    // Mounted and flying get half. See the block comment above.
-    int32 const mountedPct = speedPct / 2;
+    // Straight movement speed now: five ranks of 20%, applied equally on foot,
+    // mounted and flying. The old design split a dial between speed and damage
+    // and halved the mounted share, which meant the number on the tin was never
+    // the number you moved at.
+    (void)damage;
+    int32 const speedPct = int32(cap);
+    int32 const mountedPct = speedPct;
 
     Aura* speed = player->GetAura(SPELL_WAYFARER);
     if (!speed)
@@ -415,16 +425,9 @@ void ApplyWayfarer(Player* player)
         speed->SetDuration(-1);
     }
 
-    Aura* focus = player->GetAura(SPELL_WAYFARER_FOCUS);
-    if (!focus)
-        focus = player->AddAura(SPELL_WAYFARER_FOCUS, player);
-    if (focus)
-    {
-        if (AuraEffect* e = focus->GetEffect(EFFECT_0))
-            e->ChangeAmount(dmgPct);
-        focus->SetMaxDuration(-1);
-        focus->SetDuration(-1);
-    }
+    // The damage half is retired. Strip it from anyone still carrying it from
+    // before this change rather than leaving a permanent aura nothing updates.
+    player->RemoveAurasDueToSpell(SPELL_WAYFARER_FOCUS);
 }
 
 void LoadWayfarer(Player* player)
