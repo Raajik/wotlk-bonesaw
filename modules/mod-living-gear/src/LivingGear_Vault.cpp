@@ -766,14 +766,48 @@ bool IsToolItem(ItemTemplate const* proto)
     return proto->TotemCategory != 0 && proto->Class == ITEM_CLASS_TRADE_GOODS;
 }
 
+// Item ids the class check cannot reach, from lg_vault_reagent.
+//
+// The repeatable turn-in currencies -- Dark Iron Residue, Core of Elements,
+// darkmoon cards, bijous, Relics of Ulduar, Argent Dawn tokens -- are all
+// ITEM_CLASS_QUEST (12) in item_template, not trade goods. Admitting class 12
+// wholesale is not safe: the quest guard above only covers quests the player is
+// currently ON, so a quest-starter item looted before its quest was accepted
+// would be filed away where they cannot reach it. An explicit list keeps the
+// named oddities working without putting every quest item at risk, and can be
+// extended with a SQL row rather than a rebuild.
+std::unordered_set<uint32> g_vaultReagentIds;
+
 bool IsReagentItem(ItemTemplate const* proto, Player* player = nullptr)
 {
     if (!proto || IsQuestItem(proto, player) || IsKeyItem(proto))
         return false;
+    // After the quest guard on purpose: if this player is actually on a quest
+    // that wants it, it stays in their bags whatever the list says.
+    if (g_vaultReagentIds.count(proto->ItemId))
+        return true;
     return proto->Class == ITEM_CLASS_TRADE_GOODS
         || proto->Class == ITEM_CLASS_GEM
         || proto->Class == ITEM_CLASS_REAGENT
         || IsToolItem(proto);
+}
+
+void LoadVaultReagentIds()
+{
+    g_vaultReagentIds.clear();
+    if (!CharacterDatabase.Query(
+        "SELECT 1 FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_vault_reagent'"))
+        return;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `item_entry` FROM `lg_vault_reagent`"))
+    {
+        do
+            g_vaultReagentIds.insert((*result)[0].Get<uint32>());
+        while (result->NextRow());
+    }
+    LOG_INFO("server.loading", "Living Gear vault: {} extra reagent item id(s)",
+        g_vaultReagentIds.size());
 }
 
 bool IsLockbox(ItemTemplate const* proto)
@@ -1693,6 +1727,7 @@ public:
     void OnStartup() override
     {
         BuildQuestItemIndex();
+        LoadVaultReagentIds();
     }
 };
 
