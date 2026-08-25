@@ -3675,6 +3675,15 @@ void LivingGear_SendPerksSync(Player* player)
     LivingGearPerks::SendPerkSync(player);
 }
 
+// Pushed as part of the ordinary sync now, not only when the Armory is opened.
+// The Items panel shows real gear and attuned entitlements in one list, and two
+// feeds arriving at different times meant the list visibly rewrote itself a
+// moment after opening.
+void LivingGear_SendArmorySync(Player* player)
+{
+    LivingGearPerks::SendArmory(player);
+}
+
 void AddSC_LivingGearPerks()
 {
     new LivingGearPerks::PerksWorld();

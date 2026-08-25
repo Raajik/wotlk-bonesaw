@@ -62,6 +62,7 @@ void LivingGear_ShowDiagnostics(Player* player); // LivingGear_Support.cpp
 
 // Login-time state pushes, reused to answer a client REQ. See SendAddonSync.
 void LivingGear_SendPerksSync(Player* player); // LivingGear_Perks.cpp
+void LivingGear_SendArmorySync(Player* player); // LivingGear_Perks.cpp
 void LivingGear_SendClassPerksSync(Player* player); // LivingGear_ClassPerks.cpp
 void LivingGear_SendNextSync(Player* player); // LivingGear_Next.cpp
 void LivingGear_SendWayfarerSync(Player* player); // LivingGear_Amenities.cpp
@@ -1345,6 +1346,7 @@ static void SendAddonSync(Player* player, bool includeBags = true)
     ::LivingGear_SendClassPerksSync(player);
     ::LivingGear_SendNextSync(player);
     ::LivingGear_SendWayfarerSync(player);
+    ::LivingGear_SendArmorySync(player);
 
     LgStats absorb = LoadAbsorbForPlayer(player);
     uint32 count = 0;

@@ -338,11 +338,16 @@ local WORLD_TRACKS = {
     },
 }
 
+-- World retired 2026-08-25: it rendered the same perk data as the Unlocks and
+-- Perks tabs on the achievement frame, which meant two places to edit in
+-- lockstep and one of them silently drifting.
+--
+-- Gear, Attune and the Armory collapsed into Items. All three were views of the
+-- same objects, which is why the Armory had ended up two clicks deep inside a
+-- sibling tab -- there was nowhere better for it to be.
 local TABS = {
-    { id = "world", label = "World" },
     { id = "class", label = "Class" },
-    { id = "gear", label = "Gear" },
-    { id = "attune", label = "Attune" },
+    { id = "items", label = "Items" },
     { id = "reagents", label = "Reagents" },
     { id = "loot", label = "Autoloot" },
 }
@@ -533,7 +538,7 @@ local db = {
     -- ATL| (batched, at sync) and ATT| (one entry, live as it attunes);
     -- read only by the tooltip's ATTUNED line.
     attuned = {},
-    tab = "world",
+    tab = "items",
     addMatch = 1,
     addAction = 1,
     ruleField = 1,
@@ -1456,15 +1461,17 @@ end
 -- so there is nothing left for it to paint.
 
 local function ShowTab(name)
-    if name == "quest" then
-        name = "world"
+    -- db.tab persists across sessions, so a saved value naming a retired tab
+    -- would otherwise select nothing and leave the window blank.
+    if name == "quest" or name == "world" then
+        name = "class"
+    elseif name == "gear" or name == "attune" or name == "armory" then
+        name = "items"
     end
     db.tab = name
     local panels = {
-        world = ui.world,
         class = ui.class,
-        gear = ui.gear,
-        attune = ui.attune,
+        items = ui.items,
         reagents = ui.reagents,
         loot = ui.loot,
     }
@@ -2660,6 +2667,7 @@ local function LayoutAll()
     LayoutClass()
     LayoutWorld()
     LayoutArmory()
+    LG2.RefreshItems()
     if ui.reagents then
         LayoutReagentCats()
         LayoutVault(VAULT_REAGENT, ui.reagentRows, ui.reagentEmpty, ui.reagentHint, db.reagentCat)
@@ -2690,6 +2698,349 @@ local function MakePanel(parent)
     p:SetPoint("BOTTOMRIGHT", 0, 0)
     p:Hide()
     return p
+end
+
+-- The Items tab: everything you own, in one list.
+--
+-- This replaces three separate panels -- Gear, Attune and the Armory that hid
+-- behind a button inside Attune. They were three views of the same objects,
+-- which is why the Armory ended up two clicks deep: it had nowhere better to
+-- live. An attuned item is simply an item you own that is not currently
+-- instantiated, so a state column subsumes the distinction and the drill-down
+-- stops existing.
+--
+-- Slot comes from GetItemInfo rather than from the server. Real items carry an
+-- equipment-slot index (0-18) and attuned entries carry an InventoryType
+-- (1-28), so filtering across both on the server's number would silently mix
+-- two different numbering schemes. The client already knows the true equip slot
+-- for any entry id it has cached, and that is also where the icon comes from.
+local INV_ORDER = {
+    "INVTYPE_HEAD", "INVTYPE_NECK", "INVTYPE_SHOULDER", "INVTYPE_CLOAK",
+    "INVTYPE_CHEST", "INVTYPE_ROBE", "INVTYPE_WRIST", "INVTYPE_HAND",
+    "INVTYPE_WAIST", "INVTYPE_LEGS", "INVTYPE_FEET", "INVTYPE_FINGER",
+    "INVTYPE_TRINKET", "INVTYPE_WEAPON", "INVTYPE_2HWEAPON",
+    "INVTYPE_WEAPONMAINHAND", "INVTYPE_WEAPONOFFHAND", "INVTYPE_SHIELD",
+    "INVTYPE_RANGED", "INVTYPE_RANGEDRIGHT", "INVTYPE_THROWN", "INVTYPE_HOLDABLE",
+}
+
+local ITEM_FILTERS = {
+    { key = "all", label = "All" },
+    { key = "armor", label = "Armor" },
+    { key = "weapon", label = "Weapons" },
+    { key = "attuned", label = "Attuned only" },
+}
+
+function LG2.ItemSlotGroup(inv)
+    if not inv then
+        return "other"
+    end
+    if inv == "INVTYPE_WEAPON" or inv == "INVTYPE_2HWEAPON" or inv == "INVTYPE_WEAPONMAINHAND"
+        or inv == "INVTYPE_WEAPONOFFHAND" or inv == "INVTYPE_RANGED" or inv == "INVTYPE_RANGEDRIGHT"
+        or inv == "INVTYPE_THROWN" then
+        return "weapon"
+    end
+    for i = 1, #INV_ORDER do
+        if INV_ORDER[i] == inv then
+            return "armor"
+        end
+    end
+    return "other"
+end
+
+-- One row per thing you own. Real items come from db.byKey (which holds both
+-- worn and bagged pieces); attuned entitlements come from db.armory and are
+-- included only when no real copy exists, so owning the item hides its ghost.
+function LG2.ItemsRowData()
+    local rows, have = {}, {}
+
+    for _, it in pairs(db.byKey or {}) do
+        local entry = tonumber(it.entry) or 0
+        if entry > 0 then
+            have[entry] = true
+        end
+        table.insert(rows, {
+            entry = entry,
+            name = it.name or "Item",
+            lv = tonumber(it.lv) or 1,
+            xp = tonumber(it.xp) or 0,
+            need = tonumber(it.need) or 0,
+            growth = LG2.GrowthText(it),
+            state = (it.kind == "inv") and "worn" or "bag",
+            real = true,
+        })
+    end
+
+    for i = 1, #(db.armory or {}) do
+        local a = db.armory[i]
+        local entry = tonumber(a.entry) or 0
+        if entry > 0 and not have[entry] then
+            table.insert(rows, {
+                entry = entry,
+                name = a.name or "Item",
+                lv = 0, xp = 0, need = 0,
+                growth = "",
+                state = "attuned",
+                real = false,
+                -- Passed straight back on Create. The server feeds this to
+                -- CanEquipNewItem, which takes an equipment-slot index while
+                -- this is an InventoryType -- they do not line up, so the equip
+                -- attempt reliably fails and the item lands in bags. That
+                -- mismatch is longstanding and is exactly what makes Create
+                -- mean "give me a copy" rather than "wear this now", so it is
+                -- preserved deliberately rather than corrected.
+                invslot = tonumber(a.slot) or 0,
+            })
+        end
+    end
+
+    local rank = { worn = 1, bag = 2, attuned = 3 }
+    table.sort(rows, function(x, y)
+        if rank[x.state] ~= rank[y.state] then
+            return rank[x.state] < rank[y.state]
+        end
+        if x.lv ~= y.lv then
+            return x.lv > y.lv
+        end
+        return (x.name or "") < (y.name or "")
+    end)
+    return rows
+end
+
+function LG2.ItemRowMatches(row)
+    local filter = db.itemFilter or "all"
+    if filter == "attuned" and row.state ~= "attuned" then
+        return false
+    end
+    if filter == "armor" or filter == "weapon" then
+        local _, _, _, _, _, _, _, _, inv = GetItemInfo(row.entry)
+        if LG2.ItemSlotGroup(inv) ~= filter then
+            return false
+        end
+    end
+    local q = db.itemSearch
+    if q and q ~= "" then
+        if not string.find(string.lower(row.name or ""), string.lower(q), 1, true) then
+            return false
+        end
+    end
+    return true
+end
+
+function LG2.BuildItemsPanel(parent)
+    local p = CreateFrame("Frame", nil, parent)
+    p:SetPoint("TOPLEFT", 0, -50)
+    p:SetPoint("BOTTOMRIGHT", 0, 0)
+    p:Hide()
+
+    db.itemFilter = db.itemFilter or "all"
+    db.itemSearch = db.itemSearch or ""
+
+    p.filters = {}
+    for i = 1, #ITEM_FILTERS do
+        local f = ITEM_FILTERS[i]
+        local btn = CreateFrame("Button", nil, p)
+        btn:SetSize(84, 18)
+        btn:SetPoint("TOPLEFT", 10 + (i - 1) * 88, -4)
+        StyleBtn(btn, 0.10, 0.10, 0.10)
+        btn.label = Font(btn, 10, 0.75, 0.75, 0.75)
+        btn.label:SetPoint("CENTER", 0, 0)
+        btn.label:SetJustifyH("CENTER")
+        btn.label:SetText(f.label)
+        btn.key = f.key
+        btn:SetScript("OnClick", function(self)
+            db.itemFilter = self.key
+            LG2.RefreshItems()
+        end)
+        p.filters[i] = btn
+    end
+
+    local wrap = CreateFrame("Frame", nil, p)
+    wrap:SetSize(150, 18)
+    wrap:SetPoint("TOPRIGHT", -10, -4)
+    wrap:SetBackdrop({
+        bgFile = WHITE,
+        edgeFile = WHITE,
+        edgeSize = 1,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    wrap:SetBackdropColor(0.08, 0.08, 0.08, 1)
+    wrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
+    local search = CreateFrame("EditBox", nil, wrap)
+    search:SetPoint("TOPLEFT", 4, -1)
+    search:SetPoint("BOTTOMRIGHT", -4, 1)
+    search:SetAutoFocus(false)
+    search:SetFontObject("GameFontHighlightSmall")
+    search:SetScript("OnTextChanged", function(self)
+        db.itemSearch = self:GetText() or ""
+        LG2.RefreshItems()
+    end)
+    search:SetScript("OnEscapePressed", function(self)
+        self:SetText("")
+        self:ClearFocus()
+    end)
+    p.search = search
+
+    p.summary = Font(p, 10, 0.7, 0.7, 0.7)
+    p.summary:SetPoint("TOPLEFT", 10, -26)
+    p.summary:SetWordWrap(false)
+
+    p.empty = Font(p, 11, 0.6, 0.6, 0.6)
+    p.empty:SetPoint("TOPLEFT", 10, -46)
+    p.empty:SetText("Nothing matches these filters.")
+    p.empty:Hide()
+
+    -- Rows are two lines: name on top, level and growth beneath. The Perks tab
+    -- learned this the hard way -- a single line wrapped anyway and collided
+    -- with the row below, which reads as a bug rather than a layout.
+    local ROW_H = 30
+    p.rows = {}
+    for i = 1, 11 do
+        local row = CreateFrame("Button", nil, p)
+        row:SetSize(516, ROW_H - 2)
+        row:SetPoint("TOPLEFT", 10, -42 - (i - 1) * ROW_H)
+
+        row.hl = row:CreateTexture(nil, "BACKGROUND")
+        row.hl:SetAllPoints(row)
+        Solid(row.hl, 0.16, 0.16, 0.18, 1)
+        row.hl:Hide()
+
+        row.icon = row:CreateTexture(nil, "ARTWORK")
+        row.icon:SetSize(24, 24)
+        row.icon:SetPoint("LEFT", 2, 0)
+
+        row.name = Font(row, 11, 0.9, 0.9, 0.94)
+        row.name:SetPoint("TOPLEFT", 32, -1)
+        row.name:SetWidth(300)
+        row.name:SetJustifyH("LEFT")
+        row.name:SetWordWrap(false)
+
+        row.detail = Font(row, 10, 0.62, 0.66, 0.62)
+        row.detail:SetPoint("TOPLEFT", 32, -14)
+        row.detail:SetWidth(380)
+        row.detail:SetJustifyH("LEFT")
+        row.detail:SetWordWrap(false)
+
+        row.state = Font(row, 10, 0.6, 0.6, 0.6)
+        row.state:SetPoint("RIGHT", -6, 0)
+        row.state:SetJustifyH("RIGHT")
+
+        row.create = CreateFrame("Button", nil, row)
+        row.create:SetSize(60, 16)
+        row.create:SetPoint("RIGHT", -54, 0)
+        StyleBtn(row.create, 0.14, 0.20, 0.16)
+        row.create.label = Font(row.create, 10, 0.8, 0.95, 0.8)
+        row.create.label:SetPoint("CENTER", 0, 0)
+        row.create.label:SetJustifyH("CENTER")
+        row.create.label:SetText("Create")
+        row.create:Hide()
+        row.create:SetScript("OnClick", function(self)
+            local r = self:GetParent().data
+            if r and r.entry and r.entry > 0 then
+                SendLine("ARMEQUIP|" .. tostring(r.invslot or 0) .. "|" .. tostring(r.entry))
+            end
+        end)
+
+        row:SetScript("OnEnter", function(self)
+            self.hl:Show()
+            local r = self.data
+            if r and r.entry and r.entry > 0 then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetHyperlink("item:" .. tostring(r.entry))
+                GameTooltip:Show()
+            end
+        end)
+        row:SetScript("OnLeave", function(self)
+            self.hl:Hide()
+            GameTooltip:Hide()
+        end)
+        row:Hide()
+        p.rows[i] = row
+    end
+
+    ui.items = p
+    return p
+end
+
+function LG2.RefreshItems()
+    local p = ui.items
+    if not p or not p.rows then
+        return
+    end
+
+    for i = 1, #p.filters do
+        local btn = p.filters[i]
+        local on = btn.key == (db.itemFilter or "all")
+        StyleBtn(btn, on and 0.14 or 0.10, on and 0.22 or 0.10, on and 0.28 or 0.10)
+        if on then
+            btn.label:SetTextColor(0.85, 0.95, 0.95, 1)
+        else
+            btn.label:SetTextColor(0.72, 0.72, 0.72, 1)
+        end
+    end
+
+    local all = LG2.ItemsRowData()
+    local shown = {}
+    for i = 1, #all do
+        if LG2.ItemRowMatches(all[i]) then
+            table.insert(shown, all[i])
+        end
+    end
+
+    -- Count, not a percentage. There is no denominator to be a percentage of --
+    -- attunement unlocks higher rarities at 10, 100, 1000 items -- and the
+    -- field a percentage would have come from is never actually set, so the
+    -- readout would have sat at 0% forever.
+    local attuned = tonumber(db.attune and db.attune.count) or 0
+    p.summary:SetText(string.format(
+        "|cffb0b0b0%d shown|r    |cff8a9bc4%d attuned on this account|r", #shown, attuned))
+
+    if #shown == 0 then
+        p.empty:Show()
+    else
+        p.empty:Hide()
+    end
+
+    for i = 1, #p.rows do
+        local row = p.rows[i]
+        local r = shown[i]
+        if not r then
+            row:Hide()
+        else
+            row.data = r
+            row:Show()
+
+            local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(r.entry)
+            row.icon:SetTexture(tex or "Interface\\Icons\\INV_Misc_QuestionMark")
+
+            if r.state == "attuned" then
+                row.icon:SetVertexColor(0.55, 0.55, 0.62)
+                row.name:SetTextColor(0.66, 0.70, 0.80)
+                row.detail:SetText("|cff5a6a8anot created yet|r")
+                row.state:SetText("|cff5a6a8aATTUNED|r")
+                row.create:Show()
+            else
+                row.icon:SetVertexColor(1, 1, 1)
+                row.name:SetTextColor(0.9, 0.9, 0.94)
+                row.create:Hide()
+                local growth = r.growth
+                if growth == "" then
+                    growth = "|cff707070no growth yet|r"
+                end
+                if r.need and r.need > 0 then
+                    row.detail:SetText(string.format("|cffffd966Lv %d|r  %d/%d xp   %s",
+                        r.lv, r.xp, r.need, growth))
+                else
+                    row.detail:SetText(string.format("|cffffd966Lv %d|r  max   %s", r.lv, growth))
+                end
+                if r.state == "worn" then
+                    row.state:SetText("|cff7fdc7fWORN|r")
+                else
+                    row.state:SetText("|cff909090BAG|r")
+                end
+            end
+            row.name:SetText(r.name)
+        end
+    end
 end
 
 function LG2.MakeVaultPanel(parent, kind, withCats)
@@ -4231,6 +4582,8 @@ local function BuildUI()
 
     LG2.BuildLootPanel(f)
 
+    LG2.BuildItemsPanel(f)
+
     ui.reagents, ui.reagentRows, ui.reagentEmpty, ui.reagentHint = LG2.MakeVaultPanel(f, VAULT_REAGENT, true)
 
     local class = MakePanel(f)
@@ -4312,7 +4665,7 @@ local function BuildUI()
     LG2.BuildWorldPanel(f)
 
     SaveScale(LG2.LoadScale())
-    ShowTab("world")
+    ShowTab("items")
     LayoutAll()
 end
 
