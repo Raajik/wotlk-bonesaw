@@ -97,6 +97,12 @@ uint32 LivingGear_AccountLockpickSkill(Player* player);
 // Living Gear core-patch: Shadow Dance lets stealth-only openers be used
 // without actually being stealthed (LivingGear_Perks.cpp).
 bool LivingGear_BypassStealthRequirement(Unit* caster);
+
+// Living Gear core-patch: a class perk advertising an ability as costing
+// nothing (Arms' Bladestorm) has to cost nothing at CheckPower time, not be
+// refunded afterwards -- a refund still requires the caster to have the power
+// to pay up front (LivingGear_ClassPerks.cpp).
+bool LivingGear_SpellIsFreeCast(Unit* caster, uint32 spellId);
 // Living Gear core-patch: tops the bag up from the account reagent vault
 // right before the real reagent check, so banked reagents still count as
 // "in your backpack" for crafting (LivingGear_Vault.cpp).
@@ -3567,6 +3573,8 @@ SpellCastResult Spell::prepare(SpellCastTargets const* targets, AuraEffect const
     OnSpellLaunch();
 
     m_powerCost = m_CastItem ? 0 : m_spellInfo->CalcPowerCost(m_caster, m_spellSchoolMask, this);
+    if (LivingGear_SpellIsFreeCast(m_caster, m_spellInfo->Id))
+        m_powerCost = 0;
 
     // Set combo point requirement
     if (HasTriggeredCastFlag(TRIGGERED_IGNORE_COMBO_POINTS) || m_CastItem)
@@ -6921,6 +6929,8 @@ SpellCastResult Spell::CheckPetCast(Unit* target)
 
     // xinef: Calculate power cost here, so funciton checking power can work properly and dont return bad results
     m_powerCost = m_spellInfo->CalcPowerCost(m_caster, m_spellSchoolMask, this);
+    if (LivingGear_SpellIsFreeCast(m_caster, m_spellInfo->Id))
+        m_powerCost = 0;
 
     // cooldown
     if (Creature const* creatureCaster = m_caster->ToCreature())

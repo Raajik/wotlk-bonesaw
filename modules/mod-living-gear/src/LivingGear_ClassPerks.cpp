@@ -1752,8 +1752,15 @@ void TryWarriorArmsOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!info || info->Id != SPELL_BLADESTORM)
         return;
-    if (int32 const cost = spell->GetPowerCost())
-        player->ModifyPower(POWER_RAGE, cost);
+    // No refund here any more. Handing the rage back after the fact only works
+    // for a caster who had it to spend in the first place -- with an empty rage
+    // bar the cast was refused outright with "Not enough rage" (reports #39 and
+    // #74) and the refund never ran. Worse, once CheckPower was satisfied the
+    // refund paid out the full cost whether or not that much was actually
+    // taken, which on a near-empty bar was a rage generator.
+    //
+    // The cost is zeroed at source instead, in Spell::prepare, via
+    // LivingGear_SpellIsFreeCast below.
     ClearCooldownAfterCast(player, SPELL_BLADESTORM, info->GetCategory());
 }
 
@@ -3537,6 +3544,19 @@ private:
 uint32 GetClassPerk(Player* player)
 {
     return LivingGearClassPerks::GetClassPerk(player);
+}
+
+// Core-patch callback from Spell::prepare. An ability a class perk advertises
+// as free has to cost nothing when CheckPower runs, because a refund after the
+// cast still requires the caster to have had the power to spend -- which is
+// why Bladestorm kept answering "Not enough rage" on an empty bar.
+bool LivingGear_SpellIsFreeCast(Unit* caster, uint32 spellId)
+{
+    if (!caster || spellId != LivingGearClassPerks::SPELL_BLADESTORM)
+        return false;
+    Player* player = caster->ToPlayer();
+    return player
+        && LivingGearClassPerks::GetClassPerk(player) == LivingGearClassPerks::SPELL_WARRIOR_ARMS;
 }
 
 // Addon-command entry point, called by the dispatcher in LivingGear.cpp.
