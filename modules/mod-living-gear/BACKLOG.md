@@ -101,6 +101,26 @@ denominator far more than any pricing change.
 
 ---
 
+## Delete the retired panel code (World, Gear, Attune, Armory)
+
+The tabs were retired in the Items merge (2026-08-25) but their builders and
+layout functions are still in `LivingGear.lua`, unreachable. `LayoutWorld` and
+`LayoutArmory` alone have around twenty call sites threaded through refresh
+paths, message handlers and the tab machinery, so removing them was deliberately
+not attempted in the same change that replaced three screens -- that is how
+working things break in order to remove a dead one.
+
+Do this only once the Items tab is confirmed working in game, and do it as its
+own change so a regression has one obvious cause.
+
+Roughly 1500 lines. Start from `ui.world`, `ui.gear`, `ui.attune`, `ui.armory`
+and work outward; the retired ids are still redirected in `ShowTab`, which is
+what keeps a saved `db.tab` from a previous session from landing on a panel that
+no longer exists. Those redirects should outlive the panels themselves.
+
+
+---
+
 ## Rotate world events every 5 days -- DONE (2026-08-25), unshipped
 
 World Events is **207 skill points** currently written off, because holidays are
