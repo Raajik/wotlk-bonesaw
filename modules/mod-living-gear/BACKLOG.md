@@ -66,6 +66,58 @@ path or playing the game confirms behaviour.
 
 ---
 
+## Normalize progression tracks to 5 ranks
+
+**The change is free.** Eleven of the seventeen purchasable tracks are 3 ranks.
+Keeping each track's *ceiling and total price* and splitting it into five steps
+costs exactly nothing: 994 points before, 994 after, 25 new spell ids. Three
+ranks means three big jumps; five means the track reads as progress.
+
+| scenario | nodes | cost | vs 1113 pool | vs 1320 pool |
+|---|---|---|---|---|
+| today (11 tracks at 3 ranks) | 82 | 994 | 89% | 75% |
+| **5 ranks, same ceilings** | 107 | **994** | 89% | **75%** |
+| 5 ranks, higher ceilings | 107 | 2421 | 218% | 183% |
+
+**Do not raise the ceilings while doing this.** Extending a geometric ladder
+compounds -- the yield tracks run 2/15/55, and two more rungs at that growth
+land near 200 and 740 each. That is the 2421 column: 183% of even the expanded
+pool. Higher ceilings are worth it for a couple of tracks you deliberately want
+out of reach, never as a blanket rule.
+
+**Leave First Aid and Fishing's utility track at 3.** Their ranks are three
+independent effects (Instant/Restore/Cleanse; Cast/Pools/Speed), not three
+rungs of one dial. Normalizing those means inventing two new effects each --
+design work, not a data change.
+
+**Ids:** allocate fresh ones. 910039/910040 were reused after the jump perks
+were retired and silently granted three accounts a free Wayfarer rank, because
+`lg_account_perk` is append-only and nothing cleans it. 910041
+(`SPELL_AUTO_ATTUNE`) still has live rows and stays reserved. Query the table
+before claiming any id.
+
+**Sequence this after the holiday rotation** (next item), which moves the
+denominator far more than any pricing change.
+
+---
+
+## Rotate world events every 4-7 days
+
+World Events is **207 skill points** currently written off, because holidays are
+annual and a new account will see two or three of them. Rotate one every 4-7
+days and they become ordinary reachable content: the pool goes **1113 -> 1320**,
+and the existing tree drops from 89% to **75%** of it.
+
+That 75% was the original design target, missed when Curator and Wayfarer ranks
+were added. This buys it back without touching a single price -- which is why it
+should land before any further balance work, including the 5-rank split above.
+
+Worth checking during implementation: whether achievement criteria for holiday
+events are gated on the real calendar date or on the event being active, since
+those are different code paths and only the second one will fire on a rotation.
+
+---
+
 ## 1. LFG "Unknown role: UNKNOWN" -- OPEN, three wrong fixes so far
 
 The dungeon-ready pop-up throws `LFGFrame.lua:337: Unknown role: UNKNOWN` on
