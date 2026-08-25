@@ -1127,29 +1127,45 @@ end
 -- to spend points should not require hovering every row in turn; a tooltip is
 -- for detail you want occasionally, not for the one fact the screen exists to
 -- convey.
+--
+-- Two lines per row because that is what the descriptions actually need. At one
+-- line the longer ones wrapped anyway and collided with the row below, which
+-- looked like a bug rather than a layout. Scrolling is free here; overlap is not.
 function LG2.BuildAchievementPerkRows(panel)
     local data = LG2.PerkRowData()
-    local ROW_H, PIP_X, NEXT_X = 21, 150, 300
+    local ROW_H, NAME_W, PIP_X, PIP_STEP, NEXT_X = 28, 116, 122, 11, 240
     local host = LG2.MakePerkScroll(panel, "LivingGearPerkScroll", #data, ROW_H)
     panel.rows = {}
     for i = 1, #data do
         local row = CreateFrame("Frame", nil, host)
-        row:SetSize(640, ROW_H - 3)
+        row:SetSize(640, ROW_H - 2)
         row:SetPoint("TOPLEFT", 4, -4 - (i - 1) * ROW_H)
-        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.name:SetPoint("LEFT", 2, 0)
-        row.name:SetWidth(PIP_X - 8)
-        row.name:SetJustifyH("LEFT")
-        row.next = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        row.next:SetPoint("LEFT", NEXT_X, 0)
-        row.next:SetWidth(640 - NEXT_X - 4)
-        row.next:SetJustifyH("LEFT")
         row.entry = data[i]
+
+        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.name:SetPoint("TOPLEFT", 2, -1)
+        row.name:SetWidth(NAME_W)
+        row.name:SetJustifyH("LEFT")
+
+        -- Tracks you cannot buy into show "4 / 10" instead of ten dead squares.
+        -- Ten unclickable pips were both the widest thing on the panel and the
+        -- least informative, and they invited clicks that do nothing.
+        row.count = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        row.count:SetPoint("TOPLEFT", PIP_X, -1)
+        row.count:Hide()
+
+        row.next = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        row.next:SetPoint("TOPLEFT", NEXT_X, -1)
+        row.next:SetWidth(640 - NEXT_X - 4)
+        row.next:SetHeight(ROW_H - 4)
+        row.next:SetJustifyH("LEFT")
+        row.next:SetJustifyV("TOP")
+
         row.pips = {}
         for k = 1, #data[i].ticks do
             local pip = CreateFrame("Button", nil, row)
-            pip:SetSize(13, 11)
-            pip:SetPoint("LEFT", PIP_X + (k - 1) * 15, 0)
+            pip:SetSize(9, 10)
+            pip:SetPoint("TOPLEFT", PIP_X + (k - 1) * PIP_STEP, -2)
             pip.bg = pip:CreateTexture(nil, "ARTWORK")
             pip.bg:SetAllPoints(pip)
             pip.info = data[i].ticks[k]
@@ -1253,14 +1269,36 @@ function LG2.RefreshAchievementPerks()
         for i = 1, #panel.rows do
             local row = panel.rows[i]
             local total, nextId, nextHow = #row.entry.ticks, nil, nil
+            local owned, priced = 0, false
             for k = 1, total do
-                LG2.StylePerkPip(row.pips[k], row.entry.ticks[k])
-                if not PerkKnown(row.entry.ticks[k].id) and not nextId then
-                    nextId = row.entry.ticks[k].id
-                    nextHow = row.entry.ticks[k].how
+                local tick = row.entry.ticks[k]
+                LG2.StylePerkPip(row.pips[k], tick)
+                if LG2.PerkCost(tick.id) then
+                    priced = true
+                end
+                if PerkKnown(tick.id) then
+                    owned = owned + 1
+                elseif not nextId then
+                    nextId, nextHow = tick.id, tick.how
                 end
             end
             row.name:SetText(row.entry.label)
+
+            -- Costs arrive asynchronously, so this is decided every refresh
+            -- rather than baked in at build time.
+            for k = 1, total do
+                if priced then
+                    row.pips[k]:Show()
+                else
+                    row.pips[k]:Hide()
+                end
+            end
+            if priced then
+                row.count:Hide()
+            else
+                row.count:SetText(string.format("|cff8a9bc4%d / %d|r", owned, total))
+                row.count:Show()
+            end
             local cost = nextId and LG2.PerkCost(nextId) or nil
             if not nextId then
                 row.next:SetText("|cff4fd14fComplete.|r")
