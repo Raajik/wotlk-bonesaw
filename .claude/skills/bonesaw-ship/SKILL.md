@@ -159,16 +159,58 @@ Without it the whole thing goes blind again.
 
 ## Phase 6 - tell people
 
-Post to Discord. Title `Bonesaw X.Y.Z - patch notes`, built from the Phase 0
-commit list, following `.cursor/rules/discord-patch-notes.mdc`: player-facing
-only, ASCII, plain `-` bullets, grouped by theme, no file paths or spell IDs,
-only what actually shipped. Extra jump is disabled - do not advertise it.
+This phase used to read "Post to Discord" with nothing to run, so it was done by
+hand or not at all - **0.1.79 and 0.1.80 both shipped without the notes ever
+reaching players**, and the GitHub releases carried the placeholder "Run
+Bonesaw.exe." instead of a changelog. Writing notes into the chat reply is not
+the same as posting them. Do all three steps below.
 
-If the client changed, tell players to close Wow and run `Bonesaw.exe`.
+### 1. Write the notes to a file
 
-Then append durable learnings to `A:\obsidian\jeremy\wiki\Bonesaw.md` -
-crashes, UI rules, deploy gotchas, spell IDs, do-not-repeat mistakes. Part of
-shipping, not after it.
+```
+tools/patch-notes/X.Y.Z.md
+```
+
+Built from the Phase 0 commit list, following
+`.cursor/rules/discord-patch-notes.mdc`: player-facing only, ASCII, plain `-`
+bullets, grouped by theme, no file paths or spell IDs, only what actually
+shipped. Extra jump is disabled - do not advertise it. Title line is
+`**Bonesaw X.Y.Z - patch notes**`. If the client changed, end with *Close Wow
+and run Bonesaw.exe to update.*
+
+The file is the record: it is what gets posted, what the GitHub release shows,
+and what the next person reads to see what a version contained. Commit it.
+
+### 2. Post to Discord
+
+```
+python tools/post_patch_notes.py tools/patch-notes/X.Y.Z.md --dry-run
+python tools/post_patch_notes.py tools/patch-notes/X.Y.Z.md
+```
+
+Dry-run first - it checks the notes are ASCII and shows how the 2000-character
+Discord limit will split them, before contacting anyone. The webhook lives in
+`tools/client-update/discord.webhook`, which is gitignored because it is a
+credential; never echo it into a log or a commit.
+
+The script exits non-zero if Discord rejects anything, so a failed post stops
+the ship rather than being reported as done.
+
+### 3. Put the same notes on the GitHub release
+
+```
+gh release edit vX.Y.Z --repo Raajik/wotlk-bonesaw --notes-file tools/patch-notes/X.Y.Z.md
+```
+
+Phase 4 creates the release with a placeholder because the notes may not exist
+yet at that point. This is where it gets the real changelog, so the release list
+is a readable history rather than a wall of identical one-liners.
+
+### 4. Record the learnings
+
+Append durable learnings to `A:\obsidian\jeremy\wiki\Bonesaw.md` - crashes, UI
+rules, deploy gotchas, spell IDs, do-not-repeat mistakes. Part of shipping, not
+after it.
 
 ## Finally
 
