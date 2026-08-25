@@ -551,11 +551,32 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
         return;
     }
     uint32 skillId = 0, reqSkill = 0;
+    bool gatherNode = false;
     if (GatherLockType(go->GetGOInfo()->GetLockId(), skillId, reqSkill))
     {
-        LOG_INFO("module.livinggear", "chest autoloot: '{}' left to the gathering path (skill {})",
-            go->GetGOInfo()->name, skillId);
-        return; // gathering-skill chest (herbalism/mining/etc) -- leave to TryGatherChest
+        // Used to return here and leave it to TryGatherChest. That function is
+        // only ever reached from the proximity sweep, which runs on a tick AND
+        // bails at `extra <= 0` unless the player owns a Reach perk for that
+        // profession -- so right-clicking a gathering node fell straight
+        // through to an ordinary loot window and nothing auto-looted it. The
+        // live log said so 836 times in three days: "left to the gathering
+        // path (skill 186)". Reports #15, #34 and #49, one cause.
+        //
+        // Handled here now instead, sharing the deferred grant below rather
+        // than calling TryGatherChest -- that one stores loot synchronously,
+        // which is the exact reentrancy hazard the comment further down
+        // documents, and this hook also fires from Spell::EffectOpenLock.
+        uint16 const skillValue = player->GetSkillValue(skillId);
+        if (!skillValue || skillValue < reqSkill)
+        {
+            LOG_INFO("module.livinggear",
+                "chest autoloot: '{}' needs skill {} at {}, player has {}",
+                go->GetGOInfo()->name, skillId, reqSkill, skillValue);
+            return;   // genuinely cannot open it; let the core refuse as usual
+        }
+        gatherNode = true;
+        if (uint32 pure = player->GetPureSkillValue(skillId))
+            player->UpdateGatherSkill(skillId, pure, reqSkill);
     }
     // 2026-08-21: used to also bail here for any chest whose static
     // template lock is LOCK_KEY_ITEM, "leave it for the manual spell
@@ -576,6 +597,11 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
     if (GameObjectTemplateAddon const* addon = go->GetTemplateAddon())
         loot->generateMoneyLoot(addon->mingold, addon->maxgold);
     go->SetLootGenerationTime();
+    // Takes the node out of GO_READY immediately so the proximity sweep cannot
+    // fill and store the same chest inside the one tick before the deferred
+    // grant below runs. Only for gather nodes: nothing else sweeps chests.
+    if (gatherNode)
+        go->SetLootState(GO_ACTIVATED, player);
     handled = true;
     LOG_INFO("module.livinggear", "chest autoloot: '{}' (entry {}, lock {}) filled lootId {} -- {} slot(s), {} gold",
         go->GetGOInfo()->name, go->GetEntry(), go->GetGOInfo()->GetLockId(),
