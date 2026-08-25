@@ -99,6 +99,13 @@ fn run(ui: &Ui) -> R<()> {
         log(&format!("wrote {w}"));
     }
 
+    // New client data means the cached copy is stale, so drop it.
+    if !written.is_empty() {
+        for f in clear_wdb_cache(&client) {
+            log(&format!("cleared cache {f}"));
+        }
+    }
+
     match wowpatch::ensure(&client)? {
         wowpatch::Outcome::Patched => log("patched Wow.exe (backup at Wow.exe.stock)"),
         wowpatch::Outcome::AlreadyPatched => log("Wow.exe already patched"),
@@ -162,6 +169,52 @@ fn launch(client: &Path) -> R<()> {
 }
 
 /// A rolling log next to the exe. Players can paste it when something breaks.
+/// Delete the client's cached item/spell/creature data.
+///
+/// WoW caches what the server tells it about items, spells and creatures in
+/// Cache/WDB and then trusts that copy over the server. Shipping new DBC data
+/// therefore leaves players looking at the old names, icons and tooltips until
+/// those files are gone -- 0.1.82 rewrote 94 spell icons and renamed two spells,
+/// and a cached client would have shown none of it.
+///
+/// Keyed off the payload having actually written something, rather than a flag
+/// in the manifest. A flag is a step someone has to remember on every ship, and
+/// this is cheap enough not to need one: the client re-queries what it needs
+/// from the server the moment it needs it, so the only cost is a few packets.
+///
+/// Only *.wdb files are removed, never the directory or anything else under
+/// Cache -- addons keep saved data there too.
+fn clear_wdb_cache(client: &Path) -> Vec<String> {
+    let mut removed = Vec::new();
+    let wdb = client.join("Cache").join("WDB");
+    let Ok(locales) = std::fs::read_dir(&wdb) else {
+        return removed; // no cache yet, or no Cache folder at all
+    };
+    for locale in locales.flatten() {
+        let Ok(files) = std::fs::read_dir(locale.path()) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let path = f.path();
+            let is_wdb = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("wdb"));
+            if !is_wdb {
+                continue;
+            }
+            // A locked file means Wow is open; skip it rather than fail the
+            // launch over a cache file.
+            if std::fs::remove_file(&path).is_ok() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    removed.push(name.to_string());
+                }
+            }
+        }
+    }
+    removed
+}
+
 fn log(line: &str) {
     use std::io::Write;
     static PATH: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
