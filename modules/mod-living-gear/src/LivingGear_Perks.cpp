@@ -60,6 +60,7 @@
 
 class Player;
 void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp); // LivingGear.cpp
+void LivingGear_BankCollection(Player* player, uint32 pct); // LivingGear.cpp
 float LivingGear_LevelingXpMultiplier(Player* player); // LivingGear_Progression.cpp
 uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
@@ -557,6 +558,7 @@ void ReconcilePerkSpells(Player* player)
 // ---------------------------------------------------------------------------
 
 void SendPerkPoints(Player* player);   // defined below; the buy-back path re-sends
+void ApplyCuratorCoverage(Player* player);   // defined below; PurchaseRank applies it at once
 
 void DetectPerkPriceSchema()
 {
@@ -734,6 +736,10 @@ bool PurchaseRank(Player* player, uint32 spellId)
     g_purchased[acc][spellId] = itr->second.cost;
 
     UnlockPerk(player, spellId, nullptr);
+    // Buying a Curator rank has to bank the collection immediately, or the perk
+    // would appear to do nothing until the next login.
+    if (spellId == SPELL_CURATOR || spellId == 910178 || spellId == 910179 || spellId == 910180)
+        ApplyCuratorCoverage(player);
     return true;
 }
 
@@ -2248,25 +2254,35 @@ void CatchUpProfession(Player* player)
 // Curator's limited tick budget to keep growing it past that instead of
 // moving on to the next least-attuned piece. 25 must match LivingGear.cpp's
 // `LivingGear.Attune.CapLevel` config (default 25) if that's ever changed.
-void TickCurator(Player* player, uint32 diff)
+// Curator is coverage, not a drip.
+//
+// It used to feed 1 item XP a minute to the five lowest-level pieces, pushing
+// them up the 1%-to-100% attune ramp -- roughly 7.6 hours of being logged in to
+// finish one endgame item. That made "my tabard is gaining levels in the bank"
+// something the design had to explain, and made the perk a timer rather than a
+// choice.
+//
+// Each rank now simply states what share of your collection counts, and the
+// work happens once when it is bought and once at login. See
+// LivingGear_BankCollection in LivingGear.cpp for why it banks BASE stats --
+// short version: worn gear banks GROWN stats, grown always exceeds base, so
+// wearing a piece still beats leaving it in the bank.
+uint32 const CURATOR_RANKS[] = { SPELL_CURATOR, 910178, 910179, 910180 };
+uint32 const CURATOR_PCT[]   = { 25, 50, 75, 100 };
+
+uint32 CuratorCoverage(Player* player)
 {
-    if (!player || !HasPerk(player, SPELL_CURATOR))
-        return;
-    uint32 id = player->GetGUID().GetCounter();
-    g_curatorAcc[id] += diff;
-    if (g_curatorAcc[id] < g_cfg.curatorTick)
-        return;
-    g_curatorAcc[id] = 0;
-    if (QueryResult result = CharacterDatabase.Query(
-        "SELECT `item_guid` FROM `lg_item` WHERE `owner_guid` = {} AND `level` < 25 "
-        "ORDER BY `level` ASC, `xp` ASC LIMIT 5", player->GetGUID().GetCounter()))
-    {
-        do
-        {
-            uint32 const itemGuid = (*result)[0].Get<uint32>();
-            LivingGear_GrantItemXp(player, itemGuid, 1);
-        } while (result->NextRow());
-    }
+    uint32 pct = 0;
+    for (uint8 i = 0; i < 4; ++i)
+        if (HasPerk(player, CURATOR_RANKS[i]))
+            pct = CURATOR_PCT[i];
+    return pct;
+}
+
+void ApplyCuratorCoverage(Player* player)
+{
+    if (uint32 const pct = CuratorCoverage(player))
+        LivingGear_BankCollection(player, pct);
 }
 
 void CheckDungeonClear(Player* player, Creature* killed)
@@ -2774,6 +2790,7 @@ public:
         // is what tells the client what is actually owned afterwards.
         ApplyPerkEpoch(player);
         SendPerkSync(player);   // sends PKCOST + PKPTS too
+        ApplyCuratorCoverage(player);
         // After the sync rows are in: titles for achievements this character
         // inherited from the account rather than earned itself.
         GrantAchievementTitles(player);
@@ -2808,7 +2825,7 @@ public:
             return;
         TickCooking(player, diff);
         TickFirstAidCleanse(player, g_aidCleanseTick[player->GetGUID().GetCounter()], diff);
-        TickCurator(player, diff);
+        // Curator is applied at login and on purchase now, not on a tick.
         {
             uint32 const id = player->GetGUID().GetCounter();
             g_shadowDanceTick[id] += diff;

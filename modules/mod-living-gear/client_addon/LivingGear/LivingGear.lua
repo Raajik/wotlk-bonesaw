@@ -104,7 +104,10 @@ local WORLD_TRACKS = {
     {
         name = "Attune",
         ticks = {
-            { id = 910101, name = "Curator", how = "Attune 1000 items on the account. Passively grants Living Gear XP to your 5 lowest collection pieces (bags, bank, armory) not currently worn.", bonus = 0 },
+            { id = 910101, name = "Curator 1", how = "Items in your bags and bank count for 25% of their value toward your account stats.", bonus = 25 },
+            { id = 910178, name = "Curator 2", how = "Items in your bags and bank count for 50% of their value.", bonus = 50 },
+            { id = 910179, name = "Curator 3", how = "Items in your bags and bank count for 75% of their value.", bonus = 75 },
+            { id = 910180, name = "Curator 4", how = "Items in your bags and bank count for 100% of their value. Gear you wear still grows past this by levelling.", bonus = 100 },
         },
     },
     {
@@ -151,40 +154,63 @@ local WORLD_TRACKS = {
             { id = 910048, name = "Cleanse", how = "Max First Aid. While bandaged, remove debuffs every second.", bonus = 0 },
         },
     },
-    {
+        {
         name = "Fishing",
-        unit = "gather",
         ticks = {
             { id = 910043, name = "Cast", how = "Train Fishing. After you cast Fishing, it recasts and catches for you.", bonus = 0 },
             { id = 910044, name = "Pools", how = "Catch 250 fish. While autofishing, loot pools within 25 yards.", bonus = 0 },
             { id = 910045, name = "Speed", how = "Earn the 500 Fish achievement. Bites come twice as fast.", bonus = 0 },
+        },
+    },
+    {
+        name = "Fishing Yield",
+        unit = "gather",
+        ticks = {
             { id = 910127, name = "150", how = "Reach Fishing 150. Fish yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
             { id = 910128, name = "300", how = "Reach Fishing 300. Fish yield 4x.", bonus = 0, yield = 4 },
             { id = 910129, name = "450", how = "Reach Fishing 450. Fish yield 8x.", bonus = 0, yield = 8 },
+        },
+    },
+    {
+        name = "Fishing Reach",
+        unit = "gather",
+        ticks = {
             { id = 910130, name = "Reach 75", how = "Reach Fishing 75. Auto-loot pools from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910131, name = "Reach 225", how = "Reach Fishing 225. Auto-loot pools from +6 yards.", bonus = 6 },
             { id = 910132, name = "Reach 375", how = "Reach Fishing 375. Auto-loot pools from +9 yards.", bonus = 9 },
         },
     },
-    {
-        name = "Engineering",
+        {
+        name = "Engineering Yield",
         unit = "gather",
         ticks = {
             { id = 910133, name = "150", how = "Reach Engineering 150. Crafts and blasting/salvage yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
             { id = 910134, name = "300", how = "Reach Engineering 300. Crafts and blasting/salvage yield 4x.", bonus = 0, yield = 4 },
             { id = 910135, name = "450", how = "Reach Engineering 450. Crafts and blasting/salvage yield 8x.", bonus = 0, yield = 8 },
+        },
+    },
+    {
+        name = "Engineering Reach",
+        unit = "gather",
+        ticks = {
             { id = 910136, name = "Reach 75", how = "Reach Engineering 75. Auto-gather blasting nodes and salvage from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910137, name = "Reach 225", how = "Reach Engineering 225. Auto-gather blasting nodes and salvage from +6 yards.", bonus = 6 },
             { id = 910138, name = "Reach 375", how = "Reach Engineering 375. Auto-gather blasting nodes and salvage from +9 yards.", bonus = 9 },
         },
     },
-    {
-        name = "Herbalism",
+        {
+        name = "Herbalism Yield",
         unit = "gather",
         ticks = {
             { id = 910115, name = "150", how = "Reach Herbalism 150. Herbs yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
             { id = 910116, name = "300", how = "Reach Herbalism 300. Herbs yield 4x.", bonus = 0, yield = 4 },
             { id = 910117, name = "450", how = "Reach Herbalism 450. Herbs yield 8x.", bonus = 0, yield = 8 },
+        },
+    },
+    {
+        name = "Herbalism Reach",
+        unit = "gather",
+        ticks = {
             { id = 910118, name = "Reach 75", how = "Reach Herbalism 75. Auto-gather herbs from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910119, name = "Reach 225", how = "Reach Herbalism 225. Auto-gather herbs from +6 yards.", bonus = 6 },
             { id = 910120, name = "Reach 375", how = "Reach Herbalism 375. Auto-gather herbs from +9 yards.", bonus = 9 },
@@ -239,13 +265,19 @@ local WORLD_TRACKS = {
             { id = 910040, name = "Wayfarer 5", how = "Movement speed +100% on foot, mounted and flying.", bonus = 100 },
         },
     },
-    {
-        name = "Mining",
+        {
+        name = "Mining Yield",
         unit = "gather",
         ticks = {
             { id = 910109, name = "150", how = "Reach Mining 150. Ore yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
             { id = 910110, name = "300", how = "Reach Mining 300. Ore yield 4x.", bonus = 0, yield = 4 },
             { id = 910111, name = "450", how = "Reach Mining 450. Ore yield 8x.", bonus = 0, yield = 8 },
+        },
+    },
+    {
+        name = "Mining Reach",
+        unit = "gather",
+        ticks = {
             { id = 910112, name = "Reach 75", how = "Reach Mining 75. Auto-gather ore from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910113, name = "Reach 225", how = "Reach Mining 225. Auto-gather ore from +6 yards.", bonus = 6 },
             { id = 910114, name = "Reach 375", how = "Reach Mining 375. Auto-gather ore from +9 yards.", bonus = 9 },
@@ -270,22 +302,33 @@ local WORLD_TRACKS = {
             { id = 910015, name = "10 Exalted", how = "Reach exalted with 10 factions.", bonus = 100 },
         },
     },
-    {
-        name = "Skinning",
+        {
+        name = "Skinning Yield",
         unit = "gather",
         ticks = {
             { id = 910121, name = "150", how = "Reach Skinning 150. Skins yield 2x. Stacks to 4x at 300 and 8x at 450.", bonus = 0, yield = 2 },
             { id = 910122, name = "300", how = "Reach Skinning 300. Skins yield 4x.", bonus = 0, yield = 4 },
             { id = 910123, name = "450", how = "Reach Skinning 450. Skins yield 8x.", bonus = 0, yield = 8 },
+        },
+    },
+    {
+        name = "Skinning Reach",
+        unit = "gather",
+        ticks = {
             { id = 910124, name = "Reach 75", how = "Reach Skinning 75. Auto-skin from +3 yards. Stacks to +9 yards at 375.", bonus = 3 },
             { id = 910125, name = "Reach 225", how = "Reach Skinning 225. Auto-skin from +6 yards.", bonus = 6 },
             { id = 910126, name = "Reach 375", how = "Reach Skinning 375. Auto-skin from +9 yards.", bonus = 9 },
         },
     },
+        {
+        name = "Swim",
+        ticks = {
+            { id = 910098, name = "Swim", how = "Reach level 10. Swim speed +500%.", bonus = 500 },
+        },
+    },
     {
         name = "Travel",
         ticks = {
-            { id = 910098, name = "Swim", how = "Reach level 10. Swim speed +500%.", bonus = 500 },
             { id = 910073, name = "1", how = "Use your Hearthstone 1 time. Cast time and cooldown -20%.", bonus = 20 },
             { id = 910074, name = "2", how = "Use your Hearthstone 2 times. Cast time and cooldown -20%.", bonus = 20 },
             { id = 910075, name = "3", how = "Use your Hearthstone 3 times. Cast time and cooldown -20%.", bonus = 20 },
@@ -1060,15 +1103,37 @@ end
 
 function LG2.BuildAchievementPerkRows(panel)
     local data = LG2.PerkRowData()
-    local ROW_H, TOP, COL_W, PIP_X = 21, -46, 344, 156
+    -- Rows live in a scroll child, so this no longer has to fit the frame --
+    -- splitting the gathering tracks took the panel from 36 entries to 42 and
+    -- squeezing them in would have meant unreadably thin rows.
+    local ROW_H, TOP, COL_W, PIP_X = 21, -4, 340, 150
     local perCol = math.ceil(#data / 2)
+
+    -- Guarded: an unknown template throws out of CreateFrame, and this runs
+    -- from ADDON_LOADED where that would take the whole addon down. Without a
+    -- scroll frame the rows simply parent to the panel and the tail is clipped,
+    -- which is worse than scrolling but far better than no perks tab at all.
+    local host, top = panel, -46      -- fallback clears the header itself
+    pcall(function()
+        local scroll = CreateFrame("ScrollFrame", "LivingGearPerkScroll", panel,
+            "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 0, -44)
+        scroll:SetPoint("BOTTOMRIGHT", -26, 4)
+        local child = CreateFrame("Frame", nil, scroll)
+        child:SetSize(COL_W * 2 + 16, perCol * ROW_H + 8)
+        scroll:SetScrollChild(child)
+        -- Inside the scroll child the header is already above us, so rows
+        -- start at the top rather than below it.
+        panel.scroll, host, top = scroll, child, TOP
+    end)
+
     panel.rows = {}
     for i = 1, #data do
         local col = (i <= perCol) and 0 or 1
         local slot = (i <= perCol) and i or (i - perCol)
-        local row = CreateFrame("Frame", nil, panel)
+        local row = CreateFrame("Frame", nil, host)
         row:SetSize(COL_W, ROW_H - 3)
-        row:SetPoint("TOPLEFT", 4 + col * (COL_W + 12), TOP - (slot - 1) * ROW_H)
+        row:SetPoint("TOPLEFT", 4 + col * (COL_W + 12), top - (slot - 1) * ROW_H)
         row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.name:SetPoint("LEFT", 2, 0)
         row.name:SetWidth(PIP_X - 8)

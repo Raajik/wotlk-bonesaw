@@ -1405,6 +1405,91 @@ static bool SacrificeItem(Player* player, Item* item, ChatHandler* handler)
     return true;
 }
 
+// Curator coverage: everything in bags and bank counts for a share of its BASE
+// stats immediately, instead of being drip-fed item XP a point a minute.
+//
+// Base rather than grown stats, deliberately. Worn gear banks its GROWN stats
+// through the level ramp, and grown only ever exceeds base -- so wearing and
+// levelling a piece always overtakes leaving it in the bank, and there is never
+// a reason to hoard rather than equip. BankAttunement's ratchet keeps whichever
+// side is larger, so the two paths cannot fight each other.
+//
+// Runs on login and whenever a Curator rank is bought. Walking the real
+// inventory rather than lg_item matters: an item that has never gained a level
+// has no lg_item row, and those are exactly the ones this is for.
+static void BankCollection(Player* player, uint32 pct)
+{
+    if (!player || !player->GetSession() || !pct)
+        return;
+
+    std::vector<Item*> held;
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (Item* it = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            held.push_back(it);
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (Bag* container = player->GetBagByPos(bag))
+            for (uint32 i = 0; i < container->GetBagSize(); ++i)
+                if (Item* it = container->GetItemByPos(uint8(i)))
+                    held.push_back(it);
+    for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+        if (Item* it = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            held.push_back(it);
+    for (uint8 bag = BANK_SLOT_BAG_START; bag < BANK_SLOT_BAG_END; ++bag)
+        if (Bag* container = player->GetBagByPos(bag))
+            for (uint32 i = 0; i < container->GetBagSize(); ++i)
+                if (Item* it = container->GetItemByPos(uint8(i)))
+                    held.push_back(it);
+
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    float const share = float(pct) / 100.0f;
+    uint32 banked = 0;
+
+    for (Item* it : held)
+    {
+        ItemTemplate const* proto = it ? it->GetTemplate() : nullptr;
+        if (!proto || !IsEligible(proto))
+            continue;
+
+        LgStats slice = ReadBaseStats(proto);
+        if (slice.Total() <= 0.0f)
+            continue;
+        slice.str *= share;
+        slice.agi *= share;
+        slice.sta *= share;
+        slice.intel *= share;
+        slice.spi *= share;
+        slice.armor *= share;
+
+        float existingTotal = 0.0f;
+        bool firstTime = true;
+        if (QueryResult prev = CharacterDatabase.Query(
+            "SELECT `str`, `agi`, `sta`, `intel`, `spi`, `armor` FROM `lg_absorb` "
+            "WHERE `account_id` = {} AND `item_entry` = {}", accountId, proto->ItemId))
+        {
+            firstTime = false;
+            Field* f = prev->Fetch();
+            existingTotal = f[0].Get<float>() + f[1].Get<float>() + f[2].Get<float>()
+                + f[3].Get<float>() + f[4].Get<float>() + f[5].Get<float>();
+        }
+        if (slice.Total() <= existingTotal + 0.01f)
+            continue;
+
+        CharacterDatabase.DirectExecute(
+            "REPLACE INTO `lg_absorb` (`account_id`, `item_entry`, `str`, `agi`, `sta`, "
+            "`intel`, `spi`, `armor`, `item_level`) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
+            accountId, proto->ItemId, slice.str, slice.agi, slice.sta,
+            slice.intel, slice.spi, slice.armor, 0);
+        if (firstTime)
+            ::LivingGear_SendAddonLine(player, Acore::StringFormat("ATT|{}", proto->ItemId));
+        ++banked;
+    }
+
+    if (banked)
+        LOG_INFO("module.livinggear",
+            "Living Gear: {} banked {} collection item(s) at {}% coverage.",
+            player->GetName(), banked, pct);
+}
+
 static bool HandleAttuneMessage(Player* player, std::string const& raw)
 {
     std::string msg = raw;
@@ -1978,6 +2063,15 @@ bool IsLivingGearEligibleItem(ItemTemplate const* proto)
 // entry's template up directly, so it works for Curator-tracked bag/bank/
 // armory pieces too (LivingGear_Perks.cpp TickCurator, "attune 1000 items"
 // perk -- see Bonesaw.md, 2026-08-20 attunement redesign).
+// Exported for LivingGear_Perks.cpp, which owns the Curator ranks and decides
+// the coverage percentage. The work itself needs this file's statics
+// (IsEligible, ReadBaseStats, LgStats), so it stays in the namespace and this
+// is the handle -- same shape as LivingGear_GrantItemXp below.
+void LivingGear_BankCollection(Player* player, uint32 pct)
+{
+    LivingGear::BankCollection(player, pct);
+}
+
 void LivingGear_GrantItemXp(Player* player, uint32 itemGuid, uint32 xp)
 {
     if (!player)
