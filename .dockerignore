@@ -38,6 +38,11 @@
 /doc/
 /bin/
 
+# 252MB image export left at the repo root on 2026-08-18. /tools/ above already
+# covers its sibling ws-layer.tar; this one sits outside it and was still being
+# shipped to the daemon on every build. No COPY or bind mount references it.
+/ws-image.tar
+
 # DO NOT exclude /.git/ -- tried on 2026-08-24 and the build fails immediately:
 #
 #   ERROR: failed to calculate checksum of ref ...: "/.git": not found
