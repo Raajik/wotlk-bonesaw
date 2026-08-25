@@ -55,13 +55,26 @@ CREATE TABLE IF NOT EXISTS `lg_account_perk_purchase` (
 -- probes information_schema before reading the column (LivingGear.cpp:975,
 -- the ui_scale pattern), so a worldserver running ahead of this migration
 -- degrades to "no cooldown" instead of throwing.
-ALTER TABLE `lg_account_meta` ADD COLUMN `last_respec` INT UNSIGNED NOT NULL DEFAULT 0;
+-- Guarded rather than a bare ALTER. A file under pending_db_* is re-executed
+-- in full whenever its contents change, and MySQL 8 has no
+-- ADD COLUMN IF NOT EXISTS -- so editing this file to add a perk rank made the
+-- second run die on "Duplicate column name 'last_respec'", which aborted the
+-- rest of the file AND stopped the updater before it reached the world DB.
+SET @c := (SELECT COUNT(*) FROM `information_schema`.`COLUMNS` WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_meta' AND `COLUMN_NAME` = 'last_respec');
+SET @s := IF(@c = 0, 'ALTER TABLE `lg_account_meta` ADD COLUMN `last_respec` INT UNSIGNED NOT NULL DEFAULT 0', 'DO 0');
+PREPARE stmt FROM @s;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- Price-epoch stamp. When LivingGear.Perks.CostEpoch is raised past the value
 -- stored here, the account is fully refunded on its next login and re-spends
 -- at the new prices. This is what makes rebalancing a rank safe: without it,
 -- accounts keep whatever price they bought in at forever.
-ALTER TABLE `lg_account_meta` ADD COLUMN `perk_epoch` INT UNSIGNED NOT NULL DEFAULT 0;
+SET @c := (SELECT COUNT(*) FROM `information_schema`.`COLUMNS` WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_meta' AND `COLUMN_NAME` = 'perk_epoch');
+SET @s := IF(@c = 0, 'ALTER TABLE `lg_account_meta` ADD COLUMN `perk_epoch` INT UNSIGNED NOT NULL DEFAULT 0', 'DO 0');
+PREPARE stmt FROM @s;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- Armory, Solo Queue, Pull Radius, Track Ore and Track Herbs are absent on
 -- purpose: CatchUpProfession grants all five unconditionally at every login
