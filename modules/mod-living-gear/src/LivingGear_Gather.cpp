@@ -72,6 +72,10 @@ uint32 const SPELL_FISH_POOLS = 910044;
 // SPELL_FISH_BITE_SPEED, because cast time is set in OnSpellPrepare and that
 // file owns the spell hook. Deliberately not declared twice.
 float const FISH_POOL_RANGE = 25.0f;
+// Sanity cap on how many casts one pool can be drained for. The templates top
+// out at 8 today, but a bad data row should not turn one sweep tick into an
+// unbounded loot loop.
+uint32 const FISH_POOL_MAX_OPENS = 12;
 // How long to wait after a catch before casting again. Long enough to read as
 // a person deciding to cast, short enough not to feel like a hang.
 uint32 const FISH_RECAST_MS = 1200;
@@ -666,20 +670,64 @@ void TryAutolootChest(Player* player, GameObject* go, bool& handled)
     }, std::chrono::milliseconds(1));
 }
 
+// Auto-loot a fishing pool the way actually fishing it would, and take all of
+// it rather than one cast.
+//
+// This used to call GetFishLoot(), which fills from fishing_loot_template keyed
+// by ZONE -- the open-water table, 218 of them. A pool's real contents come
+// from its own gameobject_loot_template entry via GetLootId() (39 of them), so
+// auto-looting an Oily Blackmouth School handed out generic zone fish and never
+// touched the blackmouth. It also filled once and then deactivated the pool,
+// throwing away the other 2-5 casts it was holding. Reported as "4 fish instead
+// of presumably 16".
+//
+// Filling through LootTemplates_Gameobject is also what lets the yield perks
+// reach it: YieldForStore claims fishing holes by GO type before the gather-lock
+// lookup that a pool (lockId 0) could never satisfy.
 void TryGatherFishHole(Player* player, GameObject* go)
 {
     if (!player || !go || !go->isSpawned() || go->GetGoType() != GAMEOBJECT_TYPE_FISHINGHOLE)
         return;
     if (!player->GetSkillValue(SKILL_FISHING))
         return;
+    GameObjectTemplate const* info = go->GetGOInfo();
+    uint32 const lootId = info ? info->GetLootId() : 0;
+    if (!lootId)
+        return;
+
+    // Same roll the core uses on respawn, except min/max are the wrong way
+    // round on School of Fish (10 and 0) so they cannot be trusted in order.
+    uint32 lo = info->fishinghole.minSuccessOpens;
+    uint32 hi = info->fishinghole.maxSuccessOpens;
+    if (hi < lo)
+        std::swap(lo, hi);
+    uint32 opens = lo == hi ? lo : urand(lo, hi);
+    if (!opens)
+        opens = 1;
+    if (opens > FISH_POOL_MAX_OPENS)
+        opens = FISH_POOL_MAX_OPENS;
+
     Loot* loot = &go->loot;
-    if (go->getLootState() == GO_READY || loot->empty())
+    go->SetLootState(GO_ACTIVATED, player);
+
+    uint32 taken = 0;
+    for (uint32 i = 0; i < opens; ++i)
     {
-        go->GetFishLoot(loot, player, false);
-        go->SetLootState(GO_ACTIVATED, player);
+        loot->clear();
+        loot->FillLoot(lootId, LootTemplates_Gameobject, player, true, false,
+            go->GetLootMode(), go);
+        AutoStoreLoot(player, loot);
+        // Bags are full: stop rather than emptying the rest of the pool into
+        // nowhere, and leave it standing so the player can come back.
+        if (!loot->isLooted())
+            break;
+        ++taken;
+        // One skill check per cast drained, so using the perk is not worse for
+        // levelling Fishing than casting that many times by hand.
+        player->UpdateFishingSkill();
     }
-    AutoStoreLoot(player, loot);
-    if (loot->isLooted())
+
+    if (taken >= opens)
         go->SetLootState(GO_JUST_DEACTIVATED);
 }
 

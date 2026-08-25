@@ -1,0 +1,35 @@
+-- Equipment no longer soulbinds.
+--
+-- The design intent was that soulbound gear does not exist on this realm, but
+-- nothing had ever implemented it: no core patch, no client patch, no config.
+-- 20,656 templates were still bind-on-pickup and 6,936 bind-on-equip, so items
+-- bound exactly as they do on retail and the client's "this will bind to you"
+-- prompt was warning about something that genuinely happened.
+--
+-- Bonding is server-authoritative and goes to the client in the item query
+-- response (ItemHandler.cpp:507, `queryData << pProto->Bonding`), so clearing
+-- it here removes both the binding itself AND the confirmation prompt. No
+-- client patch is needed for the popup to stop appearing. Players may need one
+-- relog before their local item cache catches up.
+--
+-- Deliberately narrow:
+--
+--   bonding 1 (bind on pickup) and 2 (bind on equip) are cleared -- this is the
+--   gear the rule is about.
+--
+--   bonding 3 (bind on use) is left alone. Only 47 rows, and they are mostly
+--   containers and consumables whose binding is part of how they work.
+--
+--   bonding 4 (quest item) is left alone. 3,954 rows, and the reagent vault
+--   already keys off quest status -- making quest items freely tradeable has
+--   knock-on effects well beyond "gear should not bind".
+--
+-- Naturally idempotent: re-running matches nothing, which matters because a
+-- file under pending_db_* is re-executed in full whenever it is edited.
+--
+-- NOT covered here: items already in players' bags. item_instance carries its
+-- own soulbound flag once set, so the 34,592 existing rows stay bound. Clearing
+-- those un-binds gear across every character on the realm at once and is a
+-- separate decision with a much larger blast radius.
+
+UPDATE `item_template` SET `bonding` = 0 WHERE `bonding` IN (1, 2);

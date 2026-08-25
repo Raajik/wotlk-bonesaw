@@ -5581,55 +5581,18 @@ if origCraftReagent and GetCraftReagentItemLink then
     end
 end
 
--- Auto-confirming the soulbind prompt has to happen a frame LATER, not inside
--- OnShow.
+-- The soulbind auto-confirm used to live here.
 --
--- OnShow runs from dialog:Show(), partway through StaticPopup_Show, before the
--- dialog's .data has been filled in. Clicking Button1 there reaches OnAccept
--- while self.data is still nil, and EquipPendingItem(nil) throws
--- "Usage: EquipPendingItem(index)" -- reported 2026-08-24 equipping a green.
--- Deferring one frame means StaticPopup_Show has returned and .data is set.
+-- It is gone because the prompt is: rev_living_gear_no_soulbind.sql clears
+-- bonding 1 and 2 from item_template, and bonding is sent to the client in the
+-- item query response, so the client stops asking. Equipment does not bind at
+-- all any more.
 --
--- Wrapped in do...end so the two upvalues do not sit in the main chunk, which
--- build_patch.py caps at Lua 5.1's 200 locals and is already at 177.
-local AutoAcceptBindPopup
-do
-    local pending = nil
-    local ticker = CreateFrame("Frame")
-    ticker:Hide()
-    ticker:SetScript("OnUpdate", function(self)
-        self:Hide()
-        local dialog = pending
-        pending = nil
-        -- Re-check: a frame is long enough for the dialog to have been
-        -- dismissed, or recycled onto an entirely different prompt.
-        if not dialog or not dialog:IsShown() then
-            return
-        end
-        local btn = _G[dialog:GetName() .. "Button1"]
-        if btn and btn:IsShown() and btn:IsEnabled() == 1 then
-            btn:Click()
-        end
-    end)
-
-    AutoAcceptBindPopup = function(which)
-        local info = StaticPopupDialogs and StaticPopupDialogs[which]
-        if not info then
-            return
-        end
-        local origOnShow = info.OnShow
-        info.OnShow = function(self, ...)
-            if origOnShow then
-                origOnShow(self, ...)
-            end
-            pending = self
-            ticker:Show()
-        end
-    end
-end
-AutoAcceptBindPopup("EQUIP_BIND")
-AutoAcceptBindPopup("EQUIP_BIND_TRADEABLE")
-AutoAcceptBindPopup("AUTOEQUIP_BIND")
+-- Retiring it also retires the bug class it kept producing. Clicking a
+-- StaticPopup's button from script raced the dialog's own setup: OnShow runs
+-- partway through StaticPopup_Show, before .data is filled in, so OnAccept
+-- reached EquipPendingItem(nil) and threw "Usage: EquipPendingItem(index)".
+-- That was worked around twice. Not showing the dialog at all is the fix.
 
 function LG2.TryAutoAccept()
     if IsShiftKeyDown and IsShiftKeyDown() then
@@ -5640,28 +5603,6 @@ function LG2.TryAutoAccept()
     end
     if AcceptQuest then
         AcceptQuest()
-    end
-end
-
-local origPopupShow = StaticPopup_Show
-if origPopupShow then
-    StaticPopup_Show = function(which, text1, text2, data, inserted)
-        if which == "EQUIP_BIND" or which == "EQUIP_BIND_TRADEABLE" or which == "AUTOEQUIP_BIND" then
-            local dialog = origPopupShow(which, text1, text2, data, inserted)
-            -- AutoAcceptBindPopup's OnShow hook already clicks Button1 once
-            -- the dialog is actually shown; clicking it again here double-
-            -- fires OnAccept after the dialog has been hidden and its
-            -- .data cleared, which is what threw EquipPendingItem's
-            -- "Usage: EquipPendingItem(index)" error. Only handle the case
-            -- where Blizzard couldn't show a dialog at all.
-            -- Only when there is a real index to equip. "data or 0" used to
-            -- send 0 through on a nil, which is not a pending-item slot.
-            if not dialog and EquipPendingItem and type(data) == "number" then
-                EquipPendingItem(data)
-            end
-            return dialog
-        end
-        return origPopupShow(which, text1, text2, data, inserted)
     end
 end
 
@@ -5808,9 +5749,6 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
         LG2.HookIconOverlays()
         pcall(HookQuestTracker)
         pcall(HookJump)
-        AutoAcceptBindPopup("EQUIP_BIND")
-        AutoAcceptBindPopup("EQUIP_BIND_TRADEABLE")
-        AutoAcceptBindPopup("AUTOEQUIP_BIND")
     elseif event == "PLAYER_ENTERING_WORLD" then
         RequestSync()
         ev._reqRetry = GetTime() + 2
