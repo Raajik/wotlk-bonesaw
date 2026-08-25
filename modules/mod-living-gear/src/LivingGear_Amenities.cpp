@@ -506,21 +506,34 @@ void CheckWayfarerPerks(Player* player)
 {
     if (!player || !player->GetSession())
         return;
+    // Cumulative: earning the achievement for a tier grants every tier below it
+    // too, so the track is never sparse.
+    //
+    // The tiers are keyed on unrelated achievements -- exploring your home zone
+    // for rank 1, Outland or Northrend for rank 3 -- and nothing makes a player
+    // earn them in order. Granting only the matching tier left holes: rank 3
+    // owned, ranks 1 and 2 not, and because the speed is the highest cap owned
+    // rather than a count, buying those lower ranks afterwards would have cost
+    // points and granted no speed at all.
     bool gained = false;
-    for (WayfarerTier const& tier : WAYFARER_TIERS)
+    uint32 highest = 0;
+    for (uint32 i = 0; i < WAYFARER_TIERS.size(); ++i)
+        for (uint32 achievement : WAYFARER_TIERS[i].anyOf)
+            if (player->HasAchieved(achievement))
+            {
+                highest = i + 1;
+                break;
+            }
+
+    for (uint32 i = 0; i < highest; ++i)
     {
+        WayfarerTier const& tier = WAYFARER_TIERS[i];
         if (HasPerk(player, tier.spellId))
             continue;
-        for (uint32 achievement : tier.anyOf)
-        {
-            if (!player->HasAchieved(achievement))
-                continue;
-            std::string const msg = Acore::StringFormat(
-                "|cff66ccff[Account Perks]|r {} unlocked!", tier.label);
-            UnlockPerk(player, tier.spellId, msg.c_str());
-            gained = true;
-            break;
-        }
+        std::string const msg = Acore::StringFormat(
+            "|cff66ccff[Account Perks]|r {} unlocked!", tier.label);
+        UnlockPerk(player, tier.spellId, msg.c_str());
+        gained = true;
     }
     if (gained)
     {
