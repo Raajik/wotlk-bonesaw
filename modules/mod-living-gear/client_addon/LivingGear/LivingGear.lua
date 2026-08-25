@@ -1012,6 +1012,136 @@ function LG2.PerkBuyable(id)
     return avail >= cost
 end
 
+-- One entry per row of the Perks tab: every progression track, then every
+-- standalone unlock. Both shapes carry id/name/how, so they render the same.
+function LG2.PerkRowData()
+    local out = {}
+    for t = 1, #WORLD_TRACKS do
+        table.insert(out, { label = WORLD_TRACKS[t].name, ticks = WORLD_TRACKS[t].ticks })
+    end
+    for i = 1, #WORLD_UNLOCKS do
+        table.insert(out, { label = WORLD_UNLOCKS[i].name, ticks = { WORLD_UNLOCKS[i] } })
+    end
+    return out
+end
+
+-- Colour and tooltip for one pip. Four states, and the fourth is the one that
+-- matters: a perk with no price is not for sale rather than unaffordable, and
+-- drawing those two the same way would be a lie.
+function LG2.StylePerkPip(pip, info)
+    local cost = info and LG2.PerkCost(info.id) or nil
+    local avail = LG2.PerkPoints()
+    if not info then
+        pip.bg:SetTexture(0.07, 0.07, 0.08)
+        pip.tip = nil
+    elseif PerkKnown(info.id) then
+        pip.bg:SetTexture(0.28, 0.62, 0.32)
+        pip.tip = info.name .. " - " .. info.how .. "|n|cff7fdc7fOwned.|r"
+    elseif LG2.PerkBuyable(info.id) then
+        pip.bg:SetTexture(0.85, 0.70, 0.25)
+        pip.tip = info.name .. " - " .. info.how
+            .. "|n|cffffd966Costs " .. cost .. " points. Click to unlock.|r"
+    elseif cost then
+        pip.bg:SetTexture(0.10, 0.10, 0.12)
+        if not LG2.PerkPrereqOk(info.id) then
+            pip.tip = info.name .. " - " .. info.how
+                .. "|n|cff999999Unlock the previous rank first.|r"
+        else
+            pip.tip = info.name .. " - " .. info.how
+                .. "|n|cff999999Costs " .. cost .. " points - you have " .. avail .. ".|r"
+        end
+    else
+        pip.bg:SetTexture(0.16, 0.18, 0.26)
+        pip.tip = info.name .. " - " .. info.how .. "|n|cff8a9bc4Earned by playing.|r"
+    end
+end
+
+function LG2.BuildAchievementPerkRows(panel)
+    local data = LG2.PerkRowData()
+    local ROW_H, TOP, COL_W, PIP_X = 21, -46, 344, 156
+    local perCol = math.ceil(#data / 2)
+    panel.rows = {}
+    for i = 1, #data do
+        local col = (i <= perCol) and 0 or 1
+        local slot = (i <= perCol) and i or (i - perCol)
+        local row = CreateFrame("Frame", nil, panel)
+        row:SetSize(COL_W, ROW_H - 3)
+        row:SetPoint("TOPLEFT", 4 + col * (COL_W + 12), TOP - (slot - 1) * ROW_H)
+        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.name:SetPoint("LEFT", 2, 0)
+        row.name:SetWidth(PIP_X - 8)
+        row.name:SetJustifyH("LEFT")
+        row.cost = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        row.cost:SetPoint("RIGHT", -2, 0)
+        row.entry = data[i]
+        row.pips = {}
+        for k = 1, #data[i].ticks do
+            local pip = CreateFrame("Button", nil, row)
+            pip:SetSize(13, 11)
+            pip:SetPoint("LEFT", PIP_X + (k - 1) * 15, 0)
+            pip.bg = pip:CreateTexture(nil, "ARTWORK")
+            pip.bg:SetAllPoints(pip)
+            pip.info = data[i].ticks[k]
+            pip:SetScript("OnClick", function(self)
+                if self.info and LG2.PerkBuyable(self.info.id) then
+                    SendLine("PERKBUY|" .. tostring(self.info.id))
+                end
+            end)
+            pip:SetScript("OnEnter", function(self)
+                if not self.tip then
+                    return
+                end
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText(self.tip, 1, 1, 1, 1, true)
+                GameTooltip:Show()
+            end)
+            pip:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
+            row.pips[k] = pip
+        end
+        panel.rows[i] = row
+    end
+end
+
+function LG2.RefreshAchievementPerks()
+    local panel = LG2.achPanel
+    if not panel or not panel.rows then
+        return
+    end
+    local avail, earned, spent = LG2.PerkPoints()
+    panel.points:SetText(string.format(
+        "|cffffd966%d|r to spend   |cff999999%d earned, %d spent|r", avail, earned, spent))
+    if spent > 0 then
+        panel.respec:Show()
+    else
+        panel.respec:Hide()
+    end
+    for i = 1, #panel.rows do
+        local row = panel.rows[i]
+        local got, total, nextId = 0, #row.entry.ticks, nil
+        for k = 1, total do
+            LG2.StylePerkPip(row.pips[k], row.entry.ticks[k])
+            if PerkKnown(row.entry.ticks[k].id) then
+                got = got + 1
+            elseif not nextId then
+                nextId = row.entry.ticks[k].id
+            end
+        end
+        row.name:SetText(row.entry.label)
+        local cost = nextId and LG2.PerkCost(nextId) or nil
+        if not nextId then
+            row.cost:SetText("|cff4fd14fdone|r")
+        elseif cost and LG2.PerkBuyable(nextId) then
+            row.cost:SetText("|cffffd966" .. cost .. "|r")
+        elseif cost then
+            row.cost:SetText("|cff777777" .. cost .. "|r")
+        else
+            row.cost:SetText("|cff5a6a8a" .. got .. "/" .. total .. "|r")
+        end
+    end
+end
+
 function LG2.NextLocked(ticks)
     for i = 1, #ticks do
         if not PerkKnown(ticks[i].id) then
@@ -4519,6 +4649,7 @@ function LG2.HandleAddon(prefix, message)
     local p = LG2.SplitPipe(message)
     if p[1] == "PK" then
         db.perks[tonumber(p[2]) or 0] = tonumber(p[3]) or 0
+        LG2.RefreshAchievementPerks()
         return
     end
     if p[1] == "PKPTS" then
@@ -4528,6 +4659,7 @@ function LG2.HandleAddon(prefix, message)
             spent = tonumber(p[4]) or 0,
         }
         LayoutRows()
+        LG2.RefreshAchievementPerks()
         return
     end
     if p[1] == "PKCOST" then
@@ -4543,6 +4675,7 @@ function LG2.HandleAddon(prefix, message)
             end
         end
         LayoutRows()
+        LG2.RefreshAchievementPerks()
         return
     end
     if p[1] == "PKALL" then
@@ -6380,24 +6513,123 @@ achHook:SetScript("OnEvent", function(self, _, name)
         return
     end
     self:UnregisterEvent("ADDON_LOADED")
-    local btn = CreateFrame("Button", nil, AchievementFrame)
-    btn:SetSize(104, 20)
-    btn:SetPoint("TOPRIGHT", AchievementFrame, "TOPRIGHT", -62, -18)
-    local bg = btn:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints(btn)
-    bg:SetTexture(0.16, 0.16, 0.16)
-    local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    label:SetPoint("CENTER", 0, 0)
-    label:SetText("Account Perks")
-    btn:SetScript("OnClick", function()
-        db.tab = "world"
-        LG2.OpenWindow()
+
+    -- Everything below is function-scoped on purpose. The main chunk is at
+    -- 177 of Lua 5.1's hard limit of 200 locals and build_patch.py checks it.
+    local PANEL_INSET = 20
+
+    -- Blizzard's own content, hidden while the Perks tab is up and restored
+    -- when either of its tabs is clicked. Named rather than walked because the
+    -- frame is reskinned on some clients and a blind child sweep would also
+    -- hide whatever the reskin added.
+    local BLIZZ = {
+        "AchievementFrameCategories", "AchievementFrameCategoriesContainer",
+        "AchievementFrameAchievements", "AchievementFrameAchievementsContainer",
+        "AchievementFrameSummary", "AchievementFrameStats",
+        "AchievementFrameStatsContainer", "AchievementFrameStatsBG",
+        "AchievementFrameWaterMark", "AchievementFrameSummaryAchievementsHeaderHeader",
+    }
+    local hidden = {}
+
+    local function HideBlizzContent()
+        for i = 1, #BLIZZ do
+            local f = _G[BLIZZ[i]]
+            if f and f:IsShown() then
+                hidden[BLIZZ[i]] = true
+                f:Hide()
+            end
+        end
+    end
+
+    local function RestoreBlizzContent()
+        for name in pairs(hidden) do
+            local f = _G[name]
+            if f then
+                f:Show()
+            end
+        end
+        hidden = {}
+    end
+
+    local panel = CreateFrame("Frame", nil, AchievementFrame)
+    panel:SetPoint("TOPLEFT", AchievementFrame, "TOPLEFT", PANEL_INSET, -PANEL_INSET - 22)
+    panel:SetPoint("BOTTOMRIGHT", AchievementFrame, "BOTTOMRIGHT", -PANEL_INSET - 2, PANEL_INSET)
+    panel:Hide()
+    LG2.achPanel = panel
+
+    panel.points = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    panel.points:SetPoint("TOPLEFT", 4, -2)
+
+    panel.hint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    panel.hint:SetPoint("TOPLEFT", 4, -24)
+    panel.hint:SetText("Gold is affordable - click to unlock. Blue is earned by playing, not bought.")
+
+    panel.respec = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    panel.respec:SetSize(96, 20)
+    panel.respec:SetPoint("TOPRIGHT", -2, -2)
+    panel.respec:SetText("Refund all")
+    panel.respec:SetScript("OnClick", function()
+        StaticPopup_Show("LG_PERK_RESPEC")
     end)
-    btn:SetScript("OnEnter", function()
-        bg:SetTexture(0.24, 0.24, 0.24)
+
+    LG2.BuildAchievementPerkRows(panel)
+
+    -- Guarded: CreateFrame throws outright on an unknown template, and this
+    -- runs inside ADDON_LOADED, so an unexpected build would take the entire
+    -- addon down rather than just losing a tab. Falls back to the character
+    -- sheet's tab template, which has existed since vanilla.
+    local tab
+    local ok = pcall(function()
+        tab = CreateFrame("Button", "AchievementFrameTab3", AchievementFrame,
+            "AchievementFrameTabButtonTemplate")
     end)
-    btn:SetScript("OnLeave", function()
-        bg:SetTexture(0.16, 0.16, 0.16)
+    if not ok or not tab then
+        ok = pcall(function()
+            tab = CreateFrame("Button", "AchievementFrameTab3", AchievementFrame,
+                "CharacterFrameTabButtonTemplate")
+        end)
+    end
+    if not ok or not tab then
+        return
+    end
+    tab:SetID(3)
+    tab:SetText("Perks")
+    tab:SetPoint("LEFT", AchievementFrameTab2, "RIGHT", -8, 0)
+    if PanelTemplates_TabResize then
+        pcall(PanelTemplates_TabResize, tab, 0)
+    end
+    if PanelTemplates_SetNumTabs then
+        pcall(PanelTemplates_SetNumTabs, AchievementFrame, 3)
+    end
+
+    tab:SetScript("OnClick", function()
+        PlaySound("igCharacterInfoTab")
+        if PanelTemplates_SetTab then
+            pcall(PanelTemplates_SetTab, AchievementFrame, 3)
+        end
+        HideBlizzContent()
+        panel:Show()
+        LG2.RefreshAchievementPerks()
+        SendLine("PERKPTS")
+    end)
+
+    -- HookScript rather than hooksecurefunc on AchievementFrameTab_OnClick:
+    -- that global takes different arguments across builds, and this does not
+    -- care. Blizzard's own handler re-shows its content; this just gets our
+    -- panel out of the way and undoes the specific frames we hid.
+    for i = 1, 2 do
+        local other = _G["AchievementFrameTab" .. i]
+        if other then
+            other:HookScript("OnClick", function()
+                panel:Hide()
+                RestoreBlizzContent()
+            end)
+        end
+    end
+
+    AchievementFrame:HookScript("OnHide", function()
+        panel:Hide()
+        RestoreBlizzContent()
     end)
 end)
 
