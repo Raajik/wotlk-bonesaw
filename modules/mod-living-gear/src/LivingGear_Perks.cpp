@@ -5,6 +5,7 @@
  * solo queue, instant/uniform mount.
  */
 
+#include "AchievementMgr.h"
 #include "AllMapScript.h"
 #include "AllSpellScript.h"
 #include "CellImpl.h"
@@ -843,6 +844,50 @@ void SyncAchievementToAccount(Player* player, AchievementEntry const* entry)
         "SELECT `guid`, {}, {} FROM `characters` WHERE `account` = {} AND `guid` <> {}",
         entry->ID, uint32(GameTime::GetGameTime().count()),
         player->GetSession()->GetAccountId(), player->GetGUID().GetCounter());
+}
+
+// Achievement titles, on every character on the account.
+//
+// SyncAchievementToAccount deliberately records the completion and nothing
+// else, because the core's reward path also mails the item and five alts would
+// mean five Albino Drakes. Titles carry no such hazard -- they are a
+// per-character bitmask with nothing to duplicate -- so they are granted here
+// instead, at login, over whatever the sync has already recorded.
+//
+// Runs over the completed set rather than reacting to the sync, so a character
+// created long after the achievement was earned still picks the title up.
+void GrantAchievementTitles(Player* player)
+{
+    if (!player)
+        return;
+    AchievementMgr* mgr = player->GetAchievementMgr();
+    if (!mgr)
+        return;
+    uint32 granted = 0;
+    for (auto const& completed : mgr->GetCompletedAchievements())
+    {
+        AchievementEntry const* achievement = sAchievementStore.LookupEntry(completed.first);
+        if (!achievement)
+            continue;
+        AchievementReward const* reward = sAchievementMgr->GetAchievementReward(achievement);
+        if (!reward)
+            continue;
+        // Only achievement 1793 indexes its titles by gender; every other one
+        // is by faction. Same rule the core's own reward path applies.
+        uint32 const titleId = reward->titleId[achievement->ID == 1793
+            ? player->getGender() : uint8(player->GetTeamId())];
+        if (!titleId)
+            continue;
+        CharTitlesEntry const* title = sCharTitlesStore.LookupEntry(titleId);
+        if (!title || player->HasTitle(title))
+            continue;
+        player->SetTitle(title);
+        ++granted;
+    }
+    if (granted)
+        LOG_INFO("module.livinggear",
+            "Living Gear: {} was granted {} account achievement title(s).",
+            player->GetName(), granted);
 }
 
 void SaveLastRespec(uint32 accountId, uint32 when)
@@ -2729,6 +2774,9 @@ public:
         // is what tells the client what is actually owned afterwards.
         ApplyPerkEpoch(player);
         SendPerkSync(player);   // sends PKCOST + PKPTS too
+        // After the sync rows are in: titles for achievements this character
+        // inherited from the account rather than earned itself.
+        GrantAchievementTitles(player);
         CatchUpProfession(player);
         if (HasPerk(player, SPELL_SWIM))
             player->CastSpell(player, SPELL_SWIM, true);
