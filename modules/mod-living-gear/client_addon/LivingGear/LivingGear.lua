@@ -4700,11 +4700,12 @@ function LG2.IsAccountPerksName(name)
         return false
     end
     local want = GetSpellInfo(ACCOUNT_PERKS_ID)
-    if want and name == want then
-        return true
-    end
-    return string.find(name, "Account Perks", 1, true)
-        or string.find(name, "Windblown", 1, true)
+    -- Report #95: this used to also accept any name CONTAINING "Account
+    -- Perks" or "Windblown", so anything casting a similarly-named spell --
+    -- including whatever path fires on every kill -- popped the window. Only
+    -- an exact match on the real perk spell's current name opens it now; a
+    -- legacy "Windblown" name from before the rename no longer qualifies.
+    return want ~= nil and name == want
 end
 
 local lastCastOpen = 0
