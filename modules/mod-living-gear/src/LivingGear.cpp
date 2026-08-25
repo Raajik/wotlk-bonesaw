@@ -20,6 +20,7 @@
 #include "CommandScript.h"
 #include "Config.h"
 #include "Creature.h"
+#include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "Item.h"
 #include "ItemTemplate.h"
@@ -160,6 +161,25 @@ LgConfig g_cfg;
 // The window is FrameXML UI in patch-enUS-4.MPQ (not a user-installed addon).
 uint32 const SPELL_WINDBLOWN = 910001;
 
+// Secondary stats. Items carry these far more often than primaries at low
+// level -- a quest green is much more likely to have crit than strength -- and
+// for a long time this module silently dropped every one of them, so those
+// items levelled up and gained nothing but armor (report #84).
+enum LgSecondaryStat
+{
+    LG_SEC_CRIT = 0,
+    LG_SEC_HIT,
+    LG_SEC_HASTE,
+    LG_SEC_EXPERTISE,
+    LG_SEC_ARMOR_PEN,
+    LG_SEC_RESILIENCE,
+    LG_SEC_ATTACK_POWER,
+    LG_SEC_SPELL_POWER,
+    LG_SEC_DMG_MIN,
+    LG_SEC_DMG_MAX,
+    LG_SEC_COUNT
+};
+
 struct LgStats
 {
     float str = 0.0f;
@@ -169,6 +189,15 @@ struct LgStats
     float spi = 0.0f;
     float armor = 0.0f;
 
+    // Everything that is not a primary stat or armor. Kept in an array rather
+    // than as ten more named fields because these are only ever read and
+    // written as a group -- and because the six named fields above are the
+    // shape of the lg_absorb columns and the addon protocol, which this
+    // deliberately does not disturb.
+    std::array<float, LG_SEC_COUNT> sec = {};
+
+    // Primaries and armor only, on purpose: this decides whether an absorb row
+    // is worth storing, and absorb still banks only the six columns it has.
     float Total() const
     {
         return str + agi + sta + intel + spi + armor;
@@ -182,6 +211,8 @@ struct LgStats
         intel += o.intel;
         spi += o.spi;
         armor += o.armor;
+        for (int i = 0; i < LG_SEC_COUNT; ++i)
+            sec[i] += o.sec[i];
         return *this;
     }
 };
@@ -224,6 +255,7 @@ static Stats const PRIMARY_STATS[5] =
 };
 
 static std::unordered_map<uint32, std::array<float, 6>> g_applied;
+static std::unordered_map<uint32, std::array<float, LG_SEC_COUNT>> g_appliedSec;
 
 static bool IsEligible(ItemTemplate const* proto)
 {
@@ -405,15 +437,132 @@ static LgStats ReadBaseStats(ItemTemplate const* proto)
         case ITEM_MOD_STAMINA:   s.sta += static_cast<float>(v); break;
         case ITEM_MOD_INTELLECT: s.intel += static_cast<float>(v); break;
         case ITEM_MOD_SPIRIT:    s.spi += static_cast<float>(v); break;
+        case ITEM_MOD_CRIT_RATING:
+        case ITEM_MOD_CRIT_MELEE_RATING:
+        case ITEM_MOD_CRIT_RANGED_RATING:
+        case ITEM_MOD_CRIT_SPELL_RATING:
+            s.sec[LG_SEC_CRIT] += static_cast<float>(v); break;
+        case ITEM_MOD_HIT_RATING:
+        case ITEM_MOD_HIT_MELEE_RATING:
+        case ITEM_MOD_HIT_RANGED_RATING:
+        case ITEM_MOD_HIT_SPELL_RATING:
+            s.sec[LG_SEC_HIT] += static_cast<float>(v); break;
+        case ITEM_MOD_HASTE_RATING:
+        case ITEM_MOD_HASTE_MELEE_RATING:
+        case ITEM_MOD_HASTE_RANGED_RATING:
+        case ITEM_MOD_HASTE_SPELL_RATING:
+            s.sec[LG_SEC_HASTE] += static_cast<float>(v); break;
+        case ITEM_MOD_EXPERTISE_RATING:
+            s.sec[LG_SEC_EXPERTISE] += static_cast<float>(v); break;
+        case ITEM_MOD_ARMOR_PENETRATION_RATING:
+            s.sec[LG_SEC_ARMOR_PEN] += static_cast<float>(v); break;
+        case ITEM_MOD_RESILIENCE_RATING:
+            s.sec[LG_SEC_RESILIENCE] += static_cast<float>(v); break;
+        case ITEM_MOD_ATTACK_POWER:
+            s.sec[LG_SEC_ATTACK_POWER] += static_cast<float>(v); break;
+        case ITEM_MOD_SPELL_POWER:
+        case ITEM_MOD_SPELL_DAMAGE_DONE:
+        case ITEM_MOD_SPELL_HEALING_DONE:
+            s.sec[LG_SEC_SPELL_POWER] += static_cast<float>(v); break;
         default: break;
+        }
+    }
+
+    // Weapon damage, so a levelling weapon keeps hitting harder instead of
+    // becoming a bundle of stats bolted to a stick that swings for its original
+    // numbers forever.
+    s.sec[LG_SEC_DMG_MIN] = float(proto->Damage[0].DamageMin);
+    s.sec[LG_SEC_DMG_MAX] = float(proto->Damage[0].DamageMax);
+
+    return s;
+}
+
+// Stats from a random suffix ("of the Vision"), which live on the item instance
+// rather than the template. Without this an item whose entire stat line comes
+// from its suffix reads as having no stats at all, levels up, and gains nothing
+// but armor -- exactly what report #84 described for Vigorous Handguards, whose
+// template genuinely carries zero stats.
+static LgStats ReadSuffixStats(Item const* item)
+{
+    LgStats s;
+    if (!item)
+        return s;
+
+    int32 const randomId = item->GetItemRandomPropertyId();
+    if (randomId >= 0)
+        return s;
+
+    ItemRandomSuffixEntry const* suffix = sItemRandomSuffixStore.LookupEntry(uint32(-randomId));
+    if (!suffix)
+        return s;
+
+    uint32 const factor = item->GetItemSuffixFactor();
+    for (uint32 i = 0; i < MAX_ITEM_ENCHANTMENT_EFFECTS; ++i)
+    {
+        if (!suffix->Enchantment[i])
+            continue;
+
+        SpellItemEnchantmentEntry const* ench = sSpellItemEnchantmentStore.LookupEntry(suffix->Enchantment[i]);
+        if (!ench)
+            continue;
+
+        // Suffix stat values are stored as a ten-thousandth allocation of the
+        // item's own suffix factor, which is how one suffix scales across every
+        // item level it can roll on.
+        int32 const amount = int32((suffix->AllocationPct[i] * factor) / 10000);
+        if (amount <= 0)
+            continue;
+
+        for (uint32 k = 0; k < MAX_SPELL_ITEM_ENCHANTMENT_EFFECTS; ++k)
+        {
+            if (ench->type[k] != ITEM_ENCHANTMENT_TYPE_STAT)
+                continue;
+
+            switch (ench->spellid[k])
+            {
+            case ITEM_MOD_STRENGTH:  s.str += float(amount); break;
+            case ITEM_MOD_AGILITY:   s.agi += float(amount); break;
+            case ITEM_MOD_STAMINA:   s.sta += float(amount); break;
+            case ITEM_MOD_INTELLECT: s.intel += float(amount); break;
+            case ITEM_MOD_SPIRIT:    s.spi += float(amount); break;
+            case ITEM_MOD_CRIT_RATING:
+            case ITEM_MOD_CRIT_MELEE_RATING:
+            case ITEM_MOD_CRIT_RANGED_RATING:
+            case ITEM_MOD_CRIT_SPELL_RATING:
+                s.sec[LG_SEC_CRIT] += float(amount); break;
+            case ITEM_MOD_HIT_RATING:
+            case ITEM_MOD_HIT_MELEE_RATING:
+            case ITEM_MOD_HIT_RANGED_RATING:
+            case ITEM_MOD_HIT_SPELL_RATING:
+                s.sec[LG_SEC_HIT] += float(amount); break;
+            case ITEM_MOD_HASTE_RATING:
+            case ITEM_MOD_HASTE_MELEE_RATING:
+            case ITEM_MOD_HASTE_RANGED_RATING:
+            case ITEM_MOD_HASTE_SPELL_RATING:
+                s.sec[LG_SEC_HASTE] += float(amount); break;
+            case ITEM_MOD_EXPERTISE_RATING:
+                s.sec[LG_SEC_EXPERTISE] += float(amount); break;
+            case ITEM_MOD_ARMOR_PENETRATION_RATING:
+                s.sec[LG_SEC_ARMOR_PEN] += float(amount); break;
+            case ITEM_MOD_RESILIENCE_RATING:
+                s.sec[LG_SEC_RESILIENCE] += float(amount); break;
+            case ITEM_MOD_ATTACK_POWER:
+                s.sec[LG_SEC_ATTACK_POWER] += float(amount); break;
+            case ITEM_MOD_SPELL_POWER:
+            case ITEM_MOD_SPELL_DAMAGE_DONE:
+            case ITEM_MOD_SPELL_HEALING_DONE:
+                s.sec[LG_SEC_SPELL_POWER] += float(amount); break;
+            default: break;
+            }
         }
     }
     return s;
 }
 
-static LgStats GrownStats(ItemTemplate const* proto, LgItemState const& st)
+static LgStats GrownStats(ItemTemplate const* proto, LgItemState const& st, Item const* item = nullptr)
 {
     LgStats base = ReadBaseStats(proto);
+    base += ReadSuffixStats(item);
     base.str += static_cast<float>(st.rollStr);
     base.agi += static_cast<float>(st.rollAgi);
     base.sta += static_cast<float>(st.rollSta);
@@ -470,13 +619,16 @@ static LgStats GrownStats(ItemTemplate const* proto, LgItemState const& st)
     base.intel *= mult;
     base.spi *= mult;
     base.armor *= mult;
+    for (int i = 0; i < LG_SEC_COUNT; ++i)
+        base.sec[i] *= mult;
     return base;
 }
 
-static LgStats WornDelta(ItemTemplate const* proto, LgItemState const& st)
+static LgStats WornDelta(ItemTemplate const* proto, LgItemState const& st, Item const* item = nullptr)
 {
-    LgStats grown = GrownStats(proto, st);
+    LgStats grown = GrownStats(proto, st, item);
     LgStats base = ReadBaseStats(proto);
+    base += ReadSuffixStats(item);
     LgStats d;
     d.str = grown.str - base.str;
     d.agi = grown.agi - base.agi;
@@ -484,6 +636,8 @@ static LgStats WornDelta(ItemTemplate const* proto, LgItemState const& st)
     d.intel = grown.intel - base.intel;
     d.spi = grown.spi - base.spi;
     d.armor = grown.armor - base.armor;
+    for (int i = 0; i < LG_SEC_COUNT; ++i)
+        d.sec[i] = grown.sec[i] - base.sec[i];
     return d;
 }
 
@@ -878,6 +1032,55 @@ static void ApplyPrimary(Player* player, Stats stat, float amount, bool apply)
     player->UpdateStatBuffMod(stat);
 }
 
+// Applies (or removes) the non-primary half of a worn bonus. Ratings go through
+// ApplyRatingMod so the character sheet reports them the same way a real item
+// would; weapon damage goes on as a flat modifier to the main hand.
+//
+// Crit/hit/haste are each three separate ratings in this client -- melee,
+// ranged and spell -- and an item that says "+7 crit" grants all three. Setting
+// only the melee one would leave casters with an item that visibly does nothing.
+static void ApplySecondary(Player* player, std::array<float, LG_SEC_COUNT> const& sec, bool apply)
+{
+    auto rate = [player, apply](CombatRating cr, float v)
+    {
+        if (v >= 1.0f)
+            player->ApplyRatingMod(cr, int32(v), apply);
+    };
+
+    rate(CR_CRIT_MELEE, sec[LG_SEC_CRIT]);
+    rate(CR_CRIT_RANGED, sec[LG_SEC_CRIT]);
+    rate(CR_CRIT_SPELL, sec[LG_SEC_CRIT]);
+    rate(CR_HIT_MELEE, sec[LG_SEC_HIT]);
+    rate(CR_HIT_RANGED, sec[LG_SEC_HIT]);
+    rate(CR_HIT_SPELL, sec[LG_SEC_HIT]);
+    rate(CR_HASTE_MELEE, sec[LG_SEC_HASTE]);
+    rate(CR_HASTE_RANGED, sec[LG_SEC_HASTE]);
+    rate(CR_HASTE_SPELL, sec[LG_SEC_HASTE]);
+    rate(CR_EXPERTISE, sec[LG_SEC_EXPERTISE]);
+    rate(CR_ARMOR_PENETRATION, sec[LG_SEC_ARMOR_PEN]);
+    rate(CR_CRIT_TAKEN_MELEE, sec[LG_SEC_RESILIENCE]);
+    rate(CR_CRIT_TAKEN_RANGED, sec[LG_SEC_RESILIENCE]);
+    rate(CR_CRIT_TAKEN_SPELL, sec[LG_SEC_RESILIENCE]);
+
+    if (sec[LG_SEC_ATTACK_POWER] >= 1.0f)
+    {
+        player->HandleStatFlatModifier(UNIT_MOD_ATTACK_POWER, TOTAL_VALUE, sec[LG_SEC_ATTACK_POWER], apply);
+        player->HandleStatFlatModifier(UNIT_MOD_ATTACK_POWER_RANGED, TOTAL_VALUE, sec[LG_SEC_ATTACK_POWER], apply);
+    }
+
+    if (sec[LG_SEC_SPELL_POWER] >= 1.0f)
+        player->ApplySpellPowerBonus(int32(sec[LG_SEC_SPELL_POWER]), apply);
+
+    // Only the main hand. The sum is taken across every equipped slot, so an
+    // off-hand's growth lands here too rather than being tracked separately --
+    // a deliberate simplification, since the alternative is threading slot
+    // identity through a pipeline that is otherwise slot-agnostic.
+    if (sec[LG_SEC_DMG_MIN] >= 1.0f)
+        player->HandleStatFlatModifier(UNIT_MOD_DAMAGE_MAINHAND, TOTAL_VALUE, sec[LG_SEC_DMG_MIN], apply);
+    if (sec[LG_SEC_DMG_MAX] >= 1.0f)
+        player->HandleStatFlatModifier(UNIT_MOD_DAMAGE_MAINHAND, TOTAL_VALUE, sec[LG_SEC_DMG_MAX], apply);
+}
+
 static void ClearApplied(Player* player)
 {
     uint32 const guid = player->GetGUID().GetCounter();
@@ -891,6 +1094,12 @@ static void ClearApplied(Player* player)
     {
         player->HandleStatFlatModifier(UNIT_MOD_ARMOR, BASE_VALUE, it->second[5], false);
         player->UpdateArmor();
+    }
+    auto secIt = g_appliedSec.find(guid);
+    if (secIt != g_appliedSec.end())
+    {
+        ApplySecondary(player, secIt->second, false);
+        g_appliedSec.erase(secIt);
     }
     g_applied.erase(it);
 }
@@ -1066,7 +1275,7 @@ static void SendLivingItem(Player* player, Item* item, std::string const& loc)
 
     LgItemState st;
     EnsureItemState(item, player, st);
-    LgStats delta = WornDelta(proto, st);
+    LgStats delta = WornDelta(proto, st, item);
     uint32 need = st.level >= g_cfg.maxLevel ? 0 : XpForNextLevel(st.level, proto->ItemLevel);
     SendAddonLine(player, Acore::StringFormat(
         "ITM|{}|{}|{}|{}|{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{}|{}|{}|{}|{}",
@@ -1234,7 +1443,7 @@ static void RefreshStats(Player* player, bool includeBags)
 
         LgItemState st;
         EnsureItemState(item, player, st);
-        LgStats delta = WornDelta(proto, st);
+        LgStats delta = WornDelta(proto, st, item);
         sum += delta;
     }
 
@@ -1249,6 +1458,9 @@ static void RefreshStats(Player* player, bool includeBags)
         player->HandleStatFlatModifier(UNIT_MOD_ARMOR, BASE_VALUE, stored[5], true);
         player->UpdateArmor();
     }
+
+    ApplySecondary(player, sum.sec, true);
+    g_appliedSec[player->GetGUID().GetCounter()] = sum.sec;
 
     g_applied[player->GetGUID().GetCounter()] = stored;
     player->UpdateAllStats();
@@ -1265,7 +1477,7 @@ static void SendWornExtras(ChatHandler* handler, Player* player)
             continue;
         LgItemState st;
         EnsureItemState(item, player, st);
-        sum += WornDelta(item->GetTemplate(), st);
+        sum += WornDelta(item->GetTemplate(), st, item);
     }
     LgStats absorb = LoadAbsorbForPlayer(player);
     handler->PSendSysMessage(
@@ -1798,6 +2010,7 @@ public:
     void OnPlayerLogout(Player* player) override
     {
         g_applied.erase(player->GetGUID().GetCounter());
+    g_appliedSec.erase(player->GetGUID().GetCounter());
     }
 
     void OnPlayerCreatureKill(Player* killer, Creature* killed) override
