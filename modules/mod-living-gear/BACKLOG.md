@@ -101,7 +101,7 @@ denominator far more than any pricing change.
 
 ---
 
-## Rotate world events every 4-7 days
+## Rotate world events every 5 days -- DONE (2026-08-25), unshipped
 
 World Events is **207 skill points** currently written off, because holidays are
 annual and a new account will see two or three of them. Rotate one every 4-7
@@ -149,6 +149,35 @@ sequence or skip the building events deliberately.
 
 **Schema note:** the column is `game_event.occurence` -- misspelled in
 AzerothCore. `occurrence` fails with "Unknown column".
+
+
+### Implemented as pure SQL: `rev_living_gear_holiday_rotation.sql`
+
+No scheduler, no state table, no C++. The core already contains the rotation --
+`CheckOneGameEvent` for a normal event is
+`Start < now && now < End && (now - Start) % (Occurence*60) < Length*60`, so ten
+events sharing a 50-day occurrence and a 5-day length, staggered 5 days apart,
+leave exactly one live at any instant. Verified by simulation: 2920 of 2920
+six-hourly samples across two years had exactly one active event, no gaps, no
+overlaps, each holiday live about 10% of the time.
+
+**The trap that makes this work: `holidayStage` must be 0.**
+`SetHolidayEventTime` overwrites Length, Occurence *and* Start from
+`Holidays.dbc` for any event with a non-zero stage, so every value written to
+`game_event` is silently discarded while that field is set. All ten holidays
+shipped with stage 1 (Brewfest 2). The field is read in exactly one place in the
+core, so zeroing it does nothing except return control to the table.
+
+**Companion events do not follow their parent.** Event 52 "Winter Veil: Gifts"
+carries `holiday = 0`, so it rotates only if given the same slot explicitly --
+otherwise the tree is up with nothing under it. Brewfest's two construction
+events (70, 91) spawn scaffolding *before* the festival; with no build-up phase
+in a 5-day slot they would spawn on top of the finished tents, so they are parked
+in the future instead.
+
+**Known cosmetic mismatch:** the in-game calendar reads `Holidays.dbc` directly
+and will still show the real-world dates. It will disagree with what is actually
+running. Fixing that means editing the DBC and shipping it client-side.
 
 ---
 
