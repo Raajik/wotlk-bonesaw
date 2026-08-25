@@ -1307,7 +1307,12 @@ function LG2.RefreshAchievementPerks()
             elseif cost then
                 row.next:SetText(string.format("|cff777777%d pts  %s|r", cost, nextHow or ""))
             else
-                row.next:SetText("|cff5a6a8aEarned by playing|r")
+                -- Earned rather than bought, so there is no price to show -- but
+                -- the rank's own text already says what earns it ("Win a
+                -- battleground", "Have 2 characters at level 80"). Saying only
+                -- "Earned by playing" threw that away and told the player
+                -- nothing they could act on.
+                row.next:SetText("|cff8a9bc4" .. (nextHow or "Earned by playing") .. "|r")
             end
         end
     end
