@@ -816,6 +816,35 @@ void RespecPerks(uint32 accountId)
     g_purchased.erase(accountId);
 }
 
+// Mirror a completed achievement onto every other character on the account.
+//
+// Rows go straight into character_achievement rather than through
+// CompletedAchievement, which is what the core's own offline-update queue
+// calls. That path re-runs the reward logic -- it grants the title and mails
+// the item -- so an account with five alts would be sent five Albino Drakes.
+// The record is what wants to be account-wide; the loot does not.
+//
+// This changes no skill point total. EarnedSkillPoints already counts DISTINCT
+// achievement ids across the account, so two characters earning Level 10 was
+// always worth one point. This is so the achievement panel agrees with itself
+// on every character.
+//
+// Realm First is excluded deliberately: it carries realm-unique bookkeeping and
+// is a one-off honour that belongs to the character that actually did it.
+void SyncAchievementToAccount(Player* player, AchievementEntry const* entry)
+{
+    if (!player || !player->GetSession() || !entry)
+        return;
+    if (entry->flags & (ACHIEVEMENT_FLAG_COUNTER | ACHIEVEMENT_FLAG_REALM_FIRST_REACH
+        | ACHIEVEMENT_FLAG_REALM_FIRST_KILL))
+        return;
+    CharacterDatabase.Execute(
+        "INSERT IGNORE INTO `character_achievement` (`guid`, `achievement`, `date`) "
+        "SELECT `guid`, {}, {} FROM `characters` WHERE `account` = {} AND `guid` <> {}",
+        entry->ID, uint32(GameTime::GetGameTime().count()),
+        player->GetSession()->GetAccountId(), player->GetGUID().GetCounter());
+}
+
 void SaveLastRespec(uint32 accountId, uint32 when)
 {
     if (!g_hasLastRespecCol)
@@ -2611,8 +2640,21 @@ public:
         PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL,
         PLAYERHOOK_ON_QUEST_COMPUTE_EXP,
         PLAYERHOOK_CAN_SOLO_QUEUE,
-        PLAYERHOOK_ON_AFTER_SPEC_SLOT_CHANGED
+        PLAYERHOOK_ON_AFTER_SPEC_SLOT_CHANGED,
+        PLAYERHOOK_ON_ACHI_COMPLETE
     }) { }
+
+    void OnPlayerAchievementComplete(Player* player, AchievementEntry const* achievement) override
+    {
+        if (!player || !player->GetSession() || !achievement)
+            return;
+        // Earned points are cached per account for the whole uptime, and a new
+        // achievement is precisely the event that makes that cache wrong. Left
+        // stale, a player earned points and saw no change until they relogged.
+        g_earnedCache.erase(player->GetSession()->GetAccountId());
+        SyncAchievementToAccount(player, achievement);
+        SendPerkPoints(player);
+    }
 
     // Bug report #17, 2026-08-22, partial. The Solo Queue perk (910092) has
     // always been a DEAD SWITCH: toggling it wrote a bool, synced it to the
