@@ -112,9 +112,43 @@ That 75% was the original design target, missed when Curator and Wayfarer ranks
 were added. This buys it back without touching a single price -- which is why it
 should land before any further balance work, including the 5-rank split above.
 
-Worth checking during implementation: whether achievement criteria for holiday
-events are gated on the real calendar date or on the event being active, since
-those are different code paths and only the second one will fire on a rotation.
+### Confirmed feasible (researched 2026-08-25)
+
+**Holiday achievements gate on the active event list, not the calendar.**
+`ACHIEVEMENT_CRITERIA_DATA_TYPE_HOLIDAY` calls `IsHolidayActive()`, which walks
+`GameEventMgr::GetActiveEventList()` and compares `HolidayId`
+(`GameEventMgr.cpp:2032`). Start the event and the criteria become completable
+whatever the date says. This was the one finding that could have sunk the whole
+idea.
+
+**The API already exists:** `StartEvent(id, overwrite = true)` /
+`StopEvent(id, overwrite = true)` (`GameEventMgr.h:119`). With `overwrite` it
+rewrites `Start`/`End`, persists via `SaveWorldEventStateToDB`, and calls
+`ForceGameEventUpdate`. Note `StartEvent` returns **false** on the normal-event
+path -- the return is "conditions met", not "succeeded". Do not branch on it.
+
+**Short windows do not break the achievements.** Of 188 player-visible holiday
+achievements, only 29 need a repeated action, and those are *quantity* gated
+rather than day gated -- 50 G.N.E.R.D. kills, 40 torches, 100 chocolates -- all
+doable in one evening while the event runs. The 42000-count "Exalted Champion"
+entries are Argent Tournament reputation, permanent content unaffected by any
+rotation.
+
+**The 10 annual holidays are the actual target** (365d cycle): Winter Veil 18d,
+Brewfest 15d, Lunar Festival / Love is in the Air / Hallow's End / Midsummer 14d,
+Noblegarden / Children's Week / Harvest Festival / Pilgrim's Bounty 7d. That is
+117 days of content currently spread across a year. Darkmoon Faire already runs
+every 91d and the six Call to Arms weekends every 42d, so those rotate acceptably
+already and can be left alone.
+
+**Watch the paired "Building" events.** Brewfest and Darkmoon Faire each have a
+separate 3-day construction event (entries 23, 70, 71, 77, 91) that spawns
+scaffolding *before* the parent. Starting a parent without its building event, or
+leaving a building event running, will look wrong. Either run the pair in
+sequence or skip the building events deliberately.
+
+**Schema note:** the column is `game_event.occurence` -- misspelled in
+AzerothCore. `occurrence` fails with "Unknown column".
 
 ---
 
