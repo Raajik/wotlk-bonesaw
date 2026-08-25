@@ -778,6 +778,8 @@ bool IsToolItem(ItemTemplate const* proto)
 // extended with a SQL row rather than a rebuild.
 std::unordered_set<uint32> g_vaultReagentIds;
 
+bool IsLockbox(ItemTemplate const* proto);   // defined below; IsReagentItem needs it
+
 bool IsReagentItem(ItemTemplate const* proto, Player* player = nullptr)
 {
     if (!proto || IsQuestItem(proto, player) || IsKeyItem(proto))
@@ -785,6 +787,15 @@ bool IsReagentItem(ItemTemplate const* proto, Player* player = nullptr)
     // After the quest guard on purpose: if this player is actually on a quest
     // that wants it, it stays in their bags whatever the list says.
     if (g_vaultReagentIds.count(proto->ItemId))
+        return true;
+    // Reports #72/#76: the automated loot path already files lockboxes into
+    // the vault (ResolveLootAction), but a box sitting in a bag could not be
+    // sent there by hand -- DepositAll asks this function, and a locked
+    // container is none of trade goods/gem/reagent/tool. Admit them here, so
+    // "deposit all" and the automated path agree on where a box belongs.
+    // Withdrawal still unlocks it (InstantPickLock) and the vendor/skip guard
+    // in ApplyLootRule keeps a locked box from ever being destroyed.
+    if (IsLockbox(proto))
         return true;
     return proto->Class == ITEM_CLASS_TRADE_GOODS
         || proto->Class == ITEM_CLASS_GEM
