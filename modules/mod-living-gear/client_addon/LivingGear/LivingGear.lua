@@ -1469,6 +1469,17 @@ local function ShowTab(name)
         name = "items"
     end
     db.tab = name
+    -- The retired panels are still constructed and other code paths still call
+    -- Show() on them, so they have to be hidden explicitly. Dropping them from
+    -- the map below did not hide them -- it stopped anything from ever hiding
+    -- them, and they drew straight through whichever tab was selected.
+    local retired = { ui.world, ui.gear, ui.attune, ui.armory }
+    for i = 1, #retired do
+        if retired[i] then
+            retired[i]:Hide()
+        end
+    end
+
     local panels = {
         class = ui.class,
         items = ui.items,
@@ -5510,16 +5521,15 @@ function LG2.HandleAddon(prefix, message)
         return
     end
     if p[1] == "ARMEND" then
-        if ui.armory then
-            if db.armorySlot == nil then
-                db.armorySlot = -1
-            end
-            ui.armory:Show()
-            LayoutArmory()
-            if ui.frame then
-                ui.frame:Show()
-            end
+        -- Data only. This used to reveal the armory panel and force the whole
+        -- window open, which was reasonable while the feed arrived solely
+        -- because the player had clicked Armory. It now rides the ordinary
+        -- sync, so doing any of that would pop the window open on every login
+        -- and every reload.
+        if db.armorySlot == nil then
+            db.armorySlot = -1
         end
+        LG2.RefreshItems()
         return
     end
     if p[1] == "ABS" then
