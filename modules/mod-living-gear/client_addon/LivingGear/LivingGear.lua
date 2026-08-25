@@ -5514,19 +5514,49 @@ if origCraftReagent and GetCraftReagentItemLink then
     end
 end
 
-local function AutoAcceptBindPopup(which)
-    local info = StaticPopupDialogs and StaticPopupDialogs[which]
-    if not info then
-        return
-    end
-    local origOnShow = info.OnShow
-    info.OnShow = function(self, ...)
-        if origOnShow then
-            origOnShow(self, ...)
+-- Auto-confirming the soulbind prompt has to happen a frame LATER, not inside
+-- OnShow.
+--
+-- OnShow runs from dialog:Show(), partway through StaticPopup_Show, before the
+-- dialog's .data has been filled in. Clicking Button1 there reaches OnAccept
+-- while self.data is still nil, and EquipPendingItem(nil) throws
+-- "Usage: EquipPendingItem(index)" -- reported 2026-08-24 equipping a green.
+-- Deferring one frame means StaticPopup_Show has returned and .data is set.
+--
+-- Wrapped in do...end so the two upvalues do not sit in the main chunk, which
+-- build_patch.py caps at Lua 5.1's 200 locals and is already at 177.
+local AutoAcceptBindPopup
+do
+    local pending = nil
+    local ticker = CreateFrame("Frame")
+    ticker:Hide()
+    ticker:SetScript("OnUpdate", function(self)
+        self:Hide()
+        local dialog = pending
+        pending = nil
+        -- Re-check: a frame is long enough for the dialog to have been
+        -- dismissed, or recycled onto an entirely different prompt.
+        if not dialog or not dialog:IsShown() then
+            return
         end
-        local btn = _G[self:GetName() .. "Button1"]
-        if btn then
+        local btn = _G[dialog:GetName() .. "Button1"]
+        if btn and btn:IsShown() and btn:IsEnabled() == 1 then
             btn:Click()
+        end
+    end)
+
+    AutoAcceptBindPopup = function(which)
+        local info = StaticPopupDialogs and StaticPopupDialogs[which]
+        if not info then
+            return
+        end
+        local origOnShow = info.OnShow
+        info.OnShow = function(self, ...)
+            if origOnShow then
+                origOnShow(self, ...)
+            end
+            pending = self
+            ticker:Show()
         end
     end
 end
@@ -5557,8 +5587,10 @@ if origPopupShow then
             -- .data cleared, which is what threw EquipPendingItem's
             -- "Usage: EquipPendingItem(index)" error. Only handle the case
             -- where Blizzard couldn't show a dialog at all.
-            if not dialog and EquipPendingItem then
-                EquipPendingItem(data or 0)
+            -- Only when there is a real index to equip. "data or 0" used to
+            -- send 0 through on a nil, which is not a pending-item slot.
+            if not dialog and EquipPendingItem and type(data) == "number" then
+                EquipPendingItem(data)
             end
             return dialog
         end
