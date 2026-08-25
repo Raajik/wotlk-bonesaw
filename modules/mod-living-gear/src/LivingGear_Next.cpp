@@ -1288,6 +1288,17 @@ public:
     {
         if (!player || !spell)
             return;
+
+        // Only ever expand a cast the player actually pressed. Every paladin
+        // expansion below re-casts the same spell id with triggered = true, and
+        // this hook fires for triggered casts as well, so without this the
+        // expansion feeds itself: one Divine Storm queues three more, each of
+        // which queues three more. That is 3^n casts and it took the server
+        // down (report #80). Holy Shock had the identical shape, splashing by
+        // re-casting itself onto every nearby enemy.
+        if (spell->IsTriggered())
+            return;
+
         HandlePaladinPerkCast(player, spell->GetSpellInfo(), spell->m_targets.GetUnitTarget());
     }
 

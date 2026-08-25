@@ -7,6 +7,7 @@ void AddSC_LivingGearProgression();
 void AddSC_LivingGearClassPerks();
 void AddSC_LivingGearVault();
 void AddSC_LivingGearSupport();
+void AddSC_LivingGearEvents();
 
 void Addmod_living_gearScripts()
 {
@@ -19,4 +20,5 @@ void Addmod_living_gearScripts()
     AddSC_LivingGearClassPerks();
     AddSC_LivingGearVault();
     AddSC_LivingGearSupport();
+    AddSC_LivingGearEvents();
 }
