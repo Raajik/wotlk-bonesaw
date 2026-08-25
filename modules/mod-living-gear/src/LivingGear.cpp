@@ -1277,11 +1277,27 @@ static void SendLivingItem(Player* player, Item* item, std::string const& loc)
     EnsureItemState(item, player, st);
     LgStats delta = WornDelta(proto, st, item);
     uint32 need = st.level >= g_cfg.maxLevel ? 0 : XpForNextLevel(st.level, proto->ItemLevel);
+
+    // The entry id is appended rather than sent up front because the fields
+    // before it are positional and parsed at three different offsets depending
+    // on where the item lives. It carries the icon and the tooltip link, and
+    // the client already knows which entries are attuned from ATL|, so no
+    // separate attuned flag is needed here.
+    //
+    // The ten secondary deltas ride along in LgSecondaryStat order. Most are
+    // zero on most items, which is cheap, and positional parsing stays robust
+    // in a way that a sparse "only the non-zero ones" encoding would not.
     SendAddonLine(player, Acore::StringFormat(
-        "ITM|{}|{}|{}|{}|{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{}|{}|{}|{}|{}",
+        "ITM|{}|{}|{}|{}|{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{}|{}|{}|{}|{}"
+        "|{}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}|{:.0f}",
         loc, SanitizeAddonName(proto->Name1), st.level, st.xp, need,
         delta.str, delta.agi, delta.sta, delta.intel, delta.spi, delta.armor,
-        st.rollStr, st.rollAgi, st.rollSta, st.rollInt, st.rollSpi));
+        st.rollStr, st.rollAgi, st.rollSta, st.rollInt, st.rollSpi,
+        proto->ItemId,
+        delta.sec[LG_SEC_CRIT], delta.sec[LG_SEC_HIT], delta.sec[LG_SEC_HASTE],
+        delta.sec[LG_SEC_EXPERTISE], delta.sec[LG_SEC_ARMOR_PEN], delta.sec[LG_SEC_RESILIENCE],
+        delta.sec[LG_SEC_ATTACK_POWER], delta.sec[LG_SEC_SPELL_POWER],
+        delta.sec[LG_SEC_DMG_MIN], delta.sec[LG_SEC_DMG_MAX]));
 }
 
 static void SendBagLivingItems(Player* player)

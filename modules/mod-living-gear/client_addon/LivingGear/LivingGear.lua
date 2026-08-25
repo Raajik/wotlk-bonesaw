@@ -4784,6 +4784,70 @@ end
 -- It reported internal scaling bookkeeping that a player could not act on.
 -- The scaling itself is unchanged; only the display is gone.
 
+-- The tail of an ITM line: the item entry id, then the ten secondary stat
+-- deltas in the order the server packs them.
+--
+-- They are appended rather than interleaved because the fields ahead of them
+-- sit at three different offsets depending on whether the item is equipped, in
+-- a bag, or came from the legacy plain-slot form -- so each caller passes the
+-- index it already worked out for its own shape.
+--
+-- Attunement is deliberately NOT resolved here. It is looked up at render time
+-- against db.attuned, because ATL| and ITM| arrive in no guaranteed order and a
+-- flag captured now would be wrong for every item that landed first.
+function LG2.ReadItemTail(it, p, at)
+    it.entry = tonumber(p[at]) or 0
+    it.sec = {
+        crit = tonumber(p[at + 1]) or 0,
+        hit = tonumber(p[at + 2]) or 0,
+        haste = tonumber(p[at + 3]) or 0,
+        exp = tonumber(p[at + 4]) or 0,
+        arpen = tonumber(p[at + 5]) or 0,
+        resil = tonumber(p[at + 6]) or 0,
+        ap = tonumber(p[at + 7]) or 0,
+        sp = tonumber(p[at + 8]) or 0,
+        dmin = tonumber(p[at + 9]) or 0,
+        dmax = tonumber(p[at + 10]) or 0,
+    }
+end
+
+-- Formats the growth a row shows: what levelling ADDED, never the item's own
+-- printed stats. The tooltip already carries those, and repeating them would
+-- hide the one number the panel exists to justify.
+function LG2.GrowthText(it)
+    local parts = {}
+    local function add(v, label)
+        local n = tonumber(v) or 0
+        if n >= 1 then
+            table.insert(parts, string.format("+%d%s", n, label))
+        end
+    end
+    add(it.ds, "str")
+    add(it.da, "agi")
+    add(it.dt, "sta")
+    add(it.di, "int")
+    add(it.dp, "spi")
+    local s = it.sec
+    if s then
+        add(s.crit, "crit")
+        add(s.hit, "hit")
+        add(s.haste, "haste")
+        add(s.ap, "ap")
+        add(s.sp, "sp")
+        add(s.exp, "exp")
+        add(s.arpen, "arp")
+        add(s.resil, "res")
+    end
+    add(it.dar, "armor")
+    if s and (tonumber(s.dmax) or 0) >= 1 then
+        table.insert(parts, string.format("+%d-%d dmg", tonumber(s.dmin) or 0, tonumber(s.dmax) or 0))
+    end
+    if #parts == 0 then
+        return ""
+    end
+    return table.concat(parts, " ")
+end
+
 function LG2.HandleAddon(prefix, message)
     if prefix ~= PREFIX or not message then
         return
@@ -5125,6 +5189,7 @@ function LG2.HandleAddon(prefix, message)
                 lv = p[5], xp = p[6], need = p[7],
                 ds = p[8], da = p[9], dt = p[10], di = p[11], dp = p[12], dar = p[13],
             }
+            LG2.ReadItemTail(it, p, 19)
             key = "inv:" .. tostring(p[3])
             if syncing then
                 table.insert(db.items, it)
@@ -5138,6 +5203,7 @@ function LG2.HandleAddon(prefix, message)
                 lv = p[6], xp = p[7], need = p[8],
                 ds = p[9], da = p[10], dt = p[11], di = p[12], dp = p[13], dar = p[14],
             }
+            LG2.ReadItemTail(it, p, 20)
             key = "bag:" .. tostring(p[3]) .. ":" .. tostring(p[4])
         else
             it = {
@@ -5147,6 +5213,7 @@ function LG2.HandleAddon(prefix, message)
                 lv = p[4], xp = p[5], need = p[6],
                 ds = p[7], da = p[8], dt = p[9], di = p[10], dp = p[11], dar = p[12],
             }
+            LG2.ReadItemTail(it, p, 18)
             key = "inv:" .. tostring(p[2])
             if syncing then
                 table.insert(db.items, it)
