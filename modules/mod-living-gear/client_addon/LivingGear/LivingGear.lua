@@ -78,26 +78,26 @@ end
 local RULE_QUALS = { "Grey", "White", "Green", "Blue", "Epic", "Legendary" }
 local RULE_ROWS = 10
 local WORLD_UNLOCKS = {
-    { id = 910092, name = "Solo Queue", how = "Queue for dungeons and raids by yourself. No group required.", toggle = true, toggleKey = "solo" },
-    { id = 910105, name = "Auto-Mount", how = "Automatically mount when you leave combat. Unlocked by learning a mount.", toggle = true, toggleKey = "autoMount" },
-    { id = 910168, name = "Pull Radius", how = "Quadruples how far enemies detect and aggro onto you. For pulling everything in an area on purpose.", toggle = true, toggleKey = "pullRadius" },
-    { id = 910170, name = "Track Ore", how = "Shows nearby ore veins on the minimap.", toggle = true, toggleKey = "trackOre" },
-    { id = 910171, name = "Track Herbs", how = "Shows nearby herbs on the minimap.", toggle = true, toggleKey = "trackHerb" },
-    { id = 910106, name = "Class Buffs", how = "Clear Naxxramas 25 on a class. That class then applies 10% primary stats to you and nearby party." },
-    { id = 910107, name = "Riding", how = "Train riding on any character. Alts can mount from level 1, and every mount and pet you own is shared across the account." },
-    { id = 910172, name = "CC Reduction", how = "Get crowd controlled once. Stuns, roots, fears, snares and other crowd control then last 95% less on you." },
-    { id = 910108, name = "Auto-Accept", how = "Accept a quest. Then auto-accept when you talk to an NPC. Hold Shift to skip." },
-    { id = 910091, name = "Armory", how = "Copy an attuned item into your bags to wear." },
-    { id = 910003, name = "Auction", how = "List or bid at an auction house." },
-    { id = 910090, name = "Quests - Finish", how = "Complete 1 quest. Summons questgivers for completed log quests for 60 sec. Turn in and take follow-ups." },
-    { id = 910008, name = "Autoloot", how = "Manually loot 10 corpses." },
-    { id = 910005, name = "Bank", how = "Open a world bank." },
-    { id = 910007, name = "Bind Hearthstone", how = "Enter a dungeon." },
-    { id = 910009, name = "Flight", how = "Learn a flight path." },
-    { id = 910088, name = "Quests - Find", how = "Complete 50 quests. Adds up to 5 zone quests per use." },
-    { id = 910002, name = "Mailbox", how = "Send or receive mail." },
-    { id = 910006, name = "Stable", how = "Hunters: take on a pet." },
-    { id = 910004, name = "Trainer", how = "Enter a dungeon." },
+    { id = 910092, name = "Solo Queue", how = "Queue for dungeons and raids by yourself. No group required.", toggle = true, toggleKey = "solo", icon = "Interface\\Icons\\Achievement_Dungeon_UtgardeKeep" },
+    { id = 910105, name = "Auto-Mount", how = "Automatically mount when you leave combat. Unlocked by learning a mount.", toggle = true, toggleKey = "autoMount", icon = "Interface\\Icons\\Ability_Mount_BlackPanther" },
+    { id = 910168, name = "Pull Radius", how = "Quadruples how far enemies detect and aggro onto you. For pulling everything in an area on purpose.", toggle = true, toggleKey = "pullRadius", icon = "Interface\\Icons\\Ability_Physical_Taunt" },
+    { id = 910170, name = "Track Ore", how = "Shows nearby ore veins on the minimap.", toggle = true, toggleKey = "trackOre", icon = "Interface\\Icons\\Spell_Nature_WispSplode" },
+    { id = 910171, name = "Track Herbs", how = "Shows nearby herbs on the minimap.", toggle = true, toggleKey = "trackHerb", icon = "Interface\\Icons\\Spell_Nature_WispSplodeGreen" },
+    { id = 910106, name = "Class Buffs", how = "Clear Naxxramas 25 on a class. That class then applies 10% primary stats to you and nearby party.", icon = "Interface\\Icons\\Spell_Holy_GreaterBlessingofKings" },
+    { id = 910107, name = "Riding", how = "Train riding on any character. Alts can mount from level 1, and every mount and pet you own is shared across the account.", icon = "Interface\\Icons\\Ability_Mount_RidingHorse" },
+    { id = 910172, name = "CC Reduction", how = "Get crowd controlled once. Stuns, roots, fears, snares and other crowd control then last 95% less on you.", icon = "Interface\\Icons\\INV_Jewelry_TrinketPVP_01" },
+    { id = 910108, name = "Auto-Accept", how = "Accept a quest. Then auto-accept when you talk to an NPC. Hold Shift to skip.", icon = "Interface\\Icons\\inv_letter_09" },
+    { id = 910091, name = "Armory", how = "Copy an attuned item into your bags to wear.", icon = "Interface\\Icons\\INV_Chest_Plate02" },
+    { id = 910003, name = "Auction", how = "List or bid at an auction house.", icon = "Interface\\Icons\\INV_Misc_Coin_01" },
+    { id = 910090, name = "Quests - Finish", how = "Complete 1 quest. Summons questgivers for completed log quests for 60 sec. Turn in and take follow-ups.", icon = "Interface\\Icons\\INV_Misc_Note_01" },
+    { id = 910008, name = "Autoloot", how = "Manually loot 10 corpses.", icon = "Interface\\Icons\\INV_Misc_Bag_10_Black" },
+    { id = 910005, name = "Bank", how = "Open a world bank.", icon = "Interface\\Icons\\INV_Box_01" },
+    { id = 910007, name = "Bind Hearthstone", how = "Enter a dungeon.", icon = "Interface\\Icons\\INV_Misc_Rune_01" },
+    { id = 910009, name = "Flight", how = "Learn a flight path.", icon = "Interface\\Icons\\Ability_Druid_FlightForm" },
+    { id = 910088, name = "Quests - Find", how = "Complete 50 quests. Adds up to 5 zone quests per use.", icon = "Interface\\Icons\\INV_Misc_Note_01" },
+    { id = 910002, name = "Mailbox", how = "Send or receive mail.", icon = "Interface\\Icons\\INV_Letter_04" },
+    { id = 910006, name = "Stable", how = "Hunters: take on a pet.", icon = "Interface\\Icons\\Ability_Hunter_BeastCall" },
+    { id = 910004, name = "Trainer", how = "Enter a dungeon.", icon = "Interface\\Icons\\INV_Misc_Book_09" },
 }
 
 local WORLD_TRACKS = {
@@ -1057,15 +1057,14 @@ function LG2.PerkBuyable(id)
     return avail >= cost
 end
 
--- One entry per row of the Perks tab: every progression track, then every
--- standalone unlock. Both shapes carry id/name/how, so they render the same.
+-- The Perks tab shows progression tracks only. The one-off unlocks moved to
+-- their own tab: they are a different kind of thing -- a capability you either
+-- have or do not -- and rendering them as a single pip next to a six-rank
+-- ladder made them read as rank 1 of something.
 function LG2.PerkRowData()
     local out = {}
     for t = 1, #WORLD_TRACKS do
         table.insert(out, { label = WORLD_TRACKS[t].name, ticks = WORLD_TRACKS[t].ticks })
-    end
-    for i = 1, #WORLD_UNLOCKS do
-        table.insert(out, { label = WORLD_UNLOCKS[i].name, ticks = { WORLD_UNLOCKS[i] } })
     end
     return out
 end
@@ -1101,45 +1100,50 @@ function LG2.StylePerkPip(pip, info)
     end
 end
 
-function LG2.BuildAchievementPerkRows(panel)
-    local data = LG2.PerkRowData()
-    -- Rows live in a scroll child, so this no longer has to fit the frame --
-    -- splitting the gathering tracks took the panel from 36 entries to 42 and
-    -- squeezing them in would have meant unreadably thin rows.
-    local ROW_H, TOP, COL_W, PIP_X = 21, -4, 340, 150
-    local perCol = math.ceil(#data / 2)
-
-    -- Guarded: an unknown template throws out of CreateFrame, and this runs
-    -- from ADDON_LOADED where that would take the whole addon down. Without a
-    -- scroll frame the rows simply parent to the panel and the tail is clipped,
-    -- which is worse than scrolling but far better than no perks tab at all.
-    local host, top = panel, -46      -- fallback clears the header itself
+-- Shared scaffolding for both perk tabs: a scroll frame with a header above it.
+--
+-- Guarded because CreateFrame throws on an unknown template and this runs from
+-- ADDON_LOADED, where that would take the whole addon down. Without the scroll
+-- frame the rows parent to the panel and the tail is clipped, which is worse
+-- than scrolling but far better than no tab at all.
+function LG2.MakePerkScroll(panel, name, rowCount, rowH)
+    local host = panel
     pcall(function()
-        local scroll = CreateFrame("ScrollFrame", "LivingGearPerkScroll", panel,
-            "UIPanelScrollFrameTemplate")
+        local scroll = CreateFrame("ScrollFrame", name, panel, "UIPanelScrollFrameTemplate")
         scroll:SetPoint("TOPLEFT", 0, -44)
         scroll:SetPoint("BOTTOMRIGHT", -26, 4)
         local child = CreateFrame("Frame", nil, scroll)
-        child:SetSize(COL_W * 2 + 16, perCol * ROW_H + 8)
+        child:SetSize(660, rowCount * rowH + 8)
         scroll:SetScrollChild(child)
-        -- Inside the scroll child the header is already above us, so rows
-        -- start at the top rather than below it.
-        panel.scroll, host, top = scroll, child, TOP
+        panel.scroll, host = scroll, child
     end)
+    return host
+end
 
+-- Progression tracks. Name, the rank pips, then what the next rank actually
+-- does and what it costs -- all inline.
+--
+-- The cost and the effect are deliberately NOT tooltip-only. Deciding whether
+-- to spend points should not require hovering every row in turn; a tooltip is
+-- for detail you want occasionally, not for the one fact the screen exists to
+-- convey.
+function LG2.BuildAchievementPerkRows(panel)
+    local data = LG2.PerkRowData()
+    local ROW_H, PIP_X, NEXT_X = 21, 150, 300
+    local host = LG2.MakePerkScroll(panel, "LivingGearPerkScroll", #data, ROW_H)
     panel.rows = {}
     for i = 1, #data do
-        local col = (i <= perCol) and 0 or 1
-        local slot = (i <= perCol) and i or (i - perCol)
         local row = CreateFrame("Frame", nil, host)
-        row:SetSize(COL_W, ROW_H - 3)
-        row:SetPoint("TOPLEFT", 4 + col * (COL_W + 12), top - (slot - 1) * ROW_H)
+        row:SetSize(640, ROW_H - 3)
+        row:SetPoint("TOPLEFT", 4, -4 - (i - 1) * ROW_H)
         row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.name:SetPoint("LEFT", 2, 0)
         row.name:SetWidth(PIP_X - 8)
         row.name:SetJustifyH("LEFT")
-        row.cost = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        row.cost:SetPoint("RIGHT", -2, 0)
+        row.next = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        row.next:SetPoint("LEFT", NEXT_X, 0)
+        row.next:SetWidth(640 - NEXT_X - 4)
+        row.next:SetJustifyH("LEFT")
         row.entry = data[i]
         row.pips = {}
         for k = 1, #data[i].ticks do
@@ -1171,40 +1175,130 @@ function LG2.BuildAchievementPerkRows(panel)
     end
 end
 
-function LG2.RefreshAchievementPerks()
-    local panel = LG2.achPanel
-    if not panel or not panel.rows then
+-- One-off unlocks. Icon, name, the whole description, and the price, with
+-- nothing hidden behind a hover.
+function LG2.BuildAchievementUnlockRows(panel)
+    local ROW_H = 26
+    local host = LG2.MakePerkScroll(panel, "LivingGearUnlockScroll", #WORLD_UNLOCKS, ROW_H)
+    panel.rows = {}
+    for i = 1, #WORLD_UNLOCKS do
+        local info = WORLD_UNLOCKS[i]
+        local row = CreateFrame("Button", nil, host)
+        row:SetSize(640, ROW_H - 2)
+        row:SetPoint("TOPLEFT", 4, -4 - (i - 1) * ROW_H)
+        row.info = info
+
+        row.icon = row:CreateTexture(nil, "ARTWORK")
+        row.icon:SetSize(20, 20)
+        row.icon:SetPoint("LEFT", 2, 0)
+        row.icon:SetTexture(info.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+
+        row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.name:SetPoint("LEFT", 28, 0)
+        row.name:SetWidth(116)
+        row.name:SetJustifyH("LEFT")
+        row.name:SetText(info.name)
+
+        row.how = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        row.how:SetPoint("LEFT", 148, 0)
+        row.how:SetWidth(430)
+        row.how:SetJustifyH("LEFT")
+        row.how:SetText(info.how or "")
+
+        row.cost = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        row.cost:SetPoint("RIGHT", -4, 0)
+        row.cost:SetJustifyH("RIGHT")
+
+        row:SetScript("OnClick", function(self)
+            if LG2.PerkBuyable(self.info.id) then
+                SendLine("PERKBUY|" .. tostring(self.info.id))
+            end
+        end)
+        row:SetScript("OnEnter", function(self)
+            self.hl:Show()
+        end)
+        row:SetScript("OnLeave", function(self)
+            self.hl:Hide()
+        end)
+        row.hl = row:CreateTexture(nil, "BACKGROUND")
+        row.hl:SetAllPoints(row)
+        row.hl:SetTexture(0.18, 0.18, 0.20)
+        row.hl:Hide()
+
+        panel.rows[i] = row
+    end
+end
+
+local function RefreshPerkHeader(panel)
+    if not panel or not panel.points then
         return
     end
     local avail, earned, spent = LG2.PerkPoints()
     panel.points:SetText(string.format(
         "|cffffd966%d|r to spend   |cff999999%d earned, %d spent|r", avail, earned, spent))
-    if spent > 0 then
-        panel.respec:Show()
-    else
-        panel.respec:Hide()
+    if panel.respec then
+        if spent > 0 then
+            panel.respec:Show()
+        else
+            panel.respec:Hide()
+        end
     end
-    for i = 1, #panel.rows do
-        local row = panel.rows[i]
-        local got, total, nextId = 0, #row.entry.ticks, nil
-        for k = 1, total do
-            LG2.StylePerkPip(row.pips[k], row.entry.ticks[k])
-            if PerkKnown(row.entry.ticks[k].id) then
-                got = got + 1
-            elseif not nextId then
-                nextId = row.entry.ticks[k].id
+end
+
+function LG2.RefreshAchievementPerks()
+    local panel = LG2.achPanel
+    if panel and panel.rows then
+        RefreshPerkHeader(panel)
+        local avail = LG2.PerkPoints()
+        for i = 1, #panel.rows do
+            local row = panel.rows[i]
+            local total, nextId, nextHow = #row.entry.ticks, nil, nil
+            for k = 1, total do
+                LG2.StylePerkPip(row.pips[k], row.entry.ticks[k])
+                if not PerkKnown(row.entry.ticks[k].id) and not nextId then
+                    nextId = row.entry.ticks[k].id
+                    nextHow = row.entry.ticks[k].how
+                end
+            end
+            row.name:SetText(row.entry.label)
+            local cost = nextId and LG2.PerkCost(nextId) or nil
+            if not nextId then
+                row.next:SetText("|cff4fd14fComplete.|r")
+            elseif cost and LG2.PerkBuyable(nextId) then
+                row.next:SetText(string.format("|cffffd966%d pts|r  %s", cost, nextHow or ""))
+            elseif cost then
+                row.next:SetText(string.format("|cff777777%d pts  %s|r", cost, nextHow or ""))
+            else
+                row.next:SetText("|cff5a6a8aEarned by playing|r")
             end
         end
-        row.name:SetText(row.entry.label)
-        local cost = nextId and LG2.PerkCost(nextId) or nil
-        if not nextId then
-            row.cost:SetText("|cff4fd14fdone|r")
-        elseif cost and LG2.PerkBuyable(nextId) then
-            row.cost:SetText("|cffffd966" .. cost .. "|r")
-        elseif cost then
-            row.cost:SetText("|cff777777" .. cost .. "|r")
-        else
-            row.cost:SetText("|cff5a6a8a" .. got .. "/" .. total .. "|r")
+    end
+
+    local up = LG2.achUnlockPanel
+    if up and up.rows then
+        RefreshPerkHeader(up)
+        local avail = LG2.PerkPoints()
+        for i = 1, #up.rows do
+            local row = up.rows[i]
+            local id = row.info.id
+            local cost = LG2.PerkCost(id)
+            if PerkKnown(id) then
+                row.cost:SetText("|cff4fd14fowned|r")
+                row.icon:SetVertexColor(1, 1, 1)
+                row.name:SetTextColor(0.88, 0.9, 0.94)
+            elseif LG2.PerkBuyable(id) then
+                row.cost:SetText(string.format("|cffffd966%d pts|r", cost))
+                row.icon:SetVertexColor(1, 1, 1)
+                row.name:SetTextColor(0.95, 0.82, 0.35)
+            elseif cost then
+                row.cost:SetText(string.format("|cff777777%d pts (have %d)|r", cost, avail))
+                row.icon:SetVertexColor(0.35, 0.35, 0.35)
+                row.name:SetTextColor(0.5, 0.5, 0.55)
+            else
+                row.cost:SetText("|cff5a6a8aearned by playing|r")
+                row.icon:SetVertexColor(0.45, 0.5, 0.6)
+                row.name:SetTextColor(0.54, 0.6, 0.72)
+            end
         end
     end
 end
@@ -6588,84 +6682,111 @@ achHook:SetScript("OnEvent", function(self, _, name)
         hidden = {}
     end
 
-    local panel = CreateFrame("Frame", nil, AchievementFrame)
-    panel:SetPoint("TOPLEFT", AchievementFrame, "TOPLEFT", PANEL_INSET, -PANEL_INSET - 22)
-    panel:SetPoint("BOTTOMRIGHT", AchievementFrame, "BOTTOMRIGHT", -PANEL_INSET - 2, PANEL_INSET)
-    panel:Hide()
-    LG2.achPanel = panel
+    -- Two panels, two tabs. Unlocks sits before Perks because it holds the
+    -- cheap early conveniences -- mailbox, bank, autoloot -- and is where a new
+    -- account spends its first points.
+    local function MakePanel(hint)
+        local f = CreateFrame("Frame", nil, AchievementFrame)
+        f:SetPoint("TOPLEFT", AchievementFrame, "TOPLEFT", PANEL_INSET, -PANEL_INSET - 22)
+        f:SetPoint("BOTTOMRIGHT", AchievementFrame, "BOTTOMRIGHT", -PANEL_INSET - 2, PANEL_INSET)
+        f:Hide()
+        f.points = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        f.points:SetPoint("TOPLEFT", 4, -2)
+        f.hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        f.hint:SetPoint("TOPLEFT", 4, -24)
+        f.hint:SetText(hint)
+        f.respec = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+        f.respec:SetSize(96, 20)
+        f.respec:SetPoint("TOPRIGHT", -2, -2)
+        f.respec:SetText("Refund all")
+        f.respec:SetScript("OnClick", function()
+            StaticPopup_Show("LG_PERK_RESPEC")
+        end)
+        return f
+    end
 
-    panel.points = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    panel.points:SetPoint("TOPLEFT", 4, -2)
+    local unlockPanel = MakePanel("Buy once, keep forever. Click a row you can afford.")
+    local perkPanel = MakePanel("Gold is affordable - click to buy. Blue is earned by playing.")
+    LG2.achUnlockPanel = unlockPanel
+    LG2.achPanel = perkPanel
 
-    panel.hint = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    panel.hint:SetPoint("TOPLEFT", 4, -24)
-    panel.hint:SetText("Gold is affordable - click to unlock. Blue is earned by playing, not bought.")
+    LG2.BuildAchievementUnlockRows(unlockPanel)
+    LG2.BuildAchievementPerkRows(perkPanel)
 
-    panel.respec = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-    panel.respec:SetSize(96, 20)
-    panel.respec:SetPoint("TOPRIGHT", -2, -2)
-    panel.respec:SetText("Refund all")
-    panel.respec:SetScript("OnClick", function()
-        StaticPopup_Show("LG_PERK_RESPEC")
-    end)
+    local panels = { [3] = unlockPanel, [4] = perkPanel }
 
-    LG2.BuildAchievementPerkRows(panel)
+    local function HideOurPanels()
+        unlockPanel:Hide()
+        perkPanel:Hide()
+    end
 
     -- Guarded: CreateFrame throws outright on an unknown template, and this
     -- runs inside ADDON_LOADED, so an unexpected build would take the entire
     -- addon down rather than just losing a tab. Falls back to the character
     -- sheet's tab template, which has existed since vanilla.
-    local tab
-    local ok = pcall(function()
-        tab = CreateFrame("Button", "AchievementFrameTab3", AchievementFrame,
-            "AchievementFrameTabButtonTemplate")
-    end)
-    if not ok or not tab then
-        ok = pcall(function()
-            tab = CreateFrame("Button", "AchievementFrameTab3", AchievementFrame,
-                "CharacterFrameTabButtonTemplate")
+    local function MakeTab(id, label, anchor)
+        local tab
+        local ok = pcall(function()
+            tab = CreateFrame("Button", "AchievementFrameTab" .. id, AchievementFrame,
+                "AchievementFrameTabButtonTemplate")
         end)
-    end
-    if not ok or not tab then
-        return
-    end
-    tab:SetID(3)
-    tab:SetText("Perks")
-    tab:SetPoint("LEFT", AchievementFrameTab2, "RIGHT", -8, 0)
-    if PanelTemplates_TabResize then
-        pcall(PanelTemplates_TabResize, tab, 0)
-    end
-    if PanelTemplates_SetNumTabs then
-        pcall(PanelTemplates_SetNumTabs, AchievementFrame, 3)
+        if not ok or not tab then
+            ok = pcall(function()
+                tab = CreateFrame("Button", "AchievementFrameTab" .. id, AchievementFrame,
+                    "CharacterFrameTabButtonTemplate")
+            end)
+        end
+        if not ok or not tab then
+            return nil
+        end
+        tab:SetID(id)
+        tab:SetText(label)
+        tab:SetPoint("LEFT", anchor, "RIGHT", -8, 0)
+        if PanelTemplates_TabResize then
+            pcall(PanelTemplates_TabResize, tab, 0)
+        end
+        tab:SetScript("OnClick", function()
+            PlaySound("igCharacterInfoTab")
+            if PanelTemplates_SetTab then
+                pcall(PanelTemplates_SetTab, AchievementFrame, id)
+            end
+            HideBlizzContent()
+            HideOurPanels()
+            panels[id]:Show()
+            LG2.RefreshAchievementPerks()
+            SendLine("PERKPTS")
+        end)
+        return tab
     end
 
-    tab:SetScript("OnClick", function()
-        PlaySound("igCharacterInfoTab")
-        if PanelTemplates_SetTab then
-            pcall(PanelTemplates_SetTab, AchievementFrame, 3)
-        end
-        HideBlizzContent()
-        panel:Show()
-        LG2.RefreshAchievementPerks()
-        SendLine("PERKPTS")
-    end)
+    local unlockTab = MakeTab(3, "Unlocks", AchievementFrameTab2)
+    if not unlockTab then
+        return
+    end
+    local perkTab = MakeTab(4, "Perks", unlockTab)
+    if not perkTab then
+        return
+    end
+    if PanelTemplates_SetNumTabs then
+        pcall(PanelTemplates_SetNumTabs, AchievementFrame, 4)
+    end
 
     -- HookScript rather than hooksecurefunc on AchievementFrameTab_OnClick:
     -- that global takes different arguments across builds, and this does not
     -- care. Blizzard's own handler re-shows its content; this just gets our
-    -- panel out of the way and undoes the specific frames we hid.
+    -- panels out of the way and undoes the specific frames we hid.
     for i = 1, 2 do
         local other = _G["AchievementFrameTab" .. i]
         if other then
             other:HookScript("OnClick", function()
-                panel:Hide()
+                HideOurPanels()
                 RestoreBlizzContent()
             end)
         end
     end
 
     AchievementFrame:HookScript("OnHide", function()
-        panel:Hide()
+        HideOurPanels()
         RestoreBlizzContent()
     end)
 end)
