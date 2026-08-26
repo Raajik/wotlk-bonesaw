@@ -1,4 +1,4 @@
-# Bug reports
+# In-game bugs and feature requests
 
 Players file reports in game:
 
@@ -6,14 +6,43 @@ Players file reports in game:
 - `/bugreport <what went wrong>` — the addon's slash command. Not `/bug`,
   which is a stock WoW command that opens Blizzard's own report frame and
   files into a table nobody reads.
+- `.feature <what you would like>` — feature request without the addon.
+- `/featurerequest <what you would like>` — the addon's feature-request command.
 
-Either way the worldserver writes a row into
+All four commands write a row into
 `acore_characters.lg_bug_report`, capturing the description plus the
-reporter's name, level, map, zone, exact coordinates and current target.
+report type, reporter's name, level, map, zone, exact coordinates and current target.
 That context is most of the value — "the chest doesn't open" is close to
 unactionable on its own.
 
-The worldserver never contacts Discord. It only writes rows.
+The worldserver never contacts Discord or GitHub. It only writes rows.
+
+## GitHub tracking
+
+The same scheduled digest now makes GitHub the work tracker. Before posting a
+new Discord notification it:
+
+1. searches for an existing `[Report #N]` or `[Feature #N]` issue (safe for
+   historical manually-mirrored reports),
+2. creates one when none exists,
+3. stores the issue number and URL on `lg_bug_report`, and
+4. includes the GitHub link in the Discord notification.
+
+Creation is idempotent: a retry searches before creating, and the database has
+a unique issue-number key. Only `open` and `attempted` reports are backfilled;
+resolved history is left alone unless it already has a matching issue.
+
+Bug reports receive `bug`; feature requests receive `enhancement`. Workflow
+labels are created/updated automatically:
+`source:in-game`, `status:needs-triage`, `status:awaiting-retest`,
+`status:verified`, and explicit resolution labels. Closing through
+`bug_resolve.py` updates the database, edits the original Discord message, and
+updates the linked GitHub issue. A GitHub outage never blocks in-game intake;
+the row remains unlinked and is retried on the next run.
+
+The repository is public. Issue bodies deliberately omit account IDs. They do
+include character name, in-game coordinates and selected target because that
+context is what makes an in-game report actionable.
 
 ## Delivering them
 
@@ -25,6 +54,8 @@ python tools/bug-reports/bug_digest.py            # post anything new
 python tools/bug-reports/bug_digest.py --dry-run  # print, change nothing
 python tools/bug-reports/bug_digest.py --test     # post a test message only
 ```
+
+`--dry-run` and `--test` never create or modify GitHub issues.
 
 ### The scheduled task
 
@@ -87,18 +118,20 @@ not solved. Calling that "fixed" is a lie that costs someone an afternoon when
 it comes back.
 
 Where this fits: resolve reports as part of the ship that carries the fix, so
-the Discord channel matches what players actually have.
+the database, GitHub issue and Discord channel match what players actually
+have. Use `attempted` for a shipped diagnostic/change awaiting proof; use
+`fixed` only when that is the honest final state.
 
 ## Durability
 
-Every report exists in three places, and losing Discord loses none of them:
+Every active report exists in four places, and losing Discord loses none of them:
 
 1. **`lg_bug_report`** — the authoritative copy. Rows are *never deleted*,
    including after posting; `posted` only tracks delivery. This table can
    rebuild the Discord channel from scratch.
-2. **Discord** — the working record, and where reports are actually read
-   and acted on.
-3. **The worldserver log** — a line is written at report time, so a report
+2. **GitHub** — the canonical triage and work tracker.
+3. **Discord** — a notification and conversation mirror.
+4. **The worldserver log** — a line is written at report time, so a report
    survives even the characters database being rolled back.
 
 Delivery cannot lose a report. Rows are marked `posted = 1` only *after*

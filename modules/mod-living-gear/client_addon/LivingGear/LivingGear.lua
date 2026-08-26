@@ -1,7 +1,7 @@
 -- Living Gear window. Loaded from patch-enUS-4.MPQ via FrameXML, or Interface/AddOns.
 -- Server pushes numbers over addon whispers (prefix LG). ASCII-only strings.
 
-local LG_UI_REV = 23
+local LG_UI_REV = 24
 
 -- Lua 5.1 (what the WotLK 3.3.5 client actually runs) also hard-caps the
 -- main chunk -- the whole file, treated as one implicit function -- at 200
@@ -7296,4 +7296,18 @@ SlashCmdList["LGBUG"] = function(msg)
         return
     end
     SendLine("BUG|" .. msg)
+end
+
+-- Feature requests use the same durable intake/context capture as bugs, but
+-- route to GitHub as enhancements rather than bugs.
+SLASH_LGFEATURE1 = "/featurerequest"
+SLASH_LGFEATURE2 = "/lgfeature"
+SlashCmdList["LGFEATURE"] = function(msg)
+    msg = string.gsub(msg or "", "^%s+", "")
+    if msg == "" then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Feature]|r Usage: /featurerequest <what you would like>")
+        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Feature]|r Your location and current target are sent automatically.")
+        return
+    end
+    SendLine("FEATURE|" .. msg)
 end

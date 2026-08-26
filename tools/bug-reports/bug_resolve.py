@@ -1,5 +1,5 @@
 """
-Close out player bug reports, and strike them through in Discord.
+Close out player bug reports and feature requests, and strike them through in Discord.
 
 Reports used to be write-once: they arrived, went to Discord, and there was no
 point in the process where one got closed. With twenty-odd open it stops being
@@ -35,6 +35,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+from github_sync import GitHubCLI
 
 ROOT = Path(__file__).resolve().parent
 WEBHOOK_FILE = ROOT / "discord.webhook"
@@ -157,12 +159,15 @@ def edit_discord(message_id: str, report_id: str, status: str, note: str) -> str
 
 
 def resolve(report_id: int, status: str, note: str, db_password: str) -> int:
-    rows = run_sql("SELECT CONCAT_WS('%s', id, discord_message_id) FROM lg_bug_report "
+    rows = run_sql("SELECT CONCAT_WS('%s', id, discord_message_id, "
+                   "COALESCE(github_issue_number, 0)) FROM lg_bug_report "
                    "WHERE id = %d;" % (SEP, report_id), db_password).strip()
     if not rows:
         print("No report #%d." % report_id, file=sys.stderr)
         return 1
-    message_id = rows.split(SEP)[1] if SEP in rows else ""
+    parts = rows.split(SEP)
+    message_id = parts[1] if len(parts) > 1 else ""
+    github_issue = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
 
     stamp = "UNIX_TIMESTAMP()" if status != "open" else "0"
     run_sql("UPDATE lg_bug_report SET status = '%s', resolution = %s, resolved_at = %s "
@@ -171,6 +176,17 @@ def resolve(report_id: int, status: str, note: str, db_password: str) -> int:
             db_password)
     print("#%d -> %s%s" % (report_id, status, (" (%s)" % note) if note else ""))
     print("  %s" % edit_discord(message_id, str(report_id), status, note))
+    if github_issue:
+        try:
+            github = GitHubCLI()
+            github.ensure_labels()
+            github.resolve_issue(github_issue, status, note)
+            print("  GitHub issue #%d updated" % github_issue)
+        except RuntimeError as exc:
+            print("  GitHub update failed: %s" % exc, file=sys.stderr)
+            return 1
+    else:
+        print("  no GitHub issue linked")
     return 0
 
 

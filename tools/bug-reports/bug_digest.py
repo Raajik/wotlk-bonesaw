@@ -1,8 +1,9 @@
 """
-Post new player bug reports to Discord.
+Post new player bug reports and feature requests to Discord.
 
 Reports are written into acore_characters.lg_bug_report by the worldserver
-(.bug in chat, or /bugreport from the addon). The worldserver never talks to
+(.bug/.feature in chat, or /bugreport and /featurerequest from the addon).
+The worldserver never talks to
 Discord itself -- it only writes rows -- so this script is what actually
 delivers them. Run it on a schedule; 15 minutes is the current cadence.
 
@@ -22,17 +23,23 @@ cannot double-post.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from github_sync import GitHubCLI, SqlReportStore, sync_report
+
 ROOT = Path(__file__).resolve().parent
 WEBHOOK_FILE = ROOT / "discord.webhook"
+GITHUB_SYNC_LOCK = Path(tempfile.gettempdir()) / "bonesaw_bug_github_sync.lock"
 
 DB_CONTAINER = "ac-database"
 DB_NAME = "acore_characters"
@@ -78,7 +85,7 @@ def run_sql(sql: str, db_password: str) -> str:
     return proc.stdout
 
 
-def fetch_unposted(db_password: str) -> list[dict]:
+def _fetch_reports(where: str, db_password: str) -> list[dict]:
     # Concatenated with explicit separators because a bug description is free
     # text and can contain tabs and newlines, which would otherwise break the
     # column/row splitting that --batch output relies on.
@@ -88,10 +95,11 @@ def fetch_unposted(db_password: str) -> list[dict]:
             zone_name, map_id, zone_id,
             ROUND(pos_x, 1), ROUND(pos_y, 1), ROUND(pos_z, 1),
             target_entry, target_name,
-            REPLACE(REPLACE(description, '\\n', ' '), '\\r', ' ')
+            REPLACE(REPLACE(description, '\\n', ' '), '\\r', ' '), report_type,
+            status, COALESCE(github_issue_number, 0), COALESCE(github_issue_url, '')
         ), '{ROW_SEP}'
         FROM lg_bug_report
-        WHERE posted = 0
+        WHERE {where}
         ORDER BY id
         LIMIT {MAX_PER_RUN};
     """
@@ -102,7 +110,7 @@ def fetch_unposted(db_password: str) -> list[dict]:
         if not line:
             continue
         parts = line.split(FIELD_SEP)
-        if len(parts) < 13:
+        if len(parts) < 17:
             continue
         rows.append({
             "id": parts[0],
@@ -118,8 +126,23 @@ def fetch_unposted(db_password: str) -> list[dict]:
             "target_entry": parts[10],
             "target_name": parts[11],
             "description": parts[12],
+            "report_type": parts[13],
+            "status": parts[14],
+            "github_issue_number": parts[15],
+            "github_issue_url": parts[16],
         })
     return rows
+
+
+def fetch_unposted(db_password: str) -> list[dict]:
+    return _fetch_reports("posted = 0", db_password)
+
+
+def fetch_sync_candidates(db_password: str) -> list[dict]:
+    return _fetch_reports(
+        "status IN ('open', 'attempted') AND github_issue_number IS NULL",
+        db_password,
+    )
 
 
 def mark_posted(ids: list[str], db_password: str) -> None:
@@ -137,8 +160,9 @@ def format_report(row: dict) -> str:
         pass
 
     where = row["zone"] or f"map {row['map']}"
+    heading = f"Feature #{row['id']}" if row.get("report_type") == "feature" else f"#{row['id']}"
     lines = [
-        f"**#{row['id']}** - {row['name']} (level {row['level']}) - {when}",
+        f"**{heading}** - {row['name']} (level {row['level']}) - {when}",
         f"> {row['description']}",
         f"`{where}` at `{row['x']} {row['y']} {row['z']}` (map {row['map']}, zone {row['zone_id']})",
     ]
@@ -147,6 +171,8 @@ def format_report(row: dict) -> str:
         if row["target_entry"] and row["target_entry"] != "0":
             target += f" (entry {row['target_entry']})"
         lines.append(f"Target: {target}")
+    if row.get("github_issue_url"):
+        lines.append(f"GitHub: {row['github_issue_url']}")
     return "\n".join(lines)
 
 
@@ -162,6 +188,57 @@ def store_message_id(report_id: str, message_id: str, db_password: str) -> None:
         return
     run_sql("UPDATE lg_bug_report SET discord_message_id = '%s' WHERE id = %d;"
             % (safe, int(report_id)), db_password)
+
+
+def should_sync_github(dry_run: bool, test_mode: bool) -> bool:
+    return not dry_run and not test_mode
+
+
+@contextlib.contextmanager
+def github_sync_lock(path: Path = GITHUB_SYNC_LOCK):
+    """Allow one GitHub producer while never blocking Discord delivery."""
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR)
+    except OSError:
+        yield False
+        return
+    acquired = False
+    try:
+        try:
+            if os.path.getsize(path) == 0:
+                os.write(descriptor, b"0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+        except OSError:
+            yield False
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        if acquired:
+            try:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
 
 
 
@@ -212,14 +289,35 @@ def main() -> int:
                         help="database root password (default: the docker-compose default)")
     args = parser.parse_args()
 
+    # GitHub is the canonical work tracker. Reconcile before posting Discord so
+    # each notification carries the issue link. A GitHub outage does not lose
+    # or block the DB report; Discord delivery continues without a link and the
+    # next scheduled run retries the sync.
+    if should_sync_github(args.dry_run, args.test):
+        with github_sync_lock() as acquired:
+            if not acquired:
+                print("GitHub sync already running; Discord delivery will continue.")
+            else:
+                github = GitHubCLI()
+                store = SqlReportStore(run_sql, args.db_password)
+                try:
+                    github.ensure_labels()
+                    for report in fetch_sync_candidates(args.db_password):
+                        try:
+                            sync_report(report, github, store)
+                        except RuntimeError as exc:
+                            print(f"GitHub sync failed for report #{report['id']}: {exc}", file=sys.stderr)
+                except Exception as exc:
+                    print(f"GitHub unavailable; reports remain queued: {exc}", file=sys.stderr)
+
     url = read_webhook()
     if not url and not args.dry_run:
         print(f"No webhook at {WEBHOOK_FILE} -- nothing to do.")
         return 0
 
     if args.test:
-        post(url, "Bonesaw bug reports: this channel is wired up. "
-                  "Player reports from `.bug` and `/bugreport` will arrive here.")
+        post(url, "Bonesaw reports: this channel is wired up. Player bugs and feature requests "
+                  "from `.bug`, `.feature`, `/bugreport`, and `/featurerequest` will arrive here.")
         print("Test message posted.")
         return 0
 
@@ -230,7 +328,7 @@ def main() -> int:
         return 1
 
     if not rows:
-        print("No new bug reports.")
+        print("No new reports.")
         return 0
 
     if args.dry_run:
@@ -261,22 +359,6 @@ def main() -> int:
 
     mark_posted(done, args.db_password)
     print("Posted %d report(s)." % len(done))
-    return 0
-
-    posted_any = False
-    try:
-        for message in messages:
-            post(url, message)
-            posted_any = True
-    except RuntimeError as exc:
-        print(f"error posting to Discord: {exc}", file=sys.stderr)
-        # Deliberately do NOT mark anything posted -- better to repeat a
-        # message on the next run than to lose a report entirely.
-        return 1
-
-    if posted_any:
-        mark_posted([r["id"] for r in rows], args.db_password)
-        print(f"Posted {len(rows)} report(s) in {len(messages)} message(s).")
     return 0
 
 

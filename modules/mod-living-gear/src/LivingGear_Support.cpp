@@ -159,14 +159,14 @@ std::string Trim(std::string s)
 }
 
 // ---------------------------------------------------------------------
-// Bug reports
+// Bug reports and feature requests
 // ---------------------------------------------------------------------
 
 // Context is the whole point. "The chest in Uldaman does not open" is close
 // to unactionable; the same sentence with a map, a zone, exact coordinates,
 // the reporter's level and the entry id of whatever they had targeted
 // usually points straight at the row that needs fixing.
-bool RecordBugReport(Player* player, std::string const& description)
+bool RecordSupportReport(Player* player, std::string const& description, bool feature)
 {
     if (!player || !player->GetSession())
         return false;
@@ -178,7 +178,8 @@ bool RecordBugReport(Player* player, std::string const& description)
     if (text.size() < BUG_MIN_LENGTH)
     {
         ChatHandler(player->GetSession()).SendSysMessage(
-            "|cff66ccff[Bug]|r Say a little more about what went wrong.");
+            feature ? "|cff66ccff[Feature]|r Say a little more about what you would like."
+                    : "|cff66ccff[Bug]|r Say a little more about what went wrong.");
         return false;
     }
     if (text.size() > BUG_MAX_LENGTH)
@@ -188,7 +189,7 @@ bool RecordBugReport(Player* player, std::string const& description)
     if (last && now - last < BUG_COOLDOWN_SECONDS)
     {
         ChatHandler(player->GetSession()).PSendSysMessage(
-            "|cff66ccff[Bug]|r Give it {} more second(s) before the next report.",
+            "|cff66ccff[Report]|r Give it {} more second(s) before the next report.",
             BUG_COOLDOWN_SECONDS - (now - last));
         return false;
     }
@@ -205,22 +206,23 @@ bool RecordBugReport(Player* player, std::string const& description)
 
     CharacterDatabase.Execute(
         "INSERT INTO `lg_bug_report` "
-        "(`account_id`, `character_guid`, `character_name`, `reported_at`, `map_id`, `zone_id`, "
+        "(`report_type`, `account_id`, `character_guid`, `character_name`, `reported_at`, `map_id`, `zone_id`, "
         "`zone_name`, `pos_x`, `pos_y`, `pos_z`, `player_level`, `target_entry`, `target_name`, `description`) "
-        "VALUES ({}, {}, '{}', {}, {}, {}, '{}', {}, {}, {}, {}, {}, '{}', '{}')",
-        accountId, player->GetGUID().GetCounter(), Escape(player->GetName()), now,
+        "VALUES ('{}', {}, {}, '{}', {}, {}, {}, '{}', {}, {}, {}, {}, {}, '{}', '{}')",
+        feature ? "feature" : "bug", accountId, player->GetGUID().GetCounter(), Escape(player->GetName()), now,
         player->GetMapId(), player->GetZoneId(), Escape(ZoneName(player)),
         player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(),
         uint32(player->GetLevel()), targetEntry, Escape(targetName), Escape(text));
 
     // Also written to the worldserver log, so a report survives the digest
     // script being broken or the characters DB being rolled back.
-    LOG_INFO("module.livinggear", "Bug report from {} (account {}): {} [map {} zone {} at {} {} {}]",
-        player->GetName(), accountId, text, player->GetMapId(), player->GetZoneId(),
+    LOG_INFO("module.livinggear", "{} report from {} (account {}): {} [map {} zone {} at {} {} {}]",
+        feature ? "Feature" : "Bug", player->GetName(), accountId, text, player->GetMapId(), player->GetZoneId(),
         player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
 
     ChatHandler(player->GetSession()).SendSysMessage(
-        "|cff66ccff[Bug]|r Reported, thank you. Your location and target were included.");
+        feature ? "|cff66ccff[Feature]|r Requested, thank you. Your location and target were included."
+                : "|cff66ccff[Bug]|r Reported, thank you. Your location and target were included.");
     return true;
 }
 
@@ -748,6 +750,7 @@ public:
         static ChatCommandTable commandTable =
         {
             { "bug", HandleBug, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
+            { "feature", HandleFeature, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
             { "wg",  HandleWintergrasp, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
         };
         return commandTable;
@@ -758,7 +761,16 @@ public:
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
-        RecordBugReport(player, std::string(description));
+        RecordSupportReport(player, std::string(description), false);
+        return true;
+    }
+
+    static bool HandleFeature(ChatHandler* handler, Tail description)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+        RecordSupportReport(player, std::string(description), true);
         return true;
     }
 
@@ -782,7 +794,12 @@ bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg)
 
     if (msg.rfind("BUG|", 0) == 0)
     {
-        LivingGearSupport::RecordBugReport(player, msg.substr(4));
+        LivingGearSupport::RecordSupportReport(player, msg.substr(4), false);
+        return true;
+    }
+    if (msg.rfind("FEATURE|", 0) == 0)
+    {
+        LivingGearSupport::RecordSupportReport(player, msg.substr(8), true);
         return true;
     }
     if (msg.rfind("QDONE|", 0) == 0)
