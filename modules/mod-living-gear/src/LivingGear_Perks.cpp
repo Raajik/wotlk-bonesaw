@@ -248,7 +248,7 @@ std::unordered_map<uint32, uint32> g_curatorAcc;
 std::unordered_map<uint32, bool> g_shadowDanceBuffOn;
 std::unordered_map<uint32, uint32> g_shadowDanceTick;
 std::unordered_map<uint32, uint32> g_pullRadiusTick;
-std::unordered_map<uint32, uint32> g_trackOreTick;
+std::unordered_map<uint32, uint32> g_trackOreTick;   // retired with the 10s recast (report #83) -- kept for save compat
 std::unordered_map<uint32, uint32> g_trackHerbTick;
 std::unordered_set<uint32> g_perkLoaded;
 
@@ -850,6 +850,37 @@ void SyncAchievementToAccount(Player* player, AchievementEntry const* entry)
         "SELECT `guid`, {}, {} FROM `characters` WHERE `account` = {} AND `guid` <> {}",
         entry->ID, uint32(GameTime::GetGameTime().count()),
         player->GetSession()->GetAccountId(), player->GetGUID().GetCounter());
+}
+
+// Report #45: achievements should be account-wide. SyncAchievementToAccount
+// above only covers completions that happen WHILE someone is logged in -- the
+// INSERT fires from OnPlayerAchievementComplete. Every achievement earned
+// before that sync existed was a hole on every alt forever: account 2 holds
+// 74 distinct achievements but Muckfuppet had 73 of them and his alts ~34
+// each, purely by age.
+//
+// The catch-up runs at login and backfills both directions in one statement:
+// anything any character on this account has completed that THIS character
+// lacks is inserted here (INSERT IGNORE, dated to now), so alts see the full
+// account history without touching criteria progress -- which stays
+// per-character on purpose, since progress counters feed statistics.
+//
+// Feeds the perk-points cache too: g_earnedCache counts DISTINCT completed
+// achievements per account through these very rows, so after one login per
+// alt every character sees the same earned count.
+void CatchUpAchievements(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    CharacterDatabase.Execute(
+        "INSERT IGNORE INTO `character_achievement` (`guid`, `achievement`, `date`) "
+        "SELECT me.`guid`, theirs.`achievement`, theirs.`date` "
+        "FROM `character_achievement` theirs "
+        "JOIN `characters` other ON other.`guid` = theirs.`guid` AND other.`account` = {} "
+        "CROSS JOIN `characters` me ON me.`account` = other.`account` AND me.`guid` <> theirs.`guid` "
+        "WHERE NOT EXISTS (SELECT 1 FROM `character_achievement` mine "
+        "WHERE mine.`guid` = me.`guid` AND mine.`achievement` = theirs.`achievement`)",
+        player->GetSession()->GetAccountId());
 }
 
 // Achievement titles, on every character on the account.
@@ -2408,6 +2439,7 @@ void AutoQuestFinish(Player* player)
     if (!player)
         return;
     uint32 spawned = 0;
+    std::unordered_set<uint32> summonedNpcs;   // report #94: one NPC per entry, not per quest
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE && spawned < 10; ++slot)
     {
         uint32 qid = player->GetQuestSlotQuestId(slot);
@@ -2418,6 +2450,12 @@ void AutoQuestFinish(Player* player)
             "SELECT `id` FROM `creature_questender` WHERE `quest` = {} LIMIT 1", qid))
             npc = (*q)[0].Get<uint32>();
         if (!npc)
+            continue;
+        // Several complete quests routinely share ONE turn-in NPC (a quest hub
+        // like the Sunstrider trainer or an innkeeper). Summoning per quest
+        // stacked a copy of the same NPC on top of itself for every quest --
+        // report #94. Skip entries already standing from this press.
+        if (!summonedNpcs.insert(npc).second)
             continue;
         if (player->SummonCreature(npc, player->GetPosition(), TEMPSUMMON_TIMED_DESPAWN, 60000))
             ++spawned;
@@ -2793,6 +2831,7 @@ public:
         ApplyCuratorCoverage(player);
         // After the sync rows are in: titles for achievements this character
         // inherited from the account rather than earned itself.
+        CatchUpAchievements(player);
         GrantAchievementTitles(player);
         CatchUpProfession(player);
         if (HasPerk(player, SPELL_SWIM))
@@ -2809,8 +2848,6 @@ public:
         g_cookAmount.erase(g);
         g_aidCleanseTick.erase(g);
         g_pullRadiusTick.erase(g);
-        g_trackOreTick.erase(g);
-        g_trackHerbTick.erase(g);
         g_cloneGuid.erase(g);
         g_shadowDanceBuffOn.erase(g);
         g_shadowDanceTick.erase(g);
@@ -2850,26 +2887,22 @@ public:
             }
         }
         if (player->GetSession() && g_trackOreOn[player->GetSession()->GetAccountId()]
-            && HasPerk(player, SPELL_TRACK_ORE))
+            && HasPerk(player, SPELL_TRACK_ORE)
+            && !player->HasAura(NATIVE_FIND_MINERALS))
         {
-            uint32 id = player->GetGUID().GetCounter();
-            g_trackOreTick[id] += diff;
-            if (g_trackOreTick[id] >= 10000)
-            {
-                g_trackOreTick[id] = 0;
-                player->CastSpell(player, NATIVE_FIND_MINERALS, true);
-            }
+            // Report #83: this used to RECAST Find Minerals every 10 seconds.
+            // The aura itself is bit-level and harmless, but each re-application
+            // makes the client re-evaluate its minimap tracking UI, which resets
+            // the player's own "Find Low Level Quests" dropdown selection.
+            // The aura persists on its own -- apply it only when actually missing
+            // (login, death, aura dispel), not on a timer.
+            player->CastSpell(player, NATIVE_FIND_MINERALS, true);
         }
         if (player->GetSession() && g_trackHerbOn[player->GetSession()->GetAccountId()]
-            && HasPerk(player, SPELL_TRACK_HERB))
+            && HasPerk(player, SPELL_TRACK_HERB)
+            && !player->HasAura(NATIVE_FIND_HERBS))
         {
-            uint32 id = player->GetGUID().GetCounter();
-            g_trackHerbTick[id] += diff;
-            if (g_trackHerbTick[id] >= 10000)
-            {
-                g_trackHerbTick[id] = 0;
-                player->CastSpell(player, NATIVE_FIND_HERBS, true);
-            }
+            player->CastSpell(player, NATIVE_FIND_HERBS, true);
         }
     }
 
