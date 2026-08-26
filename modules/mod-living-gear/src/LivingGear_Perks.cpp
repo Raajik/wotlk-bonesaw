@@ -3241,8 +3241,62 @@ public:
         UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
         UNITHOOK_MODIFY_HEAL_RECEIVED,
         UNITHOOK_SHOULD_TRACK_VALUES_UPDATE_POS_BY_INDEX,
-        UNITHOOK_ON_PATCH_VALUES_UPDATE
+        UNITHOOK_ON_PATCH_VALUES_UPDATE,
+        UNITHOOK_ON_BEFORE_ROLL_MELEE_OUTCOME_AGAINST
     }) { }
+
+    // Bug reports #88/#89: a level 7 in Shadowglen could not land a hit on
+    // zone-scaled mobs. The scaling is deliberately display-and-damage-only
+    // (UNIT_FIELD_LEVEL keeps the mob's real level so the shared health bar
+    // never desyncs), but the engine's hit rolls read the REAL level: melee
+    // compares the player's weapon skill to victim->GetMaxSkillValueForLevel()
+    // = real level * 5, and MagicSpellHitResult takes levelDiff from the real
+    // level too. Against an effective-8 mob whose real level is 80, that is a
+    // 400-vs-35 skill gap and +72 levels of spell-miss -- nearly every swing
+    // and spell misses regardless of what the damage hooks do.
+    //
+    // Fix: wherever the engine asks "what level is this victim for hit
+    // purposes", answer with the level this viewer is being SHOWN. Melee goes
+    // through OnBeforeRollMeleeOutcomeAgainst (victimDefenseSkill derives from
+    // GetUnitMeleeSkill -> getLevelForTarget, so overriding it here covers
+    // miss/dodge/parry/block/crit together). Spells need no hook -- they read
+    // Creature::getLevelForTarget directly, which core-patch 0025 overrides.
+    void OnBeforeRollMeleeOutcomeAgainst(Unit const* attacker, Unit const* victim,
+        WeaponAttackType /*attType*/, int32& /*attackerMaxSkillValueForLevel*/,
+        int32& victimMaxSkillValueForLevel, int32& /*attackerWeaponSkill*/,
+        int32& victimDefenseSkill, int32& /*crit_chance*/, int32& /*miss_chance*/,
+        int32& /*dodge_chance*/, int32& /*parry_chance*/, int32& /*block_chance*/) override
+    {
+        Creature const* c = victim ? victim->ToCreature() : nullptr;
+        Player const* p = attacker ? attacker->ToPlayer() : nullptr;
+        if (!c || !p)
+            return;
+        uint32 const eff = EffectiveCreatureLevel(c, const_cast<Player*>(p));
+        if (!eff || eff >= c->GetLevel())
+            return;
+        int32 const scaled = int32(eff) * 5;
+        victimMaxSkillValueForLevel = scaled;
+        // GetDefenseSkillValue on a creature is GetUnitMeleeSkill = level*5;
+        // only rewrite it when it still holds that stock value.
+        if (victimDefenseSkill == int32(c->GetUnitMeleeSkill(nullptr)))
+            victimDefenseSkill = scaled;
+    }
+
+    // Spell-hit half of the same fix: MagicSpellHitResult takes levelDiff from
+    // Creature::getLevelForTarget (core-patch 0025 routes it through here).
+    // Answering with the displayed level keeps spells on zone-scaled mobs
+    // landing at the same rate melee now does.
+    void OnCreatureLevelForTarget(Unit const* creature, WorldObject const* target, uint8& outLevel) override
+    {
+        Creature const* c = creature ? creature->ToCreature() : nullptr;
+        Player const* p = target ? target->ToPlayer() : nullptr;
+        if (!c || !p)
+            return;
+        uint32 const eff = EffectiveCreatureLevel(c, const_cast<Player*>(p));
+        if (!eff || eff >= c->GetLevel())
+            return;
+        outLevel = uint8(eff);
+    }
 
     // First Aid "Restore" (910047): "Bandages restore 1% HP per second at
     // 1-75, 2% at 76-150, and so on." Expressed as a multiplier on the
