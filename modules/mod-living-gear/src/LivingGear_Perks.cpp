@@ -178,8 +178,11 @@ uint32 const COOK_BREAKS[] = { 75, 150, 225, 300, 375, 450 };
 float const GARROTE_BLEED_MULT = 11.0f;
 // Bug report #10: the Ambush that Hemorrhage spreads lands at +500%, i.e. 6x.
 float const HEMO_AMBUSH_MULT = 6.0f;
-// Report #9: Shadowstep pickpockets everything this far away on landing.
-float const SHADOWSTEP_PICKPOCKET_RADIUS = 20.0f;
+// Shadowstep's cooldown after the landing-pickpocket was removed (2026-08-26,
+// report #9): with the pickpocket gone it is a pure on-demand speed boost, so
+// a short cooldown is the buff. 2 seconds -- 3x the old 6s -- keeps it a
+// mobility tool you lean on rather than a button you spam.
+uint32 const SHADOWSTEP_COOLDOWN_MS = 2000;
 // Report #73 (redesign 2026-08-26): using the Pickpocket skill directly
 // auto-pickpockets every humanoid within this radius. User chose this over
 // a once-per-stealth aura -- a real larceny button instead of a stealth
@@ -1743,68 +1746,18 @@ static void ApplyShadowstepCooldown(Player* player)
     // blocks *sending* another cast attempt locally while it thinks a
     // spell is still on cooldown. Switched to ModifySpellCooldown, which
     // DOES send SMSG_MODIFY_COOLDOWN live -- read the real remaining
-    // cooldown first and apply the exact delta needed to land on 6000ms.
+    // cooldown first and apply the exact delta needed to land on
+    // SHADOWSTEP_COOLDOWN_MS.
     player->m_Events.AddEventAtOffset([playerGuid]()
     {
         Player* p = ObjectAccessor::FindPlayer(playerGuid);
         if (!p || !p->IsInWorld())
             return;
         int32 const remaining = int32(p->GetSpellCooldownDelay(SPELL_SHADOWSTEP));
-        int32 const delta = 6000 - remaining;
+        int32 const delta = int32(SHADOWSTEP_COOLDOWN_MS) - remaining;
         if (delta != 0)
             p->ModifySpellCooldown(SPELL_SHADOWSTEP, delta);
     }, std::chrono::milliseconds(300));
-}
-
-// Bug report #9, 2026-08-22: "change shadowstep to no longer do any kind of
-// damaging abilities, but instead pickpocket all enemies within 20 yards after
-// the teleport lands (keep the 6 second cooldown)."
-//
-// This replaces the chain-Ambush entirely. That machinery summoned up to eight
-// short-lived clones, mirrored the player's weapons onto each so Ambush had a
-// weapon to swing, forced the damage through by hand because CastCustomSpell's
-// bp override does not touch the weapon-damage component, and then hand-fed the
-// threat table so the target did not evade. All of it is gone -- Shadowstep is
-// now a mobility-and-larceny button, not a burst button.
-//
-// The 6 second cooldown is untouched: ApplyShadowstepCooldown() is called from
-// the cast hook independently of this, and always was.
-//
-// Humanoids only, because that is what Pickpocket can be used on at all. The
-// autoloot path handles the junkboxes this produces (core-patch 0010), and as
-// of the same day those file into the reagent vault rather than the bags, which
-// is what makes pickpocketing a crowd practical rather than a bag-filling
-// nuisance.
-static void ShadowstepPickpocketImpl(ObjectGuid playerGuid)
-{
-    Player* player = ObjectAccessor::FindPlayer(playerGuid);
-    if (!LivingGear_SafeToCastOn(player) || GetClassPerk(player) != SPELL_SUBTLETY)
-        return;
-
-    std::list<Unit*> around;
-    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, SHADOWSTEP_PICKPOCKET_RADIUS);
-    Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
-    Cell::VisitObjects(player, searcher, SHADOWSTEP_PICKPOCKET_RADIUS);
-    // Bug report #42: "Shadowstep aoe pickpocket doesn't appear to work ...
-    // i'm not getting loot from any of them." Everything checks out on
-    // inspection -- Muckfuppet has Subtlety selected, autoloot is on for the
-    // account, and every humanoid in Hellfire Ramparts has a pickpocket loot
-    // table -- so count what actually happens instead of guessing again.
-    uint32 seen = 0, humanoid = 0, cast = 0;
-    for (Unit* u : around)
-    {
-        ++seen;
-        if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
-            continue;
-        if (u->GetCreatureType() != CREATURE_TYPE_HUMANOID)
-            continue;
-        ++humanoid;
-        player->CastSpell(u, SPELL_PICKPOCKET, true);
-        ++cast;
-    }
-    LOG_INFO("module.livinggear",
-        "shadowstep pickpocket: {} unit(s) in {} yards, {} humanoid, {} pickpocketed",
-        seen, uint32(SHADOWSTEP_PICKPOCKET_RADIUS), humanoid, cast);
 }
 
 // Report #73 (redesign 2026-08-26): "just make the pickpocket skill
@@ -1913,21 +1866,6 @@ void ApplySubtletyBleed(Unit* target, Unit* attacker, uint32& damage, SpellInfo 
             eff->SetPeriodicTimer(std::max(200, faster));
         }
     }
-}
-
-// Deferred for the same reason every other cast in this file is: the spell-cast
-// hook fires part-way through Shadowstep's own Spell::cast(), and casting more
-// spells on a unit that is still "in progress" is the reentrant path into
-// Unit::_AddAura that caused the recurring assert crashes on 2026-08-20.
-void ShadowstepPickpocket(Player* player)
-{
-    if (!player || GetClassPerk(player) != SPELL_SUBTLETY)
-        return;
-    ObjectGuid const playerGuid = player->GetGUID();
-    player->m_Events.AddEventAtOffset([playerGuid]()
-    {
-        ShadowstepPickpocketImpl(playerGuid);
-    }, std::chrono::milliseconds(1));
 }
 
 static void HemorrhageAoEImpl(ObjectGuid playerGuid)
@@ -3106,7 +3044,6 @@ public:
         {
             LivingGear_DiagBump(player, "sstep.hook");
             ApplyShadowstepCooldown(player);
-            ShadowstepPickpocket(player);
         }
         // Report #73: using the Pickpocket skill hits every humanoid within
         // 10 yards. Runs off the actual button press, not stealth.
