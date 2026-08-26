@@ -1726,16 +1726,14 @@ void TryRogueCombatKillingSpree(Player* player, Spell* spell)
 // "Learn Bladestorm. No rage cost, no cooldown, and it does not end.
 // Recast to stop. You can use other abilities while spinning."
 //
-// SAFETY SIMPLIFICATION: the "does not end / recast to stop" toggle is
-// deliberately NOT implemented here. Bonesaw.md documents a real crash
-// history for exactly that (effect-3/CheckCast-after-aura-removal on this
-// same spell). What ships instead: learning Bladestorm, refunding its
-// rage cost, and clearing its cooldown so it can be recast immediately --
-// same player-facing value (spam it near-freely) without touching aura
-// removal/CheckCast timing at all. "Use other abilities while spinning"
-// is already handled by build_patch.py zeroing Bladestorm's
-// ALLOW_ONLY_ABILITY effect (see Bonesaw.md), not something this file
-// needs to add.
+// The permanent toggle IS implemented (report #77, 2026-08-26), using the
+// observe-only pattern proven by Starfall/Arcane Power/Feral Berserk: the
+// update tick refreshes the aura's duration without touching its lifetime
+// during application, and the off-switch runs in CheckCast's strict pass so
+// the cast never starts. The historical crash (effect-3/CheckCast-after-
+// aura-removal) is on the OLD implementation and is not reached by this
+// shape. "Use other abilities while spinning" is handled by build_patch.py
+// zeroing Bladestorm's ALLOW_ONLY_ABILITY effect (see Bonesaw.md).
 // -------------------------------------------------------------------------
 // Bug report #19, 2026-08-22: "should also autocast whirlwind and thunderclap
 // every 6 seconds (affected by haste)" while Bladestorm is active.
@@ -1758,6 +1756,17 @@ void TickWarriorArmsBladestorm(Player* player, uint32& acc, uint32 diff)
         acc = 0;
         return;
     }
+
+    // Report #77: "Bladestorm is now free to cast, but isn't a permanent buff."
+    // The safe observe-only toggle (proven by Starfall/Arcane Power/Feral
+    // Berserk -- wiki "free-permanent-toggle pattern") keeps the aura alive by
+    // refreshing its duration from the update loop. We never touch its
+    // lifetime during its own application, so the old CheckCast-after-removal
+    // crash path is never reached. Recast-to-stop lives in the strict
+    // CheckCast pass (TryWarriorArmsBladestormToggleOff).
+    if (Aura* aura = player->GetAura(SPELL_BLADESTORM))
+        if (aura->GetDuration() >= 0 && aura->GetDuration() < 5000)
+            aura->SetDuration(aura->GetMaxDuration() > 0 ? aura->GetMaxDuration() : 30000);
 
     float haste = player->GetFloatValue(UNIT_MOD_CAST_SPEED);
     if (haste <= 0.0f)
@@ -1782,6 +1791,26 @@ void TickWarriorArmsBladestorm(Player* player, uint32& acc, uint32 diff)
         if (uint32 const tc = BestOwned(p, SPELL_THUNDER_CLAP))
             p->CastSpell(p, tc, true);
     }, std::chrono::milliseconds(1));
+}
+
+// Report #77: the off-switch. Runs in CheckCast's strict pass (same ordering
+// discipline as TryDruidBalanceStarfallToggleOff -- removing the aura there
+// means the cast never starts, so nothing re-applies it).
+void TryWarriorArmsBladestormToggleOff(Spell* spell, bool strict, SpellCastResult& res)
+{
+    if (!strict || res != SPELL_CAST_OK || !spell)
+        return;
+    Unit* caster = spell->GetCaster();
+    Player* player = caster ? caster->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_WARRIOR_ARMS)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_BLADESTORM))
+        return;
+    if (!player->HasAura(SPELL_BLADESTORM))
+        return;                     // not spinning -> let the cast through, toggle ON
+    player->RemoveAurasDueToSpell(SPELL_BLADESTORM);
+    res = SPELL_FAILED_DONT_REPORT; // toggle OFF, and the cast never happens
 }
 
 void TryWarriorArmsOnCast(Player* player, Spell* spell)
@@ -3597,6 +3626,7 @@ public:
     void OnSpellCheckCast(Spell* spell, bool strict, SpellCastResult& res) override
     {
         TryDruidBalanceStarfallToggleOff(spell, strict, res);
+        TryWarriorArmsBladestormToggleOff(spell, strict, res);
     }
 
     void OnSpellPrepare(Spell* spell, Unit* caster, SpellInfo const* spellInfo) override

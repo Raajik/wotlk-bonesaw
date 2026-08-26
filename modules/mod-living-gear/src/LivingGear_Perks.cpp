@@ -178,10 +178,13 @@ uint32 const COOK_BREAKS[] = { 75, 150, 225, 300, 375, 450 };
 float const GARROTE_BLEED_MULT = 11.0f;
 // Bug report #10: the Ambush that Hemorrhage spreads lands at +500%, i.e. 6x.
 float const HEMO_AMBUSH_MULT = 6.0f;
-// Bug report #9: Shadowstep pickpockets everything this far away on landing.
+// Report #9: Shadowstep pickpockets everything this far away on landing.
 float const SHADOWSTEP_PICKPOCKET_RADIUS = 20.0f;
-// Report #73 (new feature): stealthed auto-pickpocket radius.
-float const STEALTH_PICKPOCKET_RADIUS = 25.0f;
+// Report #73 (redesign 2026-08-26): using the Pickpocket skill directly
+// auto-pickpockets every humanoid within this radius. User chose this over
+// a once-per-stealth aura -- a real larceny button instead of a stealth
+// stance.
+float const PICKPOCKET_AOE_RADIUS = 10.0f;
 // Bug report #10: how far Hemorrhage spreads.
 // Bug report #41: "Hemorrhage's extra effects need to apply to all enemies
 // within 15 yards (up from 10)". Matches the Assassination detonator and the
@@ -256,9 +259,6 @@ std::unordered_map<uint32, uint32> g_curatorAcc;
 // Player::ApplyStatPctModifier, not a persisted account toggle.
 std::unordered_map<uint32, bool> g_shadowDanceBuffOn;
 std::unordered_map<uint32, uint32> g_shadowDanceTick;
-// Report #73: targets already pickpocketed during the CURRENT stealth
-// (cleared when stealth drops, so re-stealthing re-arms the pickpocket).
-std::unordered_set<ObjectGuid> g_stealthPicked;
 std::unordered_map<uint32, uint32> g_pullRadiusTick;
 std::unordered_map<uint32, uint32> g_trackOreTick;   // retired with the 10s recast (report #83) -- kept for save compat
 std::unordered_map<uint32, uint32> g_trackHerbTick;
@@ -1807,38 +1807,34 @@ static void ShadowstepPickpocketImpl(ObjectGuid playerGuid)
         seen, uint32(SHADOWSTEP_PICKPOCKET_RADIUS), humanoid, cast);
 }
 
-// Report #73 (new feature): "when stealthed, you automatically pickpocket any
-// eligible enemies within 25 yards." Reuses the Shadowstep pickpocket shape
-// (humanoids only, autoloot feeds the junkboxes to the reagent vault via
-// core-patch 0010), but runs off the stealth aura instead of a Shadowstep
-// landing. Only fires while the Rogue is actually stealthed, so it is a
-// larceny stance rather than a free AoE-loot button.
-static void TickStealthPickpocket(Player* player)
+// Report #73 (redesign 2026-08-26): "just make the pickpocket skill
+// automatically pickpocket all mobs within 10 yards when used." A real
+// button beat a stealth aura: casting Pickpocket (921) hits every humanoid
+// within PICKPOCKET_AOE_RADIUS at once. Humanoids only -- that is what
+// Pickpocket can target at all. Reuses the Shadowstep pickpocket shape
+// (junkboxes autoloot to the reagent vault via core-patch 0010).
+static void PickpocketAoE(Player* player)
 {
     if (!LivingGear_SafeToCastOn(player) || GetClassPerk(player) != SPELL_SUBTLETY)
         return;
-    if (!player->HasAura(SPELL_STEALTH))
-        return;
 
     std::list<Unit*> around;
-    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, STEALTH_PICKPOCKET_RADIUS);
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, PICKPOCKET_AOE_RADIUS);
     Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
-    Cell::VisitObjects(player, searcher, STEALTH_PICKPOCKET_RADIUS);
+    Cell::VisitObjects(player, searcher, PICKPOCKET_AOE_RADIUS);
 
+    uint32 cast = 0;
     for (Unit* u : around)
     {
         if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
             continue;
         if (u->GetCreatureType() != CREATURE_TYPE_HUMANOID)
             continue;
-        // One per target per stealth: the junkbox loot table only fills once,
-        // so re-casting every second just spams failures. Track who this
-        // stealth has already hit.
-        if (g_stealthPicked.find(u->GetGUID()) != g_stealthPicked.end())
-            continue;
         player->CastSpell(u, SPELL_PICKPOCKET, true);
-        g_stealthPicked.insert(u->GetGUID());
+        ++cast;
     }
+    LOG_DEBUG("module.livinggear", "pickpocket aoe: {} humanoid(s) in {} yards pickpocketed",
+        cast, uint32(PICKPOCKET_AOE_RADIUS));
 }
 
 // Report #43, a new Subtlety effect: "Eviscerate applies a 5 point Slice and
@@ -2949,7 +2945,6 @@ public:
             {
                 g_shadowDanceTick[id] = 0;
                 TickShadowDanceBuff(player);
-                TickStealthPickpocket(player);
             }
         }
         if (player->GetSession() && g_pullRadiusOn[player->GetSession()->GetAccountId()]
@@ -3113,6 +3108,10 @@ public:
             ApplyShadowstepCooldown(player);
             ShadowstepPickpocket(player);
         }
+        // Report #73: using the Pickpocket skill hits every humanoid within
+        // 10 yards. Runs off the actual button press, not stealth.
+        if (info->Id == SPELL_PICKPOCKET && GetClassPerk(player) == SPELL_SUBTLETY)
+            PickpocketAoE(player);
         if (sSpellMgr->GetFirstSpellInChain(info->Id) == SPELL_HEMORRHAGE)
             LivingGear_DiagBump(player, "hemo.cast");
         if (GetClassPerk(player) == SPELL_SUBTLETY
@@ -3351,7 +3350,6 @@ public:
     PerksUnit() : UnitScript("LivingGearPerksUnit", true, {
         UNITHOOK_ON_DAMAGE,
         UNITHOOK_ON_AURA_APPLY,
-        UNITHOOK_ON_AURA_REMOVE,
         UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
         UNITHOOK_MODIFY_HEAL_RECEIVED,
         UNITHOOK_SHOULD_TRACK_VALUES_UPDATE_POS_BY_INDEX,
@@ -3513,18 +3511,6 @@ public:
         UniformMount(unit, aura);
         NeutralizeStealthSpeed(unit, aura);
         ReduceCrowdControl(unit, aura);
-    }
-
-    // Report #73: leaving stealth clears the "already pickpocketed" set so a
-    // fresh stealth re-arms the auto-pickpocket. Also clears it if a logged-out
-    // character somehow had one -- cheap and idempotent.
-    void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode /*mode*/) override
-    {
-        if (!unit || !unit->IsPlayer() || !aurApp)
-            return;
-        if (aurApp->GetBase()->GetSpellInfo()->Id != SPELL_STEALTH)
-            return;
-        g_stealthPicked.clear();
     }
 };
 
