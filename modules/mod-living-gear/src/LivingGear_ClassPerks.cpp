@@ -2541,7 +2541,10 @@ void TickWarlockAffliction(Player* player, TickState& st, uint32 diff)
     st.acc = 0;
     Unit* source = player->GetVictim();
     if (!source)
+    {
+        LOG_DEBUG("module.livinggear", "affliction spread: no victim, skipping");
         return;
+    }
     uint32 const guid = player->GetGUID().GetCounter();
     if (!g_reentryGuard.insert(guid).second)
         return;
@@ -2557,15 +2560,26 @@ void TickWarlockAffliction(Player* player, TickState& st, uint32 diff)
         if (dotInfo && dotInfo->SpellFamilyName == SPELLFAMILY_WARLOCK && dotInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE))
             dots.push_back(dotInfo->Id);
     }
+    uint32 spread = 0;
     if (!dots.empty())
-        ForEachHostileNear(player, source, WARLOCK_AFFLICTION_SPREAD_RANGE, [player, source, &dots](Unit* target)
+        ForEachHostileNear(player, source, WARLOCK_AFFLICTION_SPREAD_RANGE, [player, source, &dots, &spread](Unit* target)
         {
             if (target == source)
                 return;
             for (uint32 id : dots)
                 if (!target->HasAura(id, player->GetGUID()))
+                {
+                    // Report #96: "Warlock Affliction perk not working, dots are
+                    // not spreading." The tick loop read correct on inspection,
+                    // so count what actually happens per tick instead of
+                    // guessing again -- same instrumentation shape as the
+                    // shadowstep pickpocket and blizzard counters.
+                    ++spread;
                     player->CastSpell(target, id, true);
+                }
         });
+    LOG_DEBUG("module.livinggear", "affliction spread: {} DoT(s) on victim, {} cast(s) this tick",
+        dots.size(), spread);
     g_reentryGuard.erase(guid);
 }
 

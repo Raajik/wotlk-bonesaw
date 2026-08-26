@@ -1924,6 +1924,36 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
     {
         if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
             continue;
+
+        // Bug reports #28/#42/#90, log forensics 2026-08-26. The failure log
+        // was dominated by three results with distinct, fixable causes:
+        //
+        //   result 30 EQUIPPED_ITEM_CLASS_MAINHAND (~532k) -- Ambush demands a
+        //     dagger and the ATTR3 weapon check ignored the waive flag. Fixed
+        //     in the core (core-patch 0026), so this spread now works from any
+        //     weapon.
+        //   result 97 OUT_OF_RANGE / 134 UNIT_NOT_INFRONT (~115k) -- Ambush
+        //     and Garrote are melee-range, in-front spells but this loop cast
+        //     them at everything within HEMO_RADIUS regardless of geometry.
+        //     Now gated to targets actually inside melee range AND inside the
+        //     player's front arc; Hemorrhage itself still spreads to the full
+        //     radius.
+        //   result 12 BAD_TARGETS on undead/mechanical/elemental (~1.7k) --
+        //     bleeds cannot land on creatures immune to bleed mechanics;
+        //     skipping those instead of spamming failures.
+        if (!player->IsWithinMeleeRange(u))
+            continue;
+        if (!player->HasInArc(static_cast<float>(M_PI), u))
+            continue;
+        switch (u->GetCreatureType())
+        {
+            case CREATURE_TYPE_UNDEAD:
+            case CREATURE_TYPE_MECHANICAL:
+            case CREATURE_TYPE_ELEMENTAL:
+                continue;
+            default:
+                break;
+        }
         LivingGear_DiagBump(player, "hemo.hit");
 
         // Ambush is dagger-only (EquippedItemSubClassMask 0x8000), and
@@ -1938,7 +1968,9 @@ static void HemorrhageAoEImpl(ObjectGuid playerGuid)
         // Hemorrhage itself takes axes, maces, swords, staves and fists, so
         // "spread an Ambush" cannot sensibly mean "only if you brought a
         // dagger". The requirement is waived; the damage still comes from
-        // whatever weapon the player is actually holding.
+        // whatever weapon the player is actually holding. Waiving it is now
+        // also honoured by CheckItems' weapon-presence check -- core-patch
+        // 0026 -- which is what finally let these casts through.
         TriggerCastFlags const spreadFlags =
             TriggerCastFlags(TRIGGERED_FULL_MASK | TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT);
 

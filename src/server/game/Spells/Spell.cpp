@@ -7873,7 +7873,15 @@ SpellCastResult Spell::CheckItems(uint32* param1, uint32* param2)
     }
 
     // check weapon presence in slots for main/offhand weapons
-    if (/*never skip those checks !HasTriggeredCastFlag(TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT) &&*/ m_spellInfo->EquippedItemClass >= 0)
+    // Bonesaw (core-patch 0026): TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT
+    // used to be commented out of this guard, which made the flag a no-op for
+    // the ATTR3 main-hand/off-hand presence checks. That broke every scripted
+    // spread that waives weapon requirements -- Living Gear's Hemorrhage AoE
+    // cast Ambush (dagger-only) from any weapon and failed ~532k times with
+    // SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND before this. The flag is only
+    // ever set by explicitly triggered casts (it sits outside
+    // TRIGGERED_FULL_MASK), so normal player casts are unaffected.
+    if (!HasTriggeredCastFlag(TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT) && m_spellInfo->EquippedItemClass >= 0)
     {
         // main hand weapon required
         if (m_spellInfo->HasAttribute(SPELL_ATTR3_REQUIRES_MAIN_HAND_WEAPON))
