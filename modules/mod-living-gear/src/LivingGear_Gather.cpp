@@ -35,6 +35,10 @@
 #include <unordered_set>
 #include <vector>
 
+// Defined at the bottom of this file; used by ScanLockpick (and by
+// Spell::CanOpenLock via the account-wide lockpicking core-patch 0005).
+uint32 LivingGear_AccountLockpickSkill(Player* player);
+
 // Castable perks only get learned; badges do not. LivingGear_Perks.cpp.
 bool LivingGear_PerkIsCastable(uint32 spellId);
 void LivingGear_RefundIfPurchased(Player* player, uint32 spellId);
@@ -84,6 +88,11 @@ uint32 const SPELL_SPARKLE_HERB = 910139;
 uint32 const SPELL_SPARKLE_MINE = 910140;
 uint32 const SPELL_SPARKLE_FISH = 910141;
 uint32 const SPELL_RARE_PULSE = 910142;
+// The native Lockpicking spell a Rogue casts at a locked chest. Report #71:
+// locked chests were never auto-opened, so they never reached
+// TryAutolootChest -- the whole point of a level-up chest is the skill-up,
+// and the skill-up only happens on a successful Spell::EffectOpenLock.
+uint32 const SPELL_LOCKPICK = 1804;
 uint32 const YIELD_NEED[] = { 150, 300, 450 };
 uint32 const REACH_NEED[] = { 75, 225, 375 };
 uint32 const RARE_RESPAWN_CAP = 180;
@@ -285,6 +294,12 @@ bool IsRareCreature(Creature* creature)
     if (!creature || creature->IsPet() || creature->IsSummon() || creature->isWorldBoss())
         return false;
     if (!creature->GetSpawnId())
+        return false;
+    // Bug report #97: the rare-hunter skull/pulse marks city NPCs like Vern in
+    // Dalaran (rank 4, unattackable). A creature players can never fight is not
+    // a "rare" for this feature's purposes -- gate on attackability so the
+    // marking only reaches actual huntable rares out in the world.
+    if (creature->IsImmuneToPC() || !creature->IsHostileToPlayers())
         return false;
     uint32 const rank = creature->GetCreatureTemplate()->rank;
     return rank == CREATURE_ELITE_RARE || rank == CREATURE_ELITE_RAREELITE;
@@ -882,6 +897,73 @@ void TryAutoCatchFish(Player* player)
     QueueFishingRecast(player);
 }
 
+// Report #71: "lockpicking level-up chests don't auto-unlock (using rogue's
+// own skill for skillups)/autoloot." A locked chest needs a successful
+// Spell::EffectOpenLock before anything loots it -- that is the only place the
+// skill-up roll happens (Spell.cpp:6444). Casting the Rogue's native
+// Lockpicking spell (1804) at a locked chest drives the whole existing chain:
+// CanOpenLock (account-wide skill, core-patch 0005) -> unlock ->
+// OnPlayerUseGameObject -> TryAutolootChest -> autoloot.
+//
+// Runs at the START of ScanGather, before the reach-perk early return -- a
+// Rogue with no Gather reach perks would otherwise be skipped entirely and
+// never even look at chests.
+void ScanLockpick(Player* player)
+{
+    if (!player || !player->IsAlive())
+        return;
+    if (!sSpellMgr->GetSpellInfo(SPELL_LOCKPICK))
+        return;
+    // Only Rogues get Lockpicking at all; skip the scan for everyone else.
+    if (player->getClass() != CLASS_ROGUE)
+        return;
+    uint32 const skill = LivingGear_AccountLockpickSkill(player);
+    if (!skill)
+        return;
+
+    std::list<GameObject*> objects;
+    auto collect = [&](GameObject* go)
+    {
+        if (!go || !go->isSpawned() || go->GetGoType() != GAMEOBJECT_TYPE_CHEST)
+            return;
+        if (!player->IsWithinDistInMap(go, GATHER_BASE_RANGE, true, false, false))
+            return;
+        objects.push_back(go);
+    };
+    Acore::GameObjectWorker<decltype(collect)> worker(player, collect);
+    Cell::VisitObjects(player, worker, GATHER_BASE_RANGE);
+
+    for (GameObject* go : objects)
+    {
+        if (go->getLootState() != GO_READY)
+            continue;
+        uint32 const lockId = go->GetGOInfo()->GetLockId();
+        if (!lockId)
+            continue;
+        LockEntry const* lock = sLockStore.LookupEntry(lockId);
+        if (!lock)
+            continue;
+        bool isPicklock = false;
+        uint32 req = 0;
+        for (int i = 0; i < MAX_LOCK_CASE; ++i)
+        {
+            if (lock->Type[i] != LOCK_KEY_SKILL)
+                continue;
+            if (lock->Index[i] != LOCKTYPE_PICKLOCK)
+                continue;
+            isPicklock = true;
+            req = lock->Skill[i];
+            break;
+        }
+        if (!isPicklock || !req || skill < req)
+            continue;
+        // Let the spell's own CastSpell->EffectOpenLock path do the unlock,
+        // skill-up roll, and autoloot. Triggered so it cannot be blocked by
+        // range/facing of the player's own cast.
+        player->CastSpell(go, SPELL_LOCKPICK, true);
+    }
+}
+
 void ScanGather(Player* player)
 {
     if (!player || !player->IsAlive() || !player->IsInWorld() || player->IsInFlight())
@@ -894,6 +976,7 @@ void ScanGather(Player* player)
     last = now;
 
     TryAutoCatchFish(player);
+    ScanLockpick(player);
 
     float range = GATHER_BASE_RANGE;
     range = std::max(range, GATHER_BASE_RANGE + ExtraReach(player, SPELL_MINE_REACH));

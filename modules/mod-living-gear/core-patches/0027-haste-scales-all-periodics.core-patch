@@ -1,0 +1,36 @@
+All periodic damage/heal ticks scale their interval with caster haste.
+
+Touches: src/server/game/Spells/Auras/SpellAuraEffects.cpp,
+AuraEffect::CalculatePeriodic
+
+Why: player request 2026-08-26 -- "make any kind of damage-over-time or
+heal-over-time effects scale with haste... don't reduce duration, just
+increase how quickly damage/healing ticks occur."
+
+Upstream, the caster's UNIT_MOD_CAST_SPEED (spell haste; <1 = faster) only
+shrinks a periodic's tick amplitude when the spell carries
+SPELL_ATTR5_SPELL_HASTE_AFFECTS_PERIODIC or is hit by a
+SPELL_AURA_PERIODIC_HASTE affect-mask aura. Everything else -- the vast
+majority of DoTs and HoTs -- ticks at a fixed interval forever.
+
+The change drops that gate: every periodic AuraEffect now scales its
+amplitude by the caster's current haste. Because GetTotalTicks() is
+MaxDuration/amplitude, shrinking the amplitude raises the tick count within
+the SAME duration. A 10-second DoT that ticked once per second now ticks
+every 0.8s at 20% haste and delivers 12 ticks instead of 10 -- the duration
+is untouched, only the cadence (and therefore total output) changes. This
+is the classic "haste makes DoTs/HoTs stronger without shortening them"
+feel, applied server-wide.
+
+Deliberate scope notes:
+- Applies to creatures as well as players (caster may be any Unit); a
+  hasted enemy's DoTs tick faster too, which is symmetric and fine.
+- Channeled spells reach this code through SPELL_AURA_PERIODIC_TRIGGER_SPELL;
+  their totalTicks scales identically, so a hasted channel delivers more
+  ticks over the same channel -- consistent with the request.
+- No duration is touched anywhere; only m_amplitude changes, and the tick
+  loop's `(m_tickNumber+1) > totalTicks` guard uses the scaled count, so
+  there is no over-tick and no early expiry.
+
+Verified against SpellAuraEffects.cpp:934-955 (tick loop) and :7072
+(GetTotalTicks) at the time of writing.

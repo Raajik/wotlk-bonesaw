@@ -1,0 +1,37 @@
+Add a ScriptMgr hook for scaling threat a unit generates.
+
+Touches: src/server/game/Combat/ThreatManager.cpp,
+src/server/game/Scripting/ScriptDefines/UnitScript.h,
+src/server/game/Scripting/ScriptDefines/UnitScript.cpp,
+src/server/game/Scripting/ScriptMgr.h
+
+Why: report #91 -- "Add 1000% aggro gen on warrior protection perk, can't
+keep anything attacking me as tank because everyone hits too hard."
+
+There was no script hook anywhere in the threat pipeline, so the module had
+no way to multiply a Protection warrior's threat. The cleanest insertion
+point is the bottom of ThreatManager::AddThreat, right after the engine's
+own modifiers (spell threat entries, SPELLMOD_THREAT, school modifiers)
+have been applied to `amount` -- at that point `target` is the unit
+generating the threat and `_owner` is the unit holding the list.
+
+New hook, mirroring the existing OnCreatureLevelForTarget pattern
+(core-patch 0025):
+
+  UnitScript (virtual, default no-op):
+    virtual void OnCalculateThreat(Unit* attacker, Unit* victim,
+        float& threat, SpellInfo const* spell) { }
+
+  - UNITHOOK_ON_CALCULATE_THREAT added to the UnitScript hook enum before
+    UNITHOOK_END.
+  - ScriptMgr::OnCalculateThreat forward declared in ScriptMgr.h.
+  - CALL_ENABLED_HOOKS dispatch in UnitScript.cpp.
+  - sScriptMgr->OnCalculateThreat(target, _owner, amount, spell) called in
+    ThreatManager::AddThreat after CalculateModifiedThreat, gated on
+    !ignoreModifiers.
+
+The module consumes it: LivingGearClassPerksUnit overrides OnCalculateThreat
+and multiplies threat by 11 for players with the Protection warrior perk
+(SPELL_WARRIOR_PROTECTION). Fires for melee, spell, periodic and heal threat
+alike because it sits at the bottom of AddThreat. All four hook parts are
+present (enum, virtual, forward, dispatch), so the hook actually fires.

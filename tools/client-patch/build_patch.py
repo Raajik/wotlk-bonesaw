@@ -137,7 +137,10 @@ CUSTOM_SPELLS = {
     910039: ("*Wayfarer 4", "Movement speed +80% on foot, mounted and flying.", 516),
     910040: ("*Wayfarer 5", "Movement speed +100% on foot, mounted and flying.", 516),
     910041: ("*Gear: Auto-Attune", "Auto-attune looted gear. Poor starts unlocked. Higher qualities unlock as you attune more items (10, 100, 1000, ...).", 997),
-    910042: ("*Attune Backpack", "Attune every living-gear piece in your bags. Items are destroyed and 10% of grown stats go to the account.", 4244),
+    # 910042 *Attune Backpack removed 2026-08-26 (#99): the destructive one-time
+    # attune it described was retired in the 2026-08-20 redesign (attunement is
+    # now continuous while worn), and the spell had no handler and no UI. A dead
+    # spellbook button. Perk IDs are not reused; the freed id is simply vacant.
     910053: ("*Leveling: 1", "XP gains +50%. Unlocked by 1 character at level 80.", 3268),
     910054: ("*Leveling: 2", "XP gains +50%. Unlocked by 2 characters at level 80.", 3269),
     910055: ("*Leveling: 3", "XP gains +50%. Unlocked by 3 characters at level 80.", 3270),
@@ -241,7 +244,7 @@ VISUAL_COPY = {
 # because nobody needed to notice they were gone.
 CASTABLE_SPELLS = {
     910001, 910002, 910003, 910004, 910005, 910006, 910007, 910009,
-    910042, 910088, 910090, 910091,
+    910088, 910090, 910091,
 }
 
 # Hidden HoT used by First Aid Instant. Not added to SkillLineAbility / spellbook.

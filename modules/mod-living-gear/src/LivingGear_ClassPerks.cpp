@@ -203,6 +203,12 @@ uint32 const SPELL_ECLIPSE_LUNAR = 48518;
 uint32 const SPELL_BERSERK_DRUID = 50334;
 uint32 const SPELL_WILD_GROWTH_R1 = 48438;
 uint32 const SPELL_REJUVENATION_R1 = 774;
+// Reports #85/#86: Insect Swarm spreads to everything within 25 yards on
+// cast and auto-casts on struck enemies; Moonkin Form is granted so the
+// shape-shift exists. Thorns (#87) goes through TickDruidBalanceThorns.
+uint32 const SPELL_INSECT_SWARM_R1 = 5570;
+uint32 const SPELL_MOONKIN_FORM = 24858;
+uint32 const SPELL_THORNS_R1 = 467;
 // Priest
 uint32 const SPELL_PENANCE_R1 = 47540;
 // Penance's damage half, ranked in lockstep with the channel above
@@ -349,7 +355,7 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     // Fury multiplies Rend and Deep Wounds. Deep Wounds is a pure talent with
     // no castable spell to learn, so only Rend can be handed over.
     { SPELL_WARRIOR_FURY,        { SPELL_REND, 0, 0 } },
-    { SPELL_DRUID_BALANCE,       { SPELL_STARFALL, 0, 0 } },
+    { SPELL_DRUID_BALANCE,       { SPELL_STARFALL, SPELL_MOONKIN_FORM, 0 } },
     { SPELL_DRUID_FERAL,         { SPELL_BERSERK_DRUID, 0, 0 } },
     // "Rejuvenation spreads to injured allies within 15 yards every 3 sec."
     { SPELL_DRUID_RESTORATION,   { SPELL_WILD_GROWTH_R1, SPELL_REJUVENATION_R1, 0 } },
@@ -375,6 +381,12 @@ uint32 const ROGUE_ENERGY_TICK_MS = 2000;
 int32 const ROGUE_ENERGY_TICK_BONUS = 10; // +50% of the ~20-per-2s baseline energy tick
 uint32 const ROGUE_KS_CHANCE = 30;
 uint32 const PALADIN_AS_BOUNCES = 30;
+// Report #81: "Avenger's Shield needs a much shorter cooldown or a chance to
+// proc off other abilities like Judgement." Proc wins over a CD change --
+// it keeps the hand-cast Avenger's Shield meaningful while letting the
+// bounce chain (which is the fun part) come out for free off a Judgement.
+uint32 const PALADIN_AS_PROC_CHANCE = 15;
+uint32 const SPELL_JUDGEMENT_R1 = 20271;
 float const PALADIN_AS_HOP_RANGE = 10.0f;
 float const PALADIN_DEVO_ALLY_RANGE = 40.0f;
 float const PALADIN_DEVO_DR = 0.90f; // 10% incoming damage reduction
@@ -455,6 +467,7 @@ std::unordered_map<uint32, TickState> g_afflictionTick;
 std::unordered_map<uint32, uint32> g_bladestormTick;
 std::unordered_map<uint32, TickState> g_eclipseTick;
 std::unordered_map<uint32, TickState> g_rejuvTick;
+std::unordered_map<uint32, TickState> g_thornsTick;
 
 std::unordered_set<uint32> g_perkLoaded;              // account ids already loaded
 std::unordered_map<uint32, std::unordered_set<uint32>> g_perks; // account id -> unlocked spell ids
@@ -1291,8 +1304,10 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
         return;
     st.fireTickAcc = 0;
     bool anyBombed = false;
-    ForEachHostileInRange(player, CLASS_PERK_RANGE, [player, &anyBombed](Unit* target)
+    uint32 inRange = 0;
+    ForEachHostileInRange(player, CLASS_PERK_RANGE, [player, &anyBombed, &inRange](Unit* target)
     {
+        ++inRange;
         if (target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
             anyBombed = true;
     });
@@ -1301,11 +1316,35 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
     uint32 const guid = player->GetGUID().GetCounter();
     if (!g_reentryGuard.insert(guid).second)
         return;
-    ForEachHostileInRange(player, CLASS_PERK_RANGE, [player](Unit* target)
+    uint32 spread = 0, failed = 0, alreadyBombed = 0;
+    SpellCastResult lastResult = SPELL_CAST_OK;
+    ForEachHostileInRange(player, CLASS_PERK_RANGE, [player, &spread, &failed, &alreadyBombed, &lastResult](Unit* target)
     {
-        if (!target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
+        if (target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
+        {
+            ++alreadyBombed;
+            return;
+        }
+        // Bug report #52: "Living Bomb not auto spreading in combat." The tick
+        // read correct on inspection -- same shape as the affliction fix that
+        // DID work -- so count what actually happens per tick instead of
+        // trusting that it does. BestOwnedOrFirst guarantees a spell ID, so a
+        // failure here is a Spell::cast rejection (range, facing, weapon,
+        // target invalid) that the silent CastSpell used to swallow.
+        SpellCastResult const res =
             player->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true);
+        if (res == SPELL_CAST_OK)
+            ++spread;
+        else
+        {
+            ++failed;
+            lastResult = res;
+        }
     });
+    if (spread || failed || inRange)
+        LOG_DEBUG("module.livinggear",
+            "mage fire spread: {} in range, {} already bombed, {} cast, {} failed (last result {})",
+            inRange, alreadyBombed, spread, failed, uint32(lastResult));
     g_reentryGuard.erase(guid);
 }
 
@@ -2713,7 +2752,20 @@ void TickDruidBalanceStarfall(Player* player)
     for (uint32 id = SPELL_STARFALL; id; id = sSpellMgr->GetNextSpellInChain(id))
         if (Aura* aura = player->GetAura(id))
             if (aura->GetDuration() >= 0 && aura->GetDuration() < 5000)
+            {
                 aura->SetDuration(aura->GetMaxDuration() > 0 ? aura->GetMaxDuration() : 20000);
+                // Bug report #82: "Starfall refreshes the duration, but doesn't
+                // actually continue doing damage indefinitely." The buff bar
+                // reset but the damage stopped because the periodic's tick
+                // budget runs out: AuraEffect::Update stops ticking once
+                // m_tickNumber exceeds totalTicks (SpellAuraEffects.cpp:935),
+                // and totalTicks comes from the ORIGINAL duration, not the
+                // refreshed one. Reset the tick counter (and re-arm its timer)
+                // whenever the duration is extended so the stars keep falling.
+                for (uint8 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+                    if (AuraEffect* aurEff = aura->GetEffect(eff))
+                        aurEff->ResetPeriodic(true);
+            }
 }
 
 // The off-switch. Runs in CheckCast's strict pass -- see the ordering note above.
@@ -2784,6 +2836,80 @@ void TickDruidBalanceEclipse(Player* player, TickState& st, uint32 diff)
         }
         else
             player->CastSpell(player, id, true);
+    }
+}
+
+// -------------------------------------------------------------------------
+// Reports #85/#86/#87: Insect Swarm spreads to everything within 25 yards on
+// cast, auto-casts on whatever strikes the player in combat, and Thorns
+// covers the party while the Balance perk is active.
+// -------------------------------------------------------------------------
+uint32 const DRUID_BALANCE_INSECT_RANGE = 25;
+uint32 const DRUID_BALANCE_THORNS_TICK_MS = 5000;
+
+// Cast-side spread. "On cast" is the OnPlayerSpellCast hook (fired from
+// Spell::_cast), which is also where every other perk's free-cast /
+// no-cooldown wiring lives.
+void TryDruidBalanceInsectSpread(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_DRUID_BALANCE)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_INSECT_SWARM_R1))
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+    Unit* victim = spell->m_targets.GetUnitTarget();
+    ForEachHostileNear(player, victim ? victim : player,
+        float(DRUID_BALANCE_INSECT_RANGE), [player, victim](Unit* target)
+    {
+        if (target == victim || target->HasAura(SPELL_INSECT_SWARM_R1, player->GetGUID()))
+            return;
+        player->CastSpell(target, BestOwnedOrFirst(player, SPELL_INSECT_SWARM_R1), true);
+    });
+    g_reentryGuard.erase(guid);
+}
+
+// Struck-side auto-cast. Runs from the OnDamage hook (attacker hits the
+// player), which is the same hook the Protection thorns-perk uses.
+void TryDruidBalanceInsectOnStruck(Unit* attacker, Unit* victim)
+{
+    Player* player = victim ? victim->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_DRUID_BALANCE || !player->IsAlive())
+        return;
+    if (!attacker || !attacker->IsAlive() || !player->IsValidAttackTarget(attacker))
+        return;
+    if (attacker->HasAura(SPELL_INSECT_SWARM_R1, player->GetGUID()))
+        return;
+    player->CastSpell(attacker, BestOwnedOrFirst(player, SPELL_INSECT_SWARM_R1), true);
+}
+
+// Thorns on the party. Same observe-only shape as the Eclipse tick --
+// touching a freshly-applied aura from inside its own hook is the documented
+// Bladestorm trap, so this just re-casts anyone who's missing it.
+void TickDruidBalanceThorns(Player* player, TickState& st, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_DRUID_BALANCE || !player->IsAlive())
+        return;
+    st.acc += diff;
+    if (st.acc < DRUID_BALANCE_THORNS_TICK_MS)
+        return;
+    st.acc = 0;
+    Group* group = player->GetGroup();
+    if (!group)
+    {
+        if (!player->HasAura(SPELL_THORNS_R1))
+            player->CastSpell(player, BestOwnedOrFirst(player, SPELL_THORNS_R1), true);
+        return;
+    }
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsAlive() || !member->IsInWorld())
+            continue;
+        if (!member->HasAura(SPELL_THORNS_R1))
+            member->CastSpell(member, BestOwnedOrFirst(member, SPELL_THORNS_R1), true);
     }
 }
 
@@ -3148,6 +3274,21 @@ static void AvengerBounceStep(ObjectGuid playerGuid, ObjectGuid currentGuid, uin
     }, std::chrono::milliseconds(150));
 }
 
+// Shared scheduler: fire the full bounce chain at a target, starting in 1ms
+// (the first hop resolves immediately, then each subsequent hop is its own
+// m_Events callback -- see AvengerBounceStep). The caller owns the re-entry
+// guard; AvengerBounceStep releases it when the chain ends.
+void ScheduleAvengerBouncesOn(Player* player, ObjectGuid targetGuid, uint32 spellId)
+{
+    if (!player || targetGuid.IsEmpty() || !spellId)
+        return;
+    ObjectGuid playerGuid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid, targetGuid, spellId]()
+    {
+        AvengerBounceStep(playerGuid, targetGuid, spellId, PALADIN_AS_BOUNCES);
+    }, std::chrono::milliseconds(1));
+}
+
 void ScheduleAvengerBounces(Player* player, Spell* spell)
 {
     if (!player || !spell)
@@ -3161,13 +3302,30 @@ void ScheduleAvengerBounces(Player* player, Spell* spell)
     uint32 const guid = player->GetGUID().GetCounter();
     if (!g_reentryGuard.insert(guid).second)
         return;
-    ObjectGuid playerGuid = player->GetGUID();
-    ObjectGuid currentGuid = current->GetGUID();
-    uint32 spellId = info->Id;
-    player->m_Events.AddEventAtOffset([playerGuid, currentGuid, spellId]()
-    {
-        AvengerBounceStep(playerGuid, currentGuid, spellId, PALADIN_AS_BOUNCES);
-    }, std::chrono::milliseconds(1));
+    ScheduleAvengerBouncesOn(player, current->GetGUID(), info->Id);
+}
+
+// Report #81: a Judgement cast has PALADIN_AS_PROC_CHANCE % to fire the full
+// Avenger's Shield bounce chain for free. Runs from the cast hook like every
+// other perk trigger, so it is a real button being pressed -- not a proc
+// hidden in a tick loop. The re-entry guard is held until the chain ends
+// (AvengerBounceStep erases it), exactly like a hand-cast.
+void TryPaladinProtJudgementProc(Player* player, Spell* spell)
+{
+    if (!player || !spell || spell->IsTriggered() || GetClassPerk(player) != SPELL_PALADIN_PROTECTION)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_JUDGEMENT_R1))
+        return;
+    if (!roll_chance_i(PALADIN_AS_PROC_CHANCE))
+        return;
+    Unit* target = spell->m_targets.GetUnitTarget();
+    if (!target || !player->IsValidAttackTarget(target))
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+    ScheduleAvengerBouncesOn(player, target->GetGUID(), BestOwnedOrFirst(player, SPELL_AVENGERS_SHIELD));
 }
 
 void TryPaladinProtOnCast(Player* player, Spell* spell)
@@ -3358,6 +3516,7 @@ public:
         {
             TickDruidBalanceEclipse(player, g_eclipseTick[player->GetGUID().GetCounter()], diff);
             TickDruidBalanceStarfall(player);
+            TickDruidBalanceThorns(player, g_thornsTick[player->GetGUID().GetCounter()], diff);
         }
         else if (selected == SPELL_DRUID_RESTORATION)
         {
@@ -3386,6 +3545,7 @@ public:
         TryMageArcaneOnCast(player, spell);
         TryMageFrostBlizzardLinger(player, spell);
         TryPaladinProtOnCast(player, spell);
+        TryPaladinProtJudgementProc(player, spell);
         TryWarriorArmsOnCast(player, spell);
         TryWarriorProtOnCast(player, spell);
         TryRogueCombatKillingSpree(player, spell);
@@ -3401,6 +3561,7 @@ public:
         TryShamanRestOnCast(player, spell);
         TryWarlockDemoOnCast(player, spell);
         TryWarlockDestroOnCast(player, spell);
+        TryDruidBalanceInsectSpread(player, spell);
         TryDruidBalanceOnCast(player, spell);
         TryDruidFeralOnCast(player, spell);
         TryDruidRestOnCast(player, spell);
@@ -3457,8 +3618,27 @@ public:
         UNITHOOK_ON_DAMAGE,
         UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN,
         UNITHOOK_MODIFY_MELEE_DAMAGE,
-        UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK
+        UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
+        UNITHOOK_ON_CALCULATE_THREAT
     }) { }
+
+    // Report #91: "Add 1000% aggro gen on warrior protection perk, can't keep
+    // anything attacking me as tank because everyone hits too hard." The
+    // Protection warrior multiplies every point of threat it generates by 11
+    // (+1000%). Fires for melee, spells, and periodic damage alike because the
+    // hook sits at the bottom of ThreatManager::AddThreat, after the engine's
+    // own modifiers -- so taunts, dps-threat and heal-threat all hold.
+    void OnCalculateThreat(Unit* attacker, Unit* victim, float& threat, SpellInfo const* /*spell*/) override
+    {
+        if (!attacker || threat <= 0.0f)
+            return;
+        Player* player = attacker->ToPlayer();
+        if (!player || GetClassPerk(player) != SPELL_WARRIOR_PROTECTION)
+            return;
+        if (victim && !player->IsValidAttackTarget(victim))
+            return;
+        threat *= 11.0f;
+    }
 
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
     {
@@ -3466,6 +3646,7 @@ public:
             return;
         ApplyDevotionDR(victim, damage);
         TryProtThorns(attacker, victim, damage);
+        TryDruidBalanceInsectOnStruck(attacker, victim);
     }
 
     void ModifySpellDamageTaken(Unit* target, Unit* attacker, int32& damage, SpellInfo const* spellInfo) override

@@ -122,10 +122,15 @@ uint32 const TRADE_TIERS = 6;
 // simply getting no skill-up bonus from anything. The Professions track says
 // "+100% skill-ups" for reaching profession skill milestones, and cooking is a
 // profession.
+// Bug report #98: "Profession perk for extra skill per craft not applying to
+// First Aid crafting." First Aid was missing here, so bandage crafts fell out
+// of OnPlayerUpdateCraftingSkill untouched (and silently). First Aid is a
+// secondary trade skill exactly like Cooking, which was always in the list,
+// so it both receives the boost and counts toward the Trade tier unlocks.
 uint32 const TRADE_SKILLS[] = {
     SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_LEATHERWORKING, SKILL_TAILORING,
     SKILL_ENGINEERING, SKILL_ENCHANTING, SKILL_JEWELCRAFTING, SKILL_INSCRIPTION,
-    SKILL_COOKING
+    SKILL_COOKING, SKILL_FIRST_AID
 };
 
 // 910053-910062: Leveling 1-10. XP gains +50% per tier. Unlocked when the
@@ -394,20 +399,32 @@ bool IsTradeSkill(uint32 skillId)
     return false;
 }
 
+// Every real profession, crafting and gathering alike. The Trade perk family's
+// design is cross-profession: whichever profession you grind first unlocks the
+// tiers, and those tiers then speed ALL the others. Lockpicking stays out on
+// purpose -- see its gather hook below.
+uint32 const ALL_PROFESSION_SKILLS[] = {
+    SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_LEATHERWORKING, SKILL_TAILORING,
+    SKILL_ENGINEERING, SKILL_ENCHANTING, SKILL_JEWELCRAFTING, SKILL_INSCRIPTION,
+    SKILL_COOKING, SKILL_FIRST_AID,
+    SKILL_HERBALISM, SKILL_MINING, SKILL_SKINNING, SKILL_FISHING
+};
+
+// Literal IN list mirror of ALL_PROFESSION_SKILLS for the DB read (offline
+// alts). TRADE_SKILLS above stays the smaller crafting-recipe gate.
 uint32 AccountMaxTradeSkill(Player* player)
 {
     if (!player || !player->GetSession())
         return 0;
     uint32 best = 0;
-    for (uint32 sk : TRADE_SKILLS)
+    for (uint32 sk : ALL_PROFESSION_SKILLS)
         best = std::max(best, uint32(player->GetSkillValue(sk)));
     if (QueryResult result = CharacterDatabase.Query(
         "SELECT MAX(`value`) FROM `character_skills` cs "
         "INNER JOIN `characters` c ON c.`guid` = cs.`guid` "
-        "WHERE c.`account` = {} AND cs.`skill` IN ({}, {}, {}, {}, {}, {}, {}, {})",
-        player->GetSession()->GetAccountId(),
-        TRADE_SKILLS[0], TRADE_SKILLS[1], TRADE_SKILLS[2], TRADE_SKILLS[3],
-        TRADE_SKILLS[4], TRADE_SKILLS[5], TRADE_SKILLS[6], TRADE_SKILLS[7]))
+        "WHERE c.`account` = {} AND cs.`skill` IN "
+        "(129, 164, 165, 171, 182, 185, 186, 197, 202, 333, 356, 393, 755, 773)",
+        player->GetSession()->GetAccountId()))
         if (!result->Fetch()->IsNull())
             best = std::max(best, (*result)[0].Get<uint32>());
     return best;
@@ -562,20 +579,31 @@ public:
         CheckReputationPerks(player);
     }
 
-    // Lockpicking is a profession in every way that matters here -- it is
-    // trained, it grinds 1-400, and a Rogue works it exactly the way a
-    // Blacksmith works Blacksmithing -- but it is not a crafting skill, so
-    // it comes up UpdateGatherSkill() instead of UpdateCraftSkill() and the
-    // Trade perks below never saw it. A Rogue with all six tiers earned was
-    // still picking up single points at a time.
+    // The gather side of the Trade perk family. It used to be Lockpicking-only
+    // ("it is a profession in every way that matters here"), because the design
+    // originally read "crafts". Re-read on 2026-08-26 alongside bug #98: the
+    // perk's own description says "Profession skill-ups", and the cross-
+    // profession design is explicit -- grind one profession, the tiers speed
+    // ALL the rest. That includes gathers, so the Trade multiplier now applies
+    // to every profession skill-up, crafting and gathering alike.
     //
-    // Only the gain is boosted. Lockpicking deliberately stays out of
-    // TRADE_SKILLS, so it cannot unlock the Trade tiers by itself -- a
-    // Rogue who has never touched a profession still gets 1 point a pick.
+    // Lockpicking deliberately stays out of ALL_PROFESSION_SKILLS (used for the
+    // tier-unlock scan in AccountMaxTradeSkill), so it cannot unlock the Trade
+    // tiers by itself -- a Rogue who has never touched a profession still gets
+    // 1 point a pick.
     void OnPlayerUpdateGatheringSkill(Player* player, uint32 skillId, uint32 /*currentLevel*/,
         uint32 /*gray*/, uint32 /*green*/, uint32 /*yellow*/, uint32& gain) override
     {
-        if (!player || !gain || skillId != SKILL_LOCKPICKING)
+        // Cross-profession by design: a maxed gatherer helps you level the rest.
+        // Lockpicking stays the exception -- it is a profession in every way
+        // that matters to a Rogue, but deliberately out of ALL_PROFESSION_SKILLS
+        // so it cannot unlock the Trade tiers by itself.
+        if (!player || !gain)
+            return;
+        bool const profession = skillId == SKILL_LOCKPICKING ||
+            std::find(std::begin(ALL_PROFESSION_SKILLS), std::end(ALL_PROFESSION_SKILLS), skillId)
+                != std::end(ALL_PROFESSION_SKILLS);
+        if (!profession)
             return;
         float const mult = TradePerkMultiplier(player);
         if (mult <= 1.0f)

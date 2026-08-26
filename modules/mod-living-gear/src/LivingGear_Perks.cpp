@@ -140,6 +140,13 @@ uint32 const SPELL_ASSASSINATION = 910035;
 uint32 const NPC_SHADOW_CLONE = 910201;
 uint32 const SPELL_STEALTH = 1784;
 uint32 const SPELL_SHADOWSTEP = 36554;
+// The real Shadow Dance spell (report #61: "turn Shadow Dance into a permanent
+// spell for sub rogues"). The perk flag SPELL_SHADOW_DANCE (910102) above is a
+// badge; this is the actual button. Granted alongside Shadowstep so it shows
+// in the spellbook -- the BypassStealthRequirement core hook (Spell::CheckCast)
+// is what makes its effect permanent, so the spell is a real usable button
+// whose underlying benefit never expires.
+uint32 const SPELL_SHADOW_DANCE_NATIVE = 51713;
 uint32 const SPELL_AMBUSH = 8676;
 uint32 const SPELL_PICKPOCKET = 921;
 // Hemorrhage AoE (2026-08-21, replaces Jack in the Box): on cast, applies
@@ -173,6 +180,8 @@ float const GARROTE_BLEED_MULT = 11.0f;
 float const HEMO_AMBUSH_MULT = 6.0f;
 // Bug report #9: Shadowstep pickpockets everything this far away on landing.
 float const SHADOWSTEP_PICKPOCKET_RADIUS = 20.0f;
+// Report #73 (new feature): stealthed auto-pickpocket radius.
+float const STEALTH_PICKPOCKET_RADIUS = 25.0f;
 // Bug report #10: how far Hemorrhage spreads.
 // Bug report #41: "Hemorrhage's extra effects need to apply to all enemies
 // within 15 yards (up from 10)". Matches the Assassination detonator and the
@@ -247,6 +256,9 @@ std::unordered_map<uint32, uint32> g_curatorAcc;
 // Player::ApplyStatPctModifier, not a persisted account toggle.
 std::unordered_map<uint32, bool> g_shadowDanceBuffOn;
 std::unordered_map<uint32, uint32> g_shadowDanceTick;
+// Report #73: targets already pickpocketed during the CURRENT stealth
+// (cleared when stealth drops, so re-stealthing re-arms the pickpocket).
+std::unordered_set<ObjectGuid> g_stealthPicked;
 std::unordered_map<uint32, uint32> g_pullRadiusTick;
 std::unordered_map<uint32, uint32> g_trackOreTick;   // retired with the 10s recast (report #83) -- kept for save compat
 std::unordered_map<uint32, uint32> g_trackHerbTick;
@@ -452,7 +464,6 @@ bool PerkIsCastable(uint32 spellId)
         case 910006: // *Stable
         case 910007: // *Bind
         case 910009: // *Flight Master
-        case 910042: // *Attune Backpack
         case 910088: // *Quests - Find
         case 910090: // *Quests - Finish
         case 910091: // *Attuned Armory
@@ -1796,6 +1807,40 @@ static void ShadowstepPickpocketImpl(ObjectGuid playerGuid)
         seen, uint32(SHADOWSTEP_PICKPOCKET_RADIUS), humanoid, cast);
 }
 
+// Report #73 (new feature): "when stealthed, you automatically pickpocket any
+// eligible enemies within 25 yards." Reuses the Shadowstep pickpocket shape
+// (humanoids only, autoloot feeds the junkboxes to the reagent vault via
+// core-patch 0010), but runs off the stealth aura instead of a Shadowstep
+// landing. Only fires while the Rogue is actually stealthed, so it is a
+// larceny stance rather than a free AoE-loot button.
+static void TickStealthPickpocket(Player* player)
+{
+    if (!LivingGear_SafeToCastOn(player) || GetClassPerk(player) != SPELL_SUBTLETY)
+        return;
+    if (!player->HasAura(SPELL_STEALTH))
+        return;
+
+    std::list<Unit*> around;
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, STEALTH_PICKPOCKET_RADIUS);
+    Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, around, check);
+    Cell::VisitObjects(player, searcher, STEALTH_PICKPOCKET_RADIUS);
+
+    for (Unit* u : around)
+    {
+        if (!u || !u->IsAlive() || !player->IsValidAttackTarget(u))
+            continue;
+        if (u->GetCreatureType() != CREATURE_TYPE_HUMANOID)
+            continue;
+        // One per target per stealth: the junkbox loot table only fills once,
+        // so re-casting every second just spams failures. Track who this
+        // stealth has already hit.
+        if (g_stealthPicked.find(u->GetGUID()) != g_stealthPicked.end())
+            continue;
+        player->CastSpell(u, SPELL_PICKPOCKET, true);
+        g_stealthPicked.insert(u->GetGUID());
+    }
+}
+
 // Report #43, a new Subtlety effect: "Eviscerate applies a 5 point Slice and
 // Dice and Rupture to all enemies within 15 yards."
 //
@@ -2837,6 +2882,8 @@ public:
         // with no code change and no class hardcoded here.
         if (player->CheckSkillLearnedBySpell(SPELL_SHADOWSTEP))
             player->learnSpell(SPELL_SHADOWSTEP);
+        if (player->CheckSkillLearnedBySpell(SPELL_SHADOW_DANCE_NATIVE))
+            player->learnSpell(SPELL_SHADOW_DANCE_NATIVE);
         // UnlockPerk (not raw learnSpell) so the client's db.perks
         // actually gets a PK|id|1 for these -- otherwise the addon UI
         // can never show them as known even though the character has
@@ -2902,6 +2949,7 @@ public:
             {
                 g_shadowDanceTick[id] = 0;
                 TickShadowDanceBuff(player);
+                TickStealthPickpocket(player);
             }
         }
         if (player->GetSession() && g_pullRadiusOn[player->GetSession()->GetAccountId()]
@@ -3303,6 +3351,7 @@ public:
     PerksUnit() : UnitScript("LivingGearPerksUnit", true, {
         UNITHOOK_ON_DAMAGE,
         UNITHOOK_ON_AURA_APPLY,
+        UNITHOOK_ON_AURA_REMOVE,
         UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
         UNITHOOK_MODIFY_HEAL_RECEIVED,
         UNITHOOK_SHOULD_TRACK_VALUES_UPDATE_POS_BY_INDEX,
@@ -3464,6 +3513,18 @@ public:
         UniformMount(unit, aura);
         NeutralizeStealthSpeed(unit, aura);
         ReduceCrowdControl(unit, aura);
+    }
+
+    // Report #73: leaving stealth clears the "already pickpocketed" set so a
+    // fresh stealth re-arms the auto-pickpocket. Also clears it if a logged-out
+    // character somehow had one -- cheap and idempotent.
+    void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode /*mode*/) override
+    {
+        if (!unit || !unit->IsPlayer() || !aurApp)
+            return;
+        if (aurApp->GetBase()->GetSpellInfo()->Id != SPELL_STEALTH)
+            return;
+        g_stealthPicked.clear();
     }
 };
 

@@ -45,6 +45,7 @@ enum UnitHook
     UNITHOOK_ON_UNIT_DEATH,
     UNITHOOK_ON_UNIT_SET_SHAPESHIFT_FORM,
     UNITHOOK_ON_CREATURE_LEVEL_FOR_TARGET,
+    UNITHOOK_ON_CALCULATE_THREAT,
     UNITHOOK_END
 };
 
@@ -117,6 +118,11 @@ public:
     virtual void OnCreatureLevelForTarget(Unit const* /*creature*/, WorldObject const* /*target*/, uint8& /*outLevel*/) { }
     virtual void OnUnitDeath(Unit* /*unit*/, Unit* /*killer*/) { }
     virtual void OnUnitSetShapeshiftForm(Unit* /*unit*/, uint8 /*form*/) { }
+    // Living Gear tanking (#91): let the module multiply threat a unit
+    // generates. threat arrives already modified (spell threat entries,
+    // SPELLMOD_THREAT, school modifiers); a module may scale it further.
+    // attacker is the unit generating threat, victim the one holding it.
+    virtual void OnCalculateThreat(Unit* /*attacker*/, Unit* /*victim*/, float& /*threat*/, SpellInfo const* /*spell*/) { }
 };
 
 #endif
