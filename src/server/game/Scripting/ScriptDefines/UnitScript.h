@@ -19,7 +19,6 @@
 #define SCRIPT_OBJECT_UNIT_SCRIPT_H_
 
 #include "ScriptObject.h"
-#include "WorldObject.h"
 #include <vector>
 
 enum UnitHook
@@ -52,6 +51,8 @@ enum UnitHook
 enum ReputationRank : uint8;
 class ByteBuffer;
 struct BuildValuesCachePosPointers;
+class WorldObject;
+class Unit;
 
 class UnitScript : public ScriptObject
 {
