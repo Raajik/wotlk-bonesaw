@@ -1928,7 +1928,9 @@ local function LayoutVault(kind, rows, empty, hint, cat)
         local it = list[off + i]
         if it then
             row:Show()
-            row.text:SetText(string.format("%s  x%s", it.name or "Item", it.count or 0))
+            row.itemName = it.name
+            row.link = LG2.ItemLinkText(it.entry, it.name)
+            row.text:SetText(string.format("%s  |cff909090x%s|r", row.link, it.count or 0))
             row.kind = it.kind
             row.entry = it.entry
             local icon = GetItemIcon(tonumber(it.entry) or 0)
@@ -2859,19 +2861,47 @@ function LG2.BuildItemsPanel(parent)
     wrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
     local search = CreateFrame("EditBox", nil, wrap)
     search:SetPoint("TOPLEFT", 4, -1)
-    search:SetPoint("BOTTOMRIGHT", -4, 1)
+    search:SetPoint("BOTTOMRIGHT", -18, 1)
     search:SetAutoFocus(false)
     search:SetFontObject("GameFontHighlightSmall")
     search:SetScript("OnTextChanged", function(self)
         db.itemSearch = self:GetText() or ""
         db.itemOff = 0
         LG2.RefreshItems()
+        if p.searchClear then
+            if (self:GetText() or "") == "" then
+                p.searchClear:Hide()
+            else
+                p.searchClear:Show()
+            end
+        end
     end)
+    -- Release focus rather than clearing the text: the X clears, Escape backs
+    -- out. A second Escape then closes the window through UISpecialFrames.
     search:SetScript("OnEscapePressed", function(self)
-        self:SetText("")
         self:ClearFocus()
     end)
     p.search = search
+
+    local searchClear = CreateFrame("Button", nil, wrap)
+    searchClear:SetSize(14, 14)
+    searchClear:SetPoint("RIGHT", -2, 0)
+    searchClear:SetFrameLevel((wrap:GetFrameLevel() or 0) + 2)
+    searchClear.label = Font(searchClear, 12, 0.75, 0.75, 0.75)
+    searchClear.label:SetPoint("CENTER", 0, 0)
+    searchClear.label:SetText("x")
+    searchClear:SetScript("OnClick", function()
+        search:SetText("")
+        search:ClearFocus()
+    end)
+    searchClear:SetScript("OnEnter", function(self)
+        self.label:SetTextColor(1, 0.85, 0.85, 1)
+    end)
+    searchClear:SetScript("OnLeave", function(self)
+        self.label:SetTextColor(0.75, 0.75, 0.75, 1)
+    end)
+    searchClear:Hide()
+    p.searchClear = searchClear
 
     p.summary = Font(p, 10, 0.7, 0.7, 0.7)
     p.summary:SetPoint("TOPLEFT", 10, -26)
@@ -3178,8 +3208,8 @@ function LG2.MakeVaultPanel(parent, kind, withCats)
     hint:SetPoint("TOPLEFT", listX, -4)
     if kind == VAULT_REAGENT then
         local dep = CreateFrame("Button", nil, p)
-        dep:SetSize(100, 18)
-        dep:SetPoint("TOPRIGHT", -10, -2)
+        dep:SetSize(120, 20)
+        dep:SetPoint("BOTTOM", 0, 8)
         dep:SetFrameLevel((p:GetFrameLevel() or 0) + 6)
         StyleBtn(dep, COLOR_ADD[1], COLOR_ADD[2], COLOR_ADD[3])
         dep.label = Font(dep, 10, 0.85, 0.95, 0.85)
@@ -3189,12 +3219,11 @@ function LG2.MakeVaultPanel(parent, kind, withCats)
         dep:SetScript("OnClick", function()
             SendLine("DEPOSITALL")
         end)
-        hint:SetPoint("RIGHT", dep, "LEFT", -8, 0)
         ui.reagentDeposit = dep
         dep:Show()
         local searchWrap = CreateFrame("Frame", nil, p)
         searchWrap:SetSize(160, 18)
-        searchWrap:SetPoint("TOPRIGHT", dep, "TOPLEFT", -8, 0)
+        searchWrap:SetPoint("TOPRIGHT", -10, -2)
         searchWrap:SetBackdrop({
             bgFile = WHITE,
             edgeFile = WHITE,
@@ -3205,7 +3234,9 @@ function LG2.MakeVaultPanel(parent, kind, withCats)
         searchWrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
         local search = CreateFrame("EditBox", nil, searchWrap)
         search:SetPoint("TOPLEFT", 4, -1)
-        search:SetPoint("BOTTOMRIGHT", -4, 1)
+        -- Stops short of the right edge so typed text never runs under the
+        -- clear button sitting there.
+        search:SetPoint("BOTTOMRIGHT", -18, 1)
         search:SetFont("Fonts\\FRIZQT__.TTF", 10, "")
         search:SetTextColor(0.9, 0.9, 0.9, 1)
         search:SetAutoFocus(false)
@@ -3215,7 +3246,42 @@ function LG2.MakeVaultPanel(parent, kind, withCats)
             db.reagentSearch = self:GetText() or ""
             db.vaultOff[VAULT_REAGENT] = 0
             RefreshVaultPanel()
+            if ui.reagentSearchClear then
+                if (self:GetText() or "") == "" then
+                    ui.reagentSearchClear:Hide()
+                else
+                    ui.reagentSearchClear:Show()
+                end
+            end
         end)
+        -- Escape gives the field back rather than being swallowed by it. The
+        -- window is in UISpecialFrames, so once focus is released a second
+        -- Escape closes the panel -- without this the field ate every Escape
+        -- and the only way out was the X in the corner.
+        search:SetScript("OnEscapePressed", function(self)
+            self:ClearFocus()
+        end)
+        local clear = CreateFrame("Button", nil, searchWrap)
+        clear:SetSize(14, 14)
+        clear:SetPoint("RIGHT", -2, 0)
+        clear:SetFrameLevel((searchWrap:GetFrameLevel() or 0) + 2)
+        clear.label = Font(clear, 12, 0.75, 0.75, 0.75)
+        clear.label:SetPoint("CENTER", 0, 0)
+        clear.label:SetText("x")
+        clear:SetScript("OnClick", function()
+            search:SetText("")
+            search:ClearFocus()
+        end)
+        clear:SetScript("OnEnter", function(self)
+            self.label:SetTextColor(1, 0.85, 0.85, 1)
+        end)
+        clear:SetScript("OnLeave", function(self)
+            self.label:SetTextColor(0.75, 0.75, 0.75, 1)
+        end)
+        if (db.reagentSearch or "") == "" then
+            clear:Hide()
+        end
+        ui.reagentSearchClear = clear
         ui.reagentSearch = search
         hint:ClearAllPoints()
         hint:SetPoint("TOPLEFT", listX, -4)
@@ -3261,15 +3327,39 @@ function LG2.MakeVaultPanel(parent, kind, withCats)
         row.text = Font(row, 11, 0.85, 0.85, 0.85)
         row.text:SetPoint("LEFT", 20, 0)
         row.text:SetPoint("RIGHT", -4, 0)
+        -- Same story as the attuned list: a vault row is an account-side
+        -- record, so the client often has no local copy of the item and
+        -- SetHyperlink would draw nothing at all. Fall back to the name the
+        -- server sent rather than showing an empty tooltip.
         row:SetScript("OnEnter", function(self)
             Solid(self.bg, 0.16, 0.16, 0.16, 1)
+            local e = tonumber(self.entry) or 0
+            if e <= 0 then
+                return
+            end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if GetItemInfo(e) then
+                GameTooltip:SetHyperlink("item:" .. tostring(e))
+            else
+                GameTooltip:SetText(self.itemName or "Item")
+                GameTooltip:AddLine("Stored in your vault.", 0.55, 0.75, 0.95, true)
+                GameTooltip:AddLine("Your client has no local copy of this item, so there is no full tooltip for it.", 0.5, 0.5, 0.5, true)
+            end
+            GameTooltip:Show()
         end)
         row:SetScript("OnLeave", function(self)
             Solid(self.bg, 0.10, 0.10, 0.10, 0)
+            GameTooltip:Hide()
         end)
-        row:SetScript("OnClick", function()
-            if row.kind and row.entry then
-                SendLine("TAKE|" .. tostring(row.kind) .. "|" .. tostring(row.entry))
+        row:SetScript("OnClick", function(self)
+            if IsShiftKeyDown() then
+                if self.link and ChatEdit_InsertLink then
+                    ChatEdit_InsertLink(self.link)
+                end
+                return
+            end
+            if self.kind and self.entry then
+                SendLine("TAKE|" .. tostring(self.kind) .. "|" .. tostring(self.entry))
             end
         end)
         row:Hide()
@@ -3320,13 +3410,21 @@ function LG2.BuildClassTabs(class)
     ui.classTabs = {}
     local myClass = LG2.PlayerClassToken()
     local rows = math.ceil(#CLASS_TAB_LIST / CLASS_TAB_COLS)
+    -- Centred rather than pinned 10px from the left. The grid is a fixed 5
+    -- columns of fixed width, so it never filled the panel and sat visibly
+    -- off to one side.
+    local gridW = CLASS_TAB_COLS * CLASS_TAB_W + (CLASS_TAB_COLS - 1) * CLASS_TAB_GAP
+    local gridX = math.floor((FRAME_W - gridW) / 2)
+    if gridX < 4 then
+        gridX = 4
+    end
     for i, token in ipairs(CLASS_TAB_LIST) do
         local col = (i - 1) % CLASS_TAB_COLS
         local row = math.floor((i - 1) / CLASS_TAB_COLS)
         local label = CLASS_LABEL[token] or token
         local tabBtn = CreateFrame("Button", nil, class)
         tabBtn:SetSize(CLASS_TAB_W, CLASS_TAB_H)
-        tabBtn:SetPoint("TOPLEFT", 10 + col * (CLASS_TAB_W + CLASS_TAB_GAP), -6 - row * CLASS_TAB_ROW_H)
+        tabBtn:SetPoint("TOPLEFT", gridX + col * (CLASS_TAB_W + CLASS_TAB_GAP), -6 - row * CLASS_TAB_ROW_H)
         -- Background stays the normal dark button color (consistent with
         -- the rest of the UI, and sidesteps contrast problems -- Priest's
         -- class color is pure white, which a white background would make
@@ -4459,7 +4557,18 @@ local function BuildUI()
     end
 
     ui.tabs = {}
-    local tabX = 10
+    -- Centred as a block. The widths are label-derived so the total is not a
+    -- constant, which is why it is measured first rather than hard-coded.
+    local tabTotal = 0
+    for i = 1, #TABS do
+        local w = 10 + string.len(TABS[i].label) * 7
+        if w < 48 then
+            w = 48
+        end
+        tabTotal = tabTotal + w + 4
+    end
+    tabTotal = tabTotal - 4
+    local tabX = math.floor((FRAME_W - tabTotal) / 2)
     for i = 1, #TABS do
         local info = TABS[i]
         local w = 10 + string.len(info.label) * 7
@@ -4542,10 +4651,15 @@ local function BuildUI()
         btn.icon:SetSize(22, 22)
         btn.icon:SetPoint("TOPLEFT", 6, -6)
         btn.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+        -- Centred across the whole card rather than butted against the icon.
+        -- The icon keeps its top-left corner and the title is short enough that
+        -- the two never meet at this card width.
         btn.label = Font(btn, 12, 0.9, 0.9, 0.9)
-        btn.label:SetPoint("LEFT", btn.icon, "RIGHT", 6, 0)
-        btn.label:SetPoint("RIGHT", -6, 0)
-        btn.label:SetJustifyH("LEFT")
+        btn.label:SetPoint("TOPLEFT", 6, -6)
+        btn.label:SetPoint("TOPRIGHT", -6, -6)
+        btn.label:SetHeight(22)
+        btn.label:SetJustifyH("CENTER")
+        btn.label:SetJustifyV("MIDDLE")
         -- One wrapping text block instead of fixed-height single-line rows
         -- (2026-08-20) -- fixed rows clipped/ellipsized any sentence too
         -- long for one line rather than wrapping it. A single FontString
