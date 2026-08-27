@@ -2095,16 +2095,19 @@ local function LayoutClass()
             -- client strings are ASCII-only in this repo (no real bullet
             -- glyph), and a hyphen next to a "+300%"-style line read as a
             -- minus sign at a glance.
-            local bullets = SplitHow(info and info.how)
+            -- Sub-perks bring their own coloured bullet (green when known,
+            -- grey when not), so they must not also get the plain "* " prefix
+            -- the how-sentences take -- that is what rendered them as "* *
+            -- Shadow Dance".
+            local lines = {}
+            for _, b in ipairs(SplitHow(info and info.how)) do
+                table.insert(lines, "* " .. b)
+            end
             if info and info.subPerks then
                 for _, sub in ipairs(info.subPerks) do
                     local mark = (ownClass and PerkKnown(sub.id)) and "|cff4fd14f*|r " or "|cff666666*|r "
-                    table.insert(bullets, mark .. sub.name)
+                    table.insert(lines, mark .. sub.name)
                 end
-            end
-            local lines = {}
-            for _, b in ipairs(bullets) do
-                table.insert(lines, "* " .. b)
             end
             btn.body:SetText(table.concat(lines, "\n"))
         else
@@ -2672,6 +2675,17 @@ function LG2.ItemsRowData()
                 -- mean "give me a copy" rather than "wear this now", so it is
                 -- preserved deliberately rather than corrected.
                 invslot = tonumber(a.slot) or 0,
+                -- Carried so the row can draw its own tooltip when the client
+                -- has never cached this item. An attuned entry is an account
+                -- entitlement, not something that has to have passed through
+                -- this character's bags, so "never seen it" is the normal case.
+                ilvl = tonumber(a.ilvl) or 0,
+                str = tonumber(a.str) or 0,
+                agi = tonumber(a.agi) or 0,
+                sta = tonumber(a.sta) or 0,
+                intel = tonumber(a.intel) or 0,
+                spi = tonumber(a.spi) or 0,
+                armor = tonumber(a.armor) or 0,
             })
         end
     end
@@ -2732,6 +2746,7 @@ function LG2.BuildItemsPanel(parent)
         btn.key = f.key
         btn:SetScript("OnClick", function(self)
             db.itemFilter = self.key
+            db.itemOff = 0
             LG2.RefreshItems()
         end)
         p.filters[i] = btn
@@ -2755,6 +2770,7 @@ function LG2.BuildItemsPanel(parent)
     search:SetFontObject("GameFontHighlightSmall")
     search:SetScript("OnTextChanged", function(self)
         db.itemSearch = self:GetText() or ""
+        db.itemOff = 0
         LG2.RefreshItems()
     end)
     search:SetScript("OnEscapePressed", function(self)
@@ -2776,8 +2792,8 @@ function LG2.BuildItemsPanel(parent)
     -- destroys gear -- a single mis-click on a button that eats your bags
     -- would be indefensible, and no amount of tooltip makes that acceptable.
     local attuneAll = CreateFrame("Button", nil, p)
-    attuneAll:SetSize(96, 16)
-    attuneAll:SetPoint("TOPRIGHT", -10, -25)
+    attuneAll:SetSize(120, 20)
+    attuneAll:SetPoint("BOTTOM", 0, 8)
     StyleBtn(attuneAll, 0.14, 0.24, 0.14)
     attuneAll.label = Font(attuneAll, 10, 0.85, 0.95, 0.85)
     attuneAll.label:SetPoint("CENTER", 0, 0)
@@ -2821,7 +2837,7 @@ function LG2.BuildItemsPanel(parent)
     -- with the row below, which reads as a bug rather than a layout.
     local ROW_H = 30
     p.rows = {}
-    for i = 1, 11 do
+    for i = 1, 13 do
         local row = CreateFrame("Button", nil, p)
         row:SetSize(516, ROW_H - 2)
         row:SetPoint("TOPLEFT", 10, -42 - (i - 1) * ROW_H)
@@ -2867,14 +2883,40 @@ function LG2.BuildItemsPanel(parent)
             end
         end)
 
+        -- SetHyperlink draws nothing at all for an item this client has never
+        -- cached, which is most of the attuned list -- an entitlement does not
+        -- have to have passed through this character's bags. That read as "half
+        -- the items have no tooltip". When the client cannot resolve the item,
+        -- draw the tooltip from what the server already sent us instead.
         row:SetScript("OnEnter", function(self)
             self.hl:Show()
             local r = self.data
-            if r and r.entry and r.entry > 0 then
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if not r or not r.entry or r.entry <= 0 then
+                return
+            end
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            if GetItemInfo(r.entry) then
                 GameTooltip:SetHyperlink("item:" .. tostring(r.entry))
                 GameTooltip:Show()
+                return
             end
+            GameTooltip:SetText(r.name or "Item")
+            if r.ilvl and r.ilvl > 0 then
+                GameTooltip:AddLine("Item Level " .. tostring(r.ilvl), 0.7, 0.7, 0.7)
+            end
+            local stats = {
+                { "Strength", r.str }, { "Agility", r.agi }, { "Stamina", r.sta },
+                { "Intellect", r.intel }, { "Spirit", r.spi }, { "Armor", r.armor },
+            }
+            for i = 1, #stats do
+                local v = tonumber(stats[i][2]) or 0
+                if v > 0 then
+                    GameTooltip:AddLine(string.format("+%d %s", v, stats[i][1]), 1, 1, 1)
+                end
+            end
+            GameTooltip:AddLine("Attuned to this account.", 0.55, 0.75, 0.95, true)
+            GameTooltip:AddLine("Your client has no local copy of this item, so this is the account record rather than the full item tooltip.", 0.5, 0.5, 0.5, true)
+            GameTooltip:Show()
         end)
         row:SetScript("OnLeave", function(self)
             self.hl:Hide()
@@ -2883,6 +2925,20 @@ function LG2.BuildItemsPanel(parent)
         row:Hide()
         p.rows[i] = row
     end
+
+    -- 636 attuned entries against 13 rows. There was no scroll of any kind on
+    -- this list and no sign that it continued, so everything past the first
+    -- screenful was simply unreachable.
+    db.itemOff = db.itemOff or 0
+    p:EnableMouseWheel(true)
+    p:SetScript("OnMouseWheel", function(_, delta)
+        local off = (db.itemOff or 0) - delta
+        if off < 0 then
+            off = 0
+        end
+        db.itemOff = off
+        LG2.RefreshItems()
+    end)
 
     ui.items = p
     return p
@@ -2917,9 +2973,28 @@ function LG2.RefreshItems()
     -- attunement unlocks higher rarities at 10, 100, 1000 items -- and the
     -- field a percentage would have come from is never actually set, so the
     -- readout would have sat at 0% forever.
+    -- Clamped here rather than in the wheel handler because the ceiling moves
+    -- with the filter: narrowing the list while scrolled to the bottom would
+    -- otherwise leave the view past the end, showing nothing.
+    local maxOff = #shown - #p.rows
+    if maxOff < 0 then
+        maxOff = 0
+    end
+    local off = db.itemOff or 0
+    if off > maxOff then
+        off = maxOff
+    end
+    db.itemOff = off
+
     local attuned = tonumber(db.attune and db.attune.count) or 0
+    local first = (#shown == 0) and 0 or (off + 1)
+    local last = off + #p.rows
+    if last > #shown then
+        last = #shown
+    end
     p.summary:SetText(string.format(
-        "|cffb0b0b0%d shown|r    |cff8a9bc4%d attuned on this account|r", #shown, attuned))
+        "|cffb0b0b0%d-%d of %d|r    |cff8a9bc4%d attuned on this account|r",
+        first, last, #shown, attuned))
 
     if #shown == 0 then
         p.empty:Show()
@@ -2929,7 +3004,7 @@ function LG2.RefreshItems()
 
     for i = 1, #p.rows do
         local row = p.rows[i]
-        local r = shown[i]
+        local r = shown[i + off]
         if not r then
             row:Hide()
         else
@@ -4319,18 +4394,24 @@ local function BuildUI()
     -- Cards (2026-08-20): icon + title header, then the perk's changes as
     -- a small-font bulleted list below, all inside the card, so the 3
     -- specs can be scanned/compared side by side without hovering each one
-    -- in turn. Fixed height fits the common case (2-3 short bullets); a
-    -- card with an unusually long/full bullet list just overflows past the
-    -- card's background rather than clipping -- see the body FontString's
-    -- own comment below.
+    -- in turn.
+    --
+    -- Full height, not a fixed 128. The cards used to be sized for the common
+    -- case of 2-3 short bullets and a longer list was allowed to spill past the
+    -- card's background on the grounds that overflowing text still reads. It
+    -- does not: once Subtlety grew to ten bullets, over half of them hung
+    -- outside the green box on bare background and looked like a broken frame.
+    -- Anchoring top and bottom means the card is always as tall as the panel
+    -- allows, which is roughly three times the old height and comfortably fits
+    -- the longest spec.
     local CLASS_CARD_W = 196
-    local CLASS_CARD_H = 128
     local CLASS_CARD_GAP = 10
     ui.classBtns = {}
     for i = 1, 3 do
         local btn = CreateFrame("Button", nil, class)
-        btn:SetSize(CLASS_CARD_W, CLASS_CARD_H)
+        btn:SetWidth(CLASS_CARD_W)
         btn:SetPoint("TOPLEFT", 10 + (i - 1) * (CLASS_CARD_W + CLASS_CARD_GAP), classBelowTabsY - 24)
+        btn:SetPoint("BOTTOMLEFT", class, "BOTTOMLEFT", 10 + (i - 1) * (CLASS_CARD_W + CLASS_CARD_GAP), 10)
         StyleBtn(btn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
         btn.icon = btn:CreateTexture(nil, "ARTWORK")
         btn.icon:SetSize(22, 22)
@@ -4349,19 +4430,16 @@ local function BuildUI()
         -- better than losing words to an ellipsis.
         btn.body = Font(btn, 9, 0.65, 0.65, 0.65)
         btn.body:SetPoint("TOPLEFT", 8, -34)
-        btn.body:SetPoint("RIGHT", -6, 0)
         btn.body:SetJustifyH("LEFT")
         btn.body:SetJustifyV("TOP")
         btn.body:SetSpacing(3)
         btn.body:SetWordWrap(true)
-        -- A FontString with word wrap on but no explicit height still
-        -- truncates with "..." past a few lines in this client instead of
-        -- auto-growing -- explicit generous height is what actually fixes
-        -- it (confirmed from a screenshot: bullets 4-5 were missing
-        -- entirely and bullet 3 cut off mid-word). Deliberately taller
-        -- than the card itself; a long card overflowing its background is
-        -- fine, losing the text isn't.
-        btn.body:SetHeight(300)
+        -- A FontString with word wrap on but no explicit height truncates with
+        -- "..." past a few lines in this client instead of auto-growing, so it
+        -- needs a definite height. Anchoring its bottom to the card supplies
+        -- one, and now that the card fills the panel that height is generous
+        -- enough for the longest spec without spilling outside the background.
+        btn.body:SetPoint("BOTTOMRIGHT", -6, 8)
         btn:SetScript("OnClick", function()
             if btn.id and btn.ownClass then
                 SendLine("CLASS|" .. tostring(btn.id))

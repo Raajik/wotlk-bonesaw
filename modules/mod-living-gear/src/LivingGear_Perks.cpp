@@ -2435,9 +2435,17 @@ void SendArmory(Player* player)
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
             char const* name = proto ? proto->Name1.c_str() : "Item";
             uint32 slot = proto ? proto->InventoryType : 0;
-            SendLine(player, Acore::StringFormat("ARM|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            // TEN fields, and the armor one is not optional. The addon parses
+            // this positionally as slot|entry|ilvl|str|agi|sta|int|spi|armor|name
+            // (see the ARM branch of the addon's line handler). Armor was
+            // SELECTed here but never written, so name landed in armor's slot,
+            // the name field came back nil, and every armory row in the UI fell
+            // through to the literal string "Item" with armor 0 -- which is
+            // exactly how it looked in game.
+            SendLine(player, Acore::StringFormat("ARM|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 slot, entry, f[1].Get<uint32>(), int32(f[2].Get<float>()), int32(f[3].Get<float>()),
-                int32(f[4].Get<float>()), int32(f[5].Get<float>()), int32(f[6].Get<float>()), name));
+                int32(f[4].Get<float>()), int32(f[5].Get<float>()), int32(f[6].Get<float>()),
+                int32(f[7].Get<float>()), name));
         } while (q->NextRow());
     }
     SendLine(player, "ARMEND");
