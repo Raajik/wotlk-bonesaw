@@ -2653,6 +2653,9 @@ bool HandleLgChat(Player* player, std::string msg)
         // boundary -- without this check, a crafted ARMEQUIP message could
         // conjure any item entry for free. Require the account to actually
         // have it attuned first.
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+        std::string const label = proto ? proto->Name1 : Acore::StringFormat("Item {}", entry);
+
         if (QueryResult q = CharacterDatabase.Query(
             "SELECT 1 FROM `lg_absorb` WHERE `account_id` = {} AND `item_entry` = {}", acc, entry))
         {
@@ -2669,9 +2672,27 @@ bool HandleLgChat(Player* player, std::string msg)
             // Recreated copies are soulbound -- they're a free re-materialization
             // of something already permanently converted to account stats, not
             // a tradeable item, so this closes off selling/trading duplicates.
+            //
+            // Every outcome says something. This used to succeed and fail in
+            // exactly the same silence: no chat line, no sync, and the row still
+            // reading "not created yet" afterwards, so a working Create was
+            // indistinguishable from a dead button and got reported as one.
             if (created)
+            {
                 created->SetBinding(true);
+                ChatHandler(player->GetSession()).PSendSysMessage(
+                    "|cff66ccff[Living Gear]|r {} created.", label);
+                // Prompts the addon to ask for a fresh sync, so the entry stops
+                // advertising itself as uncreated the moment it exists.
+                ::LivingGear_SendAddonLine(player, "ARMMADE");
+            }
+            else
+                ChatHandler(player->GetSession()).PSendSysMessage(
+                    "|cffff5555[Living Gear]|r Could not create {} -- no free bag space.", label);
         }
+        else
+            ChatHandler(player->GetSession()).PSendSysMessage(
+                "|cffff5555[Living Gear]|r {} is not attuned to this account.", label);
         return true;
     }
     return false;

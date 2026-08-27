@@ -2533,6 +2533,14 @@ function LG2.LayoutAttune()
     end
 end
 
+-- A real item link where possible: quality-coloured and bracketed exactly as
+-- it appears in chat, which is what makes a long list scannable.
+--
+-- `fallback` is the server-sent name, used when the client has no local copy
+-- of the item. That is the normal case for attuned entries -- an account
+-- entitlement need never have passed through this character's bags -- so the
+-- fallback still gets built into a proper (grey) link rather than bare text,
+-- and stays hoverable and shift-clickable like any other.
 function LG2.ItemLinkText(entry, fallback)
     if not entry or entry == 0 then
         return fallback or "Item"
@@ -2541,10 +2549,11 @@ function LG2.ItemLinkText(entry, fallback)
     if link then
         return link
     end
-    if name then
+    name = name or fallback
+    if name and name ~= "" then
         return "|cff9d9d9d|Hitem:" .. tostring(entry) .. ":0:0:0:0:0:0:0|h[" .. name .. "]|h|r"
     end
-    return fallback or ("Item " .. tostring(entry))
+    return "Item " .. tostring(entry)
 end
 
 local function LayoutAll()
@@ -2835,12 +2844,23 @@ function LG2.BuildItemsPanel(parent)
     -- Rows are two lines: name on top, level and growth beneath. The Perks tab
     -- learned this the hard way -- a single line wrapped anyway and collided
     -- with the row below, which reads as a bug rather than a layout.
+    --
+    -- Two columns, filled top-to-bottom then left-to-right. A single column of
+    -- full-width rows left most of the panel empty between the name and the
+    -- Create button, while the list itself ran to hundreds of entries; the
+    -- space is worth more as a second column than as padding.
     local ROW_H = 30
+    local ROWS_PER_COL = 13
+    local COL_W = 300
+    local COL_GAP = 8
+    p.rowsPerCol = ROWS_PER_COL
     p.rows = {}
-    for i = 1, 13 do
+    for i = 1, ROWS_PER_COL * 2 do
+        local col = math.floor((i - 1) / ROWS_PER_COL)
+        local slotInCol = (i - 1) % ROWS_PER_COL
         local row = CreateFrame("Button", nil, p)
-        row:SetSize(516, ROW_H - 2)
-        row:SetPoint("TOPLEFT", 10, -42 - (i - 1) * ROW_H)
+        row:SetSize(COL_W - 4, ROW_H - 2)
+        row:SetPoint("TOPLEFT", 10 + col * (COL_W + COL_GAP), -42 - slotInCol * ROW_H)
 
         row.hl = row:CreateTexture(nil, "BACKGROUND")
         row.hl:SetAllPoints(row)
@@ -2851,25 +2871,22 @@ function LG2.BuildItemsPanel(parent)
         row.icon:SetSize(24, 24)
         row.icon:SetPoint("LEFT", 2, 0)
 
+        -- Widths are set per-refresh, not here: a row showing Create has ~60px
+        -- less to play with than one without, and item names are long enough
+        -- that giving away that space unconditionally truncates for no reason.
         row.name = Font(row, 11, 0.9, 0.9, 0.94)
-        row.name:SetPoint("TOPLEFT", 32, -1)
-        row.name:SetWidth(300)
+        row.name:SetPoint("TOPLEFT", 30, -1)
         row.name:SetJustifyH("LEFT")
         row.name:SetWordWrap(false)
 
         row.detail = Font(row, 10, 0.62, 0.66, 0.62)
-        row.detail:SetPoint("TOPLEFT", 32, -14)
-        row.detail:SetWidth(380)
+        row.detail:SetPoint("TOPLEFT", 30, -15)
         row.detail:SetJustifyH("LEFT")
         row.detail:SetWordWrap(false)
 
-        row.state = Font(row, 10, 0.6, 0.6, 0.6)
-        row.state:SetPoint("RIGHT", -6, 0)
-        row.state:SetJustifyH("RIGHT")
-
         row.create = CreateFrame("Button", nil, row)
-        row.create:SetSize(60, 16)
-        row.create:SetPoint("RIGHT", -54, 0)
+        row.create:SetSize(58, 16)
+        row.create:SetPoint("RIGHT", -2, 0)
         StyleBtn(row.create, 0.14, 0.20, 0.16)
         row.create.label = Font(row.create, 10, 0.8, 0.95, 0.8)
         row.create.label:SetPoint("CENTER", 0, 0)
@@ -2922,6 +2939,19 @@ function LG2.BuildItemsPanel(parent)
             self.hl:Hide()
             GameTooltip:Hide()
         end)
+        -- Shift-click pastes the link into an open chat edit box, the way
+        -- shift-clicking an item anywhere else in the UI does. The row is a
+        -- Button rather than a FontString, so the link has to be inserted by
+        -- hand -- FontString hyperlinks are not clickable on a plain frame.
+        row:SetScript("OnClick", function(self)
+            local r = self.data
+            if not r or not IsShiftKeyDown() or not self.link then
+                return
+            end
+            if ChatEdit_InsertLink then
+                ChatEdit_InsertLink(self.link)
+            end
+        end)
         row:Hide()
         p.rows[i] = row
     end
@@ -2929,10 +2959,14 @@ function LG2.BuildItemsPanel(parent)
     -- 636 attuned entries against 13 rows. There was no scroll of any kind on
     -- this list and no sign that it continued, so everything past the first
     -- screenful was simply unreachable.
+    -- One notch moves exactly one column, so the right-hand column becomes the
+    -- left-hand one. Scrolling by a single entry would reflow both columns and
+    -- make the list appear to shuffle; scrolling by a full page would skip past
+    -- what you were reading.
     db.itemOff = db.itemOff or 0
     p:EnableMouseWheel(true)
     p:SetScript("OnMouseWheel", function(_, delta)
-        local off = (db.itemOff or 0) - delta
+        local off = (db.itemOff or 0) - delta * ROWS_PER_COL
         if off < 0 then
             off = 0
         end
@@ -3014,33 +3048,39 @@ function LG2.RefreshItems()
             local _, _, _, _, _, _, _, _, _, tex = GetItemInfo(r.entry)
             row.icon:SetTexture(tex or "Interface\\Icons\\INV_Misc_QuestionMark")
 
+            -- The real chat item link, so quality colour does the work the
+            -- separate WORN/BAG/ATTUNED column used to do badly. That column
+            -- cost 70px of every row to restate what the row already showed.
+            row.link = LG2.ItemLinkText(r.entry, r.name)
+            row.name:SetText(row.link)
+
+            local textW = row:GetWidth() - 34
             if r.state == "attuned" then
                 row.icon:SetVertexColor(0.55, 0.55, 0.62)
-                row.name:SetTextColor(0.66, 0.70, 0.80)
-                row.detail:SetText("|cff5a6a8anot created yet|r")
-                row.state:SetText("|cff5a6a8aATTUNED|r")
+                row.detail:SetText("|cff5a6a8aattuned - not created|r")
                 row.create:Show()
+                textW = textW - 60
             else
                 row.icon:SetVertexColor(1, 1, 1)
-                row.name:SetTextColor(0.9, 0.9, 0.94)
                 row.create:Hide()
                 local growth = r.growth
                 if growth == "" then
-                    growth = "|cff707070no growth yet|r"
+                    growth = "|cff707070no growth|r"
                 end
+                local where = (r.state == "worn") and "|cff7fdc7fWORN|r" or "|cff909090BAG|r"
                 if r.need and r.need > 0 then
-                    row.detail:SetText(string.format("|cffffd966Lv %d|r  %d/%d xp   %s",
-                        r.lv, r.xp, r.need, growth))
+                    row.detail:SetText(string.format("%s |cffffd966Lv %d|r %d/%d xp %s",
+                        where, r.lv, r.xp, r.need, growth))
                 else
-                    row.detail:SetText(string.format("|cffffd966Lv %d|r  max   %s", r.lv, growth))
-                end
-                if r.state == "worn" then
-                    row.state:SetText("|cff7fdc7fWORN|r")
-                else
-                    row.state:SetText("|cff909090BAG|r")
+                    row.detail:SetText(string.format("%s |cffffd966Lv %d|r max %s",
+                        where, r.lv, growth))
                 end
             end
-            row.name:SetText(r.name)
+            if textW < 40 then
+                textW = 40
+            end
+            row.name:SetWidth(textW)
+            row.detail:SetWidth(textW)
         end
     end
 end
@@ -5019,6 +5059,14 @@ function LG2.HandleAddon(prefix, message)
     end
     if message == "OPENARM" then
         LG2.OpenArmoryView()
+        return
+    end
+    -- A Create just materialised an item, so the entry is no longer uncreated.
+    -- Ask for a fresh sync rather than patching the row locally: the item now
+    -- exists in bags and belongs in the list as a real item, which is the
+    -- ordinary sync's job to describe.
+    if message == "ARMMADE" then
+        RequestSync()
         return
     end
     if message == "LAND" then
