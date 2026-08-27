@@ -178,6 +178,20 @@ enum LgSecondaryStat
     LG_SEC_SPELL_POWER,
     LG_SEC_DMG_MIN,
     LG_SEC_DMG_MAX,
+    // Report #111: everything below was dropped on the floor -- by attunement
+    // AND by item levelling -- so a Truesilver Healing Ring banked its int/spi
+    // and lost the spell power it existed for. Appended at the END so the ten
+    // values the ITM| wire format packs (and the addon parses positionally)
+    // never move. All eight bank into lg_absorb and apply through the same
+    // ApplySecondary path as the original ten.
+    LG_SEC_DEFENSE,
+    LG_SEC_DODGE,
+    LG_SEC_PARRY,
+    LG_SEC_BLOCK,
+    LG_SEC_MP5,
+    LG_SEC_HEALTH_REGEN,
+    LG_SEC_SPELL_PEN,
+    LG_SEC_BLOCK_VALUE,
     LG_SEC_COUNT
 };
 
@@ -191,14 +205,15 @@ struct LgStats
     float armor = 0.0f;
 
     // Everything that is not a primary stat or armor. Kept in an array rather
-    // than as ten more named fields because these are only ever read and
-    // written as a group -- and because the six named fields above are the
-    // shape of the lg_absorb columns and the addon protocol, which this
-    // deliberately does not disturb.
+    // than as named fields because these are only ever read and written as a
+    // group. The six named fields above stay the shape of the lg_absorb primary
+    // columns and the addon protocol; the array is the wire's tail and, since
+    // report #111, also the lg_absorb `sec_*` columns (the dmg pair excepted).
     std::array<float, LG_SEC_COUNT> sec = {};
 
     // Primaries and armor only, on purpose: this decides whether an absorb row
-    // is worth storing, and absorb still banks only the six columns it has.
+    // is worth storing. Secondaries are banked alongside since report #111,
+    // but they never tip the eligibility check on their own.
     float Total() const
     {
         return str + agi + sta + intel + spi + armor;
@@ -465,6 +480,29 @@ static LgStats ReadBaseStats(ItemTemplate const* proto)
         case ITEM_MOD_SPELL_DAMAGE_DONE:
         case ITEM_MOD_SPELL_HEALING_DONE:
             s.sec[LG_SEC_SPELL_POWER] += static_cast<float>(v); break;
+        // Report #111: these were dropped entirely -- not just from attunement
+        // but from item levelling too, so a tank item with defense rating
+        // gained nothing but its primaries on level. Ranged attack power folds
+        // into LG_SEC_ATTACK_POWER, matching ApplySecondary, which grants both
+        // UNIT_MOD_ATTACK_POWER and its ranged half.
+        case ITEM_MOD_DEFENSE_SKILL_RATING:
+            s.sec[LG_SEC_DEFENSE] += static_cast<float>(v); break;
+        case ITEM_MOD_DODGE_RATING:
+            s.sec[LG_SEC_DODGE] += static_cast<float>(v); break;
+        case ITEM_MOD_PARRY_RATING:
+            s.sec[LG_SEC_PARRY] += static_cast<float>(v); break;
+        case ITEM_MOD_BLOCK_RATING:
+            s.sec[LG_SEC_BLOCK] += static_cast<float>(v); break;
+        case ITEM_MOD_MANA_REGENERATION:
+            s.sec[LG_SEC_MP5] += static_cast<float>(v); break;
+        case ITEM_MOD_HEALTH_REGEN:
+            s.sec[LG_SEC_HEALTH_REGEN] += static_cast<float>(v); break;
+        case ITEM_MOD_SPELL_PENETRATION:
+            s.sec[LG_SEC_SPELL_PEN] += static_cast<float>(v); break;
+        case ITEM_MOD_BLOCK_VALUE:
+            s.sec[LG_SEC_BLOCK_VALUE] += static_cast<float>(v); break;
+        case ITEM_MOD_RANGED_ATTACK_POWER:
+            s.sec[LG_SEC_ATTACK_POWER] += static_cast<float>(v); break;
         default: break;
         }
     }
@@ -553,6 +591,25 @@ static LgStats ReadSuffixStats(Item const* item)
             case ITEM_MOD_SPELL_DAMAGE_DONE:
             case ITEM_MOD_SPELL_HEALING_DONE:
                 s.sec[LG_SEC_SPELL_POWER] += float(amount); break;
+            // Report #111, same additions as ReadBaseStats above.
+            case ITEM_MOD_DEFENSE_SKILL_RATING:
+                s.sec[LG_SEC_DEFENSE] += float(amount); break;
+            case ITEM_MOD_DODGE_RATING:
+                s.sec[LG_SEC_DODGE] += float(amount); break;
+            case ITEM_MOD_PARRY_RATING:
+                s.sec[LG_SEC_PARRY] += float(amount); break;
+            case ITEM_MOD_BLOCK_RATING:
+                s.sec[LG_SEC_BLOCK] += float(amount); break;
+            case ITEM_MOD_MANA_REGENERATION:
+                s.sec[LG_SEC_MP5] += float(amount); break;
+            case ITEM_MOD_HEALTH_REGEN:
+                s.sec[LG_SEC_HEALTH_REGEN] += float(amount); break;
+            case ITEM_MOD_SPELL_PENETRATION:
+                s.sec[LG_SEC_SPELL_PEN] += float(amount); break;
+            case ITEM_MOD_BLOCK_VALUE:
+                s.sec[LG_SEC_BLOCK_VALUE] += float(amount); break;
+            case ITEM_MOD_RANGED_ATTACK_POWER:
+                s.sec[LG_SEC_ATTACK_POWER] += float(amount); break;
             default: break;
             }
         }
@@ -714,7 +771,10 @@ static void RepairUnderbankedAbsorb(Player* player)
     uint32 const accountId = player->GetSession()->GetAccountId();
 
     QueryResult result = CharacterDatabase.Query(
-        "SELECT `item_entry`, `str`, `agi`, `sta`, `intel`, `spi`, `armor` "
+        "SELECT `item_entry`, `str`, `agi`, `sta`, `intel`, `spi`, `armor`, "
+        "`sec_crit`, `sec_hit`, `sec_haste`, `sec_expertise`, `sec_armor_pen`, `sec_resilience`, "
+        "`sec_attack_power`, `sec_spell_power`, `sec_defense`, `sec_dodge`, `sec_parry`, "
+        "`sec_block`, `sec_mp5`, `sec_health_regen`, `sec_spell_pen`, `sec_block_value` "
         "FROM `lg_absorb` WHERE `account_id` = {} AND `item_level` <> 0", accountId);
     if (!result)
         return;
@@ -740,10 +800,22 @@ static void RepairUnderbankedAbsorb(Player* player)
 
         CharacterDatabase.DirectExecute(
             "UPDATE `lg_absorb` SET `str` = {}, `agi` = {}, `sta` = {}, `intel` = {}, "
-            "`spi` = {}, `armor` = {}, `item_level` = {} "
+            "`spi` = {}, `armor` = {}, `item_level` = {}, "
+            "`sec_crit` = {}, `sec_hit` = {}, `sec_haste` = {}, `sec_expertise` = {}, "
+            "`sec_armor_pen` = {}, `sec_resilience` = {}, `sec_attack_power` = {}, "
+            "`sec_spell_power` = {}, `sec_defense` = {}, `sec_dodge` = {}, `sec_parry` = {}, "
+            "`sec_block` = {}, `sec_mp5` = {}, `sec_health_regen` = {}, `sec_spell_pen` = {}, "
+            "`sec_block_value` = {} "
             "WHERE `account_id` = {} AND `item_entry` = {}",
             base.str, base.agi, base.sta, base.intel, base.spi, base.armor,
-            proto->ItemLevel, accountId, entry);
+            proto->ItemLevel,
+            base.sec[LG_SEC_CRIT], base.sec[LG_SEC_HIT], base.sec[LG_SEC_HASTE],
+            base.sec[LG_SEC_EXPERTISE], base.sec[LG_SEC_ARMOR_PEN], base.sec[LG_SEC_RESILIENCE],
+            base.sec[LG_SEC_ATTACK_POWER], base.sec[LG_SEC_SPELL_POWER], base.sec[LG_SEC_DEFENSE],
+            base.sec[LG_SEC_DODGE], base.sec[LG_SEC_PARRY], base.sec[LG_SEC_BLOCK],
+            base.sec[LG_SEC_MP5], base.sec[LG_SEC_HEALTH_REGEN], base.sec[LG_SEC_SPELL_PEN],
+            base.sec[LG_SEC_BLOCK_VALUE],
+            accountId, entry);
         ++repaired;
     } while (result->NextRow());
 
@@ -899,17 +971,29 @@ bool AttuneItemEntry(Player* player, uint32 itemEntry)
 
     // Full stats are stored; the account receives stats * attune_pct / 100 at
     // apply time. Storing the full value means a milestone raising the rate is
-    // one global change rather than a rewrite of every row.
+    // one global change rather than a rewrite of every row. Report #111: the
+    // secondary columns bank alongside the primaries (the dmg pair excepted --
+    // weapon damage stays a property of the held weapon).
     LgStats full = ReadBaseStats(proto);
     if (full.Total() <= 0.0f)
         return false;
 
     CharacterDatabase.DirectExecute(
         "REPLACE INTO `lg_absorb` (`account_id`, `item_entry`, `str`, `agi`, `sta`, "
-        "`intel`, `spi`, `armor`, `item_level`, `attune_pct`) "
-        "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        "`intel`, `spi`, `armor`, `item_level`, `attune_pct`, "
+        "`sec_crit`, `sec_hit`, `sec_haste`, `sec_expertise`, `sec_armor_pen`, `sec_resilience`, "
+        "`sec_attack_power`, `sec_spell_power`, `sec_defense`, `sec_dodge`, `sec_parry`, "
+        "`sec_block`, `sec_mp5`, `sec_health_regen`, `sec_spell_pen`, `sec_block_value`) "
+        "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "
+        "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
         accountId, itemEntry, full.str, full.agi, full.sta, full.intel, full.spi,
-        full.armor, proto->ItemLevel, AttuneRateFor(accountId));
+        full.armor, proto->ItemLevel, AttuneRateFor(accountId),
+        full.sec[LG_SEC_CRIT], full.sec[LG_SEC_HIT], full.sec[LG_SEC_HASTE],
+        full.sec[LG_SEC_EXPERTISE], full.sec[LG_SEC_ARMOR_PEN], full.sec[LG_SEC_RESILIENCE],
+        full.sec[LG_SEC_ATTACK_POWER], full.sec[LG_SEC_SPELL_POWER], full.sec[LG_SEC_DEFENSE],
+        full.sec[LG_SEC_DODGE], full.sec[LG_SEC_PARRY], full.sec[LG_SEC_BLOCK],
+        full.sec[LG_SEC_MP5], full.sec[LG_SEC_HEALTH_REGEN], full.sec[LG_SEC_SPELL_PEN],
+        full.sec[LG_SEC_BLOCK_VALUE]);
 
     ::LivingGear_SendAddonLine(player, Acore::StringFormat("ATT|{}", itemEntry));
     return true;
@@ -1137,6 +1221,20 @@ static void ApplySecondary(Player* player, std::array<float, LG_SEC_COUNT> const
     rate(CR_CRIT_TAKEN_MELEE, sec[LG_SEC_RESILIENCE]);
     rate(CR_CRIT_TAKEN_RANGED, sec[LG_SEC_RESILIENCE]);
     rate(CR_CRIT_TAKEN_SPELL, sec[LG_SEC_RESILIENCE]);
+    // Report #111: the tank/defensive ratings the readers now capture.
+    rate(CR_DEFENSE_SKILL, sec[LG_SEC_DEFENSE]);
+    rate(CR_DODGE, sec[LG_SEC_DODGE]);
+    rate(CR_PARRY, sec[LG_SEC_PARRY]);
+    rate(CR_BLOCK, sec[LG_SEC_BLOCK]);
+
+    if (sec[LG_SEC_MP5] >= 1.0f)
+        player->ApplyManaRegenBonus(int32(sec[LG_SEC_MP5]), apply);
+    if (sec[LG_SEC_HEALTH_REGEN] >= 1.0f)
+        player->ApplyHealthRegenBonus(int32(sec[LG_SEC_HEALTH_REGEN]), apply);
+    if (sec[LG_SEC_SPELL_PEN] >= 1.0f)
+        player->ApplySpellPenetrationBonus(int32(sec[LG_SEC_SPELL_PEN]), apply);
+    if (sec[LG_SEC_BLOCK_VALUE] >= 1.0f)
+        player->HandleBaseModFlatValue(SHIELD_BLOCK_VALUE, sec[LG_SEC_BLOCK_VALUE], apply);
 
     if (sec[LG_SEC_ATTACK_POWER] >= 1.0f)
     {
@@ -1188,7 +1286,10 @@ static LgStats LoadAbsorbForPlayer(Player* player)
     uint8 const level = player->GetLevel();
 
     QueryResult result = CharacterDatabase.Query(
-        "SELECT `item_entry`, `str`, `agi`, `sta`, `intel`, `spi`, `armor`, `attune_pct` "
+        "SELECT `item_entry`, `str`, `agi`, `sta`, `intel`, `spi`, `armor`, `attune_pct`, "
+        "`sec_crit`, `sec_hit`, `sec_haste`, `sec_expertise`, `sec_armor_pen`, `sec_resilience`, "
+        "`sec_attack_power`, `sec_spell_power`, `sec_defense`, `sec_dodge`, `sec_parry`, "
+        "`sec_block`, `sec_mp5`, `sec_health_regen`, `sec_spell_pen`, `sec_block_value` "
         "FROM `lg_absorb` WHERE `account_id` = {}", accountId);
     if (!result)
         return total;
@@ -1221,6 +1322,26 @@ static LgStats LoadAbsorbForPlayer(Player* player)
         row.intel *= pct;
         row.spi *= pct;
         row.armor *= pct;
+        // Report #111: the bank's secondary columns ride behind attune_pct in
+        // the SELECT, in the same order the bank writes them; the dmg pair has
+        // no column. Explicit field indices on purpose -- this query is also
+        // the reference for what the bank stores.
+        row.sec[LG_SEC_CRIT] = f[8].Get<float>() * pct;
+        row.sec[LG_SEC_HIT] = f[9].Get<float>() * pct;
+        row.sec[LG_SEC_HASTE] = f[10].Get<float>() * pct;
+        row.sec[LG_SEC_EXPERTISE] = f[11].Get<float>() * pct;
+        row.sec[LG_SEC_ARMOR_PEN] = f[12].Get<float>() * pct;
+        row.sec[LG_SEC_RESILIENCE] = f[13].Get<float>() * pct;
+        row.sec[LG_SEC_ATTACK_POWER] = f[14].Get<float>() * pct;
+        row.sec[LG_SEC_SPELL_POWER] = f[15].Get<float>() * pct;
+        row.sec[LG_SEC_DEFENSE] = f[16].Get<float>() * pct;
+        row.sec[LG_SEC_DODGE] = f[17].Get<float>() * pct;
+        row.sec[LG_SEC_PARRY] = f[18].Get<float>() * pct;
+        row.sec[LG_SEC_BLOCK] = f[19].Get<float>() * pct;
+        row.sec[LG_SEC_MP5] = f[20].Get<float>() * pct;
+        row.sec[LG_SEC_HEALTH_REGEN] = f[21].Get<float>() * pct;
+        row.sec[LG_SEC_SPELL_PEN] = f[22].Get<float>() * pct;
+        row.sec[LG_SEC_BLOCK_VALUE] = f[23].Get<float>() * pct;
         total += row;
     } while (result->NextRow());
 
@@ -1756,6 +1877,11 @@ static void BankCollection(Player* player, uint32 pct)
         slice.intel *= share;
         slice.spi *= share;
         slice.armor *= share;
+        // Curator coverage scales the secondaries with the same share; without
+        // this the REPLACE below would zero sec on rows it lifts.
+        for (int i = 0; i < LG_SEC_COUNT; ++i)
+            if (i != LG_SEC_DMG_MIN && i != LG_SEC_DMG_MAX)
+                slice.sec[i] *= share;
 
         float existingTotal = 0.0f;
         bool firstTime = true;
@@ -1773,9 +1899,20 @@ static void BankCollection(Player* player, uint32 pct)
 
         CharacterDatabase.DirectExecute(
             "REPLACE INTO `lg_absorb` (`account_id`, `item_entry`, `str`, `agi`, `sta`, "
-            "`intel`, `spi`, `armor`, `item_level`) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
+            "`intel`, `spi`, `armor`, `item_level`, "
+            "`sec_crit`, `sec_hit`, `sec_haste`, `sec_expertise`, `sec_armor_pen`, `sec_resilience`, "
+            "`sec_attack_power`, `sec_spell_power`, `sec_defense`, `sec_dodge`, `sec_parry`, "
+            "`sec_block`, `sec_mp5`, `sec_health_regen`, `sec_spell_pen`, `sec_block_value`) "
+            "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, "
+            "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
             accountId, proto->ItemId, slice.str, slice.agi, slice.sta,
-            slice.intel, slice.spi, slice.armor, 0);
+            slice.intel, slice.spi, slice.armor, 0,
+            slice.sec[LG_SEC_CRIT], slice.sec[LG_SEC_HIT], slice.sec[LG_SEC_HASTE],
+            slice.sec[LG_SEC_EXPERTISE], slice.sec[LG_SEC_ARMOR_PEN], slice.sec[LG_SEC_RESILIENCE],
+            slice.sec[LG_SEC_ATTACK_POWER], slice.sec[LG_SEC_SPELL_POWER], slice.sec[LG_SEC_DEFENSE],
+            slice.sec[LG_SEC_DODGE], slice.sec[LG_SEC_PARRY], slice.sec[LG_SEC_BLOCK],
+            slice.sec[LG_SEC_MP5], slice.sec[LG_SEC_HEALTH_REGEN], slice.sec[LG_SEC_SPELL_PEN],
+            slice.sec[LG_SEC_BLOCK_VALUE]);
         if (firstTime)
             ::LivingGear_SendAddonLine(player, Acore::StringFormat("ATT|{}", proto->ItemId));
         ++banked;

@@ -1062,7 +1062,11 @@ void ThrowExtraAvengers(Player* player, Spell* spell)
     cd = int32(float(cd) / (1.0f + haste / 100.0f));
     if (cd < 1000)
         cd = 1000;
-    player->AddSpellCooldown(info->Id, 0, getMSTime() + uint32(cd), true);
+    // Report #112: Player::_AddSpellCooldown treats its third parameter as a
+    // DURATION -- it stores GameTime::GetGameTimeMS() + end_time. Passing
+    // getMSTime() here made every hand-cast Avenger's Shield cooldown last for
+    // the server's whole uptime (hours, and growing) instead of AS_CD_MS.
+    player->AddSpellCooldown(info->Id, 0, uint32(cd), true);
 }
 
 void KeepHofOneTarget(Player* caster, Unit* target)
