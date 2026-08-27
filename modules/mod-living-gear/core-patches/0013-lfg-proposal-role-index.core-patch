@@ -1,103 +1,145 @@
-Send the LFG proposal member role as the INDEX the 3.3.5 client expects, not as
-AzerothCore's role bitmask.
+Pad SMSG_LFG_PROPOSAL_UPDATE to five members, and send the role bitmask the
+3.3.5 client actually tests.
 Touches: src/server/game/Handlers/LFGHandler.cpp, WorldSession::SendLfgUpdateProposal()
 
-Why: players saw this on every dungeon-finder pop, repeatedly, and on accept --
+(The filename says "index" because the 0.1.74 attempt below believed the role
+field was a table index. It is not. The name is kept so numbering stays stable.)
+
+Why: players saw this on every dungeon-finder pop --
 
   Interface\FrameXML\LFGFrame.lua:337: Unknown role: UNKNOWN
   ... GetTexCoordsForRole -> LFDDungeonReadyStatus_UpdateIcon
       -> LFDDungeonReadyPopup_Update
 
--- and separately reported "healers marked as dps". Those are one bug.
+THE ROOT CAUSE, in one sentence: the 3.3.5 client hard-codes the number of
+proposal members at five, and Bonesaw's queue deliberately pops proposals with
+fewer than five, so every unfilled slot is read out of client memory that no
+packet ever wrote and comes back with no role.
 
-THE EVIDENCE, because two earlier fixes were wrong and both were guesses.
+HOW THAT WAS ESTABLISHED, after four wrong guesses that were all guesses.
 
-FrameXML was extracted from the client's own MPQs rather than recalled:
+FrameXML, extracted from the client's own MPQs -- which needs
+MPQ_OPEN_READ_ONLY while the client is running, or the files merely look absent
+(tools/client-patch/extract_framexml.py):
 
-  * LFGFrame.lua:337 `GetTexCoordsForRole(role)` accepts exactly GUIDE, TANK,
-    HEALER, DAMAGER and calls error() on anything else. `role` is a STRING.
-  * LFDFrame.lua:675 `LFDDungeonReadyStatus_UpdateIcon` gets it from
-    `GetLFGProposalMember(button:GetID())`, and those buttons carry ids 1-5 in
-    LFDFrame.xml, so the index is not the problem.
-  * `GetLFGProposalMember` returns `isLeader, role, level, responded, accepted,
-    name, class` -- isLeader is its OWN return value, so the leader bit never
-    belonged in the role field.
+  * LFGFrame.lua:337 `GetTexCoordsForRole(role)` takes a STRING, accepts only
+    GUIDE/TANK/HEALER/DAMAGER, and error()s on anything else.
+  * Its only two dynamic callers are LFDFrame.lua:539 (role from
+    `GetLFGProposal()`, i.e. your own) and LFDFrame.lua:678 in
+    `LFDDungeonReadyStatus_UpdateIcon` (role from `GetLFGProposalMember(i)`).
+  * LFDDungeonReadyPopup_Update drives the second one:
 
-That string comes from client C code, so Wow.exe was searched for the table. It
-holds exactly one: three pointers at VA 0xad87b0 (file offset 0x6d67b0),
-pointing at the strings at 0xa29b70/78/80, in this order:
+        for i=1, numMembers do LFDDungeonReadyStatus_UpdateIcon(...Player"..i)
+        for i=numMembers+1, NUM_LFD_MEMBERS do ...Player"..i:Hide()
 
-    index 0 -> "TANK"    index 1 -> "HEALER"    index 2 -> "DAMAGER"
+Then Wow.exe 3.3.5a 12340 was disassembled instead of being reasoned about
+(tools/client-patch/dump_lfg_role_table.py):
 
-"GUIDE" does not occur in the 3.3.5 binary at all. The client indexes that
-table with the number the server sends. AzerothCore sends the bitmask, so what
-players actually got was:
+  * `GetLFGProposalMember` (0x00554100-ish) bounds-checks its argument against
+    a CONSTANT: `cmp eax, 5 / jae bail` at 0x0055306b. It does not know or care
+    how many members the packet carried; slot 4 is as readable as slot 1.
+  * `GetLFGProposal` does not return the packet's member count either. It
+    pushes a constant -- `fld qword [0x009f5988]` at 0x005542fd, and that qword
+    is 5.0. So `numMembers` is ALWAYS 5, the draw loop always runs five times,
+    and the loop that would hide unused rows is 6..5 and never runs.
+  * The role field is turned into a string by a BIT TEST, identical at both
+    call sites (0x00553093 and 0x00554255):
 
-    PLAYER_ROLE_TANK   = 2 -> index 2 -> "DAMAGER"  (tank draws the dps icon)
-    PLAYER_ROLE_HEALER = 4 -> out of range -> "UNKNOWN" -> Lua error
-    PLAYER_ROLE_DAMAGE = 8 -> out of range -> "UNKNOWN" -> Lua error
+        a8 02              test al, 2
+        8b 0d b0 87 ad 00  mov  ecx, [0x00ad87b0]   ; "TANK"
+        a8 04              test al, 4
+        8b 15 b4 87 ad 00  mov  edx, [0x00ad87b4]   ; "HEALER"
+        a8 08              test al, 8
+        a1 b8 87 ad 00     mov  eax, [0x00ad87b8]   ; "DAMAGER"
+        68 10 41 9e 00     push 0x009e4110          ; "UNKNOWN"
 
-Every observation fits: the error fired on every pop no matter what was done to
-the mask, its Count tracked the number of non-tank members, only tanks escaped
-it (while rendering wrongly), and "healers show as dps" was a separate report of
-the same root cause.
+    Those bits are exactly AzerothCore's PLAYER_ROLE_*. Bit 0 is read
+    separately (`and eax, 1`) as the isLeader return, so the leader bit belongs
+    in the field. "UNKNOWN" is reachable only from a value with none of bits
+    2/4/8 -- which is what a slot the packet never wrote contains.
 
-WHAT THE TWO EARLIER ATTEMPTS DID, AND WHY THEY MISSED.
+Retail never hit this because a retail proposal is always exactly five members.
+Bonesaw's is not: `LFGQueue::CheckCompatibility` computes
+`allowIncomplete = hasSoloQueue() || raidQueue || allowBotFill` (LFGQueue.cpp:339)
+and pops short, filling the group with bots on accept. The live log for one
+uptime shows ten proposals, every one of them two members -- so every pop cost
+the player three Lua errors, one per empty seat.
 
-Both assumed a bitmask, so both produced values the client still could not read:
+THE FIX. Always write MAXGROUPSIZE member blocks. Real members first, in the
+existing tank/healer/dps order; the remainder are written as accepted dps,
+which is what the bot fill is about to make them. Nothing is invented that the
+group will not actually become, and the popup stops showing seats waiting
+forever on players who do not exist yet.
 
-  1. Narrowing a multi-bit mask down to a single role bit. Still sent 4 or 8.
-  2. Stripping PLAYER_ROLE_LEADER. Turned 9 into 8 -- still out of range.
+The same change caps the list at MAXGROUPSIZE for raid queues, since the client
+cannot address a sixth slot at all, and keeps the recipient inside the cap --
+`GetLFGProposal` finds "you" by scanning those same five slots for the self
+flag (0x00554220), and finds nothing useful if you were truncated away.
 
-The clue was sitting in the log the whole time: both patches logged whenever
-they corrected a mask, and that line never fired once across a full uptime. The
-value on the wire was already a single clean role bit and the client still could
-not resolve it, which rules out the mask's SHAPE and points at its MEANING.
-"Verify, then theorise" applies to the second guess as much as the first.
+THE FOUR EARLIER ATTEMPTS, all aimed at the role VALUE, which was never wrong.
 
-The mapping and the fallback are kept: a member arriving with no role bits at
-all still goes out as damage rather than as something the client cannot render,
-and that case is still logged, because it is a genuine upstream bug (a bot
-placed into a group outside the queue, or a proposal formed without
-CheckGroupRoles running). What is gone is the pretence that narrowing a mask was
-ever going to fix this.
+  0.1.72  Narrowed a multi-bit mask to one role bit. Fixed nothing: the mask was
+          already a single clean bit, and the "corrected a mask" line this added
+          never fired once across a full uptime.
+  0.1.73  Also stripped PLAYER_ROLE_LEADER. Fixed nothing, and silently cost the
+          ready dialog its leader crown, since bit 0 is the isLeader return.
+  0.1.74  Sent 0/1/2 as a table index. This one CAUSED errors rather than fixing
+          them: index 2 ("damage") is the TANK bit, so rogues drew tank icons,
+          and indices 0 and 1 carry no role bit, so tanks and healers threw this
+          very error. The rogue-as-tank sighting that got it reverted was the
+          index theory refuting itself.
+  0.1.75  Reverted to a clean 2/4/8 and instrumented every proposal at error
+          level. The instrumentation is what finally closed this -- not by
+          showing a bad value, but by showing that every value was GOOD and
+          every proposal had two members.
+
+The lesson is the standing one: four theories were built on what the server
+sends without once reading what the client does with it. Ten minutes of
+disassembly ended it. Both restored: the leader bit, and the mask untouched.
 
 --- a/src/server/game/Handlers/LFGHandler.cpp
 +++ b/src/server/game/Handlers/LFGHandler.cpp
-@@ (replacing NarrowProposalRoleForClient)
--static uint8 NarrowProposalRoleForClient(uint8 role)
+@@ ProposalRoleForClient -- stop rewriting a value that was never wrong
+-static uint8 ProposalRoleForClient(uint8 role)
 -{
--    uint8 const leader = role & lfg::PLAYER_ROLE_LEADER;
 -    if (role & lfg::PLAYER_ROLE_TANK)
--        return leader | lfg::PLAYER_ROLE_TANK;
--    ...
+-        return lfg::PLAYER_ROLE_TANK;
+-    if (role & lfg::PLAYER_ROLE_HEALER)
+-        return lfg::PLAYER_ROLE_HEALER;
+-    return lfg::PLAYER_ROLE_DAMAGE;
 -}
-+enum LfgClientRoleIndex : uint32
++static uint8 ProposalRoleForClient(uint8 role)
 +{
-+    LFG_CLIENT_ROLE_TANK   = 0,
-+    LFG_CLIENT_ROLE_HEALER = 1,
-+    LFG_CLIENT_ROLE_DAMAGE = 2,
-+};
++    if (role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE))
++        return role;
 +
-+static uint32 ProposalRoleIndexForClient(uint8 role)
-+{
-+    if (role & lfg::PLAYER_ROLE_TANK)
-+        return LFG_CLIENT_ROLE_TANK;
-+    if (role & lfg::PLAYER_ROLE_HEALER)
-+        return LFG_CLIENT_ROLE_HEALER;
-+    return LFG_CLIENT_ROLE_DAMAGE;
++    return uint8((role & lfg::PLAYER_ROLE_LEADER) | lfg::PLAYER_ROLE_DAMAGE);
 +}
 
-@@ SendLfgUpdateProposal -- sort by what is actually sent
--        switch (NarrowProposalRoleForClient(player.role) & ~lfg::PLAYER_ROLE_LEADER)
-+        switch (ProposalRoleIndexForClient(player.role))
+@@ SendLfgUpdateProposal -- the count is a constant on the client, so send it
+-    data << uint8(proposal.players.size());                // Group size
++    data << uint8(MAXGROUPSIZE);                           // Group size
 
-@@ SendLfgUpdateProposal -- the per-member write
--        uint8 const role = NarrowProposalRoleForClient(player.role);
--        ... logging for masks that were never narrowed ...
--        data << uint32(role);                              // Role
-+        uint32 const roleIndex = ProposalRoleIndexForClient(player.role);
+@@ SendLfgUpdateProposal -- the client cannot address a sixth slot
++    if (ordered.size() > size_t(MAXGROUPSIZE))
++    {
++        auto const self = std::find(ordered.begin(), ordered.end(), guid);
++        if (self != ordered.end() && std::distance(ordered.begin(), self) >= MAXGROUPSIZE)
++            std::iter_swap(ordered.begin() + (MAXGROUPSIZE - 1), self);
++        ordered.resize(MAXGROUPSIZE);
++    }
+
+@@ SendLfgUpdateProposal -- fill the seats the bot fill is about to occupy
++    for (size_t filled = ordered.size(); filled < size_t(MAXGROUPSIZE); ++filled)
++    {
++        data << uint32(lfg::PLAYER_ROLE_DAMAGE);           // Role
++        data << uint8(0) << uint8(0) << uint8(0);          // not self, not in dungeon, not same group
++        data << uint8(1) << uint8(1);                      // answered, accepted
++    }
+     SendPacket(&data);
+
+@@ SendLfgUpdateProposal -- temporary instrumentation removed
+-        ... LFGPROBE line per member, at LOG_ERROR ...
+-        ... LFGBYTES full-packet hex dump, at LOG_ERROR ...
 +        if (!(player.role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)))
-+            LOG_ERROR("lfg", "SMSG_LFG_PROPOSAL_UPDATE: proposal {} member [{}] has no LFG role at all (mask {}), sending damage",
-+                proposal.id, pguid.ToString(), uint32(player.role));
-+        data << uint32(roleIndex);                         // Role INDEX, not a mask
++            LOG_ERROR("lfg", "... has no LFG role at all (mask {}), sending damage", ...);

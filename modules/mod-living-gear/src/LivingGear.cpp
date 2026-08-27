@@ -116,7 +116,7 @@ struct LgConfig
     // Item level every piece converges on at MaxLevel. 284 is Icecrown
     // 25-heroic, the top of WotLK.
     float ilvlCeiling = 284.0f;
-    float absorbPct = 0.10f; // legacy one-time-sacrifice pct; unused by the new continuous-attunement path, kept for the (now-unreachable) SacrificeItem code path
+    float absorbPct = 0.10f; // legacy; no longer scales any banked row (see SacrificeItem). Kept so LivingGear.AbsorbPct in an existing .conf is not a load error.
     float rollChance = 25.0f;
     uint8 rollStatCount = 1;
 
@@ -681,10 +681,85 @@ static float AbsorbPctForLevel(uint16 level)
     return 0.01f + t * 0.99f;
 }
 
+// One-shot, idempotent repair for report #103.
+//
+// Before parity, SacrificeItem banked grown * g_cfg.absorbPct (10%) into
+// lg_absorb while AttuneItemEntry banked full stats, and attune_pct then took
+// its cut of whichever landed -- so an auto-attuned drop ended up worth a tenth
+// of the same item attuned by hand. 6707 rows across 96 accounts were left
+// holding a tenth of their value, and because auto-attune destroys the item at
+// loot time those rows were never afterwards sitting in bags for
+// BankCollection's ratchet to lift.
+//
+// Runs on every login rather than behind a marker row or a migration: it only
+// ever raises a row to exactly ReadBaseStats(proto), so the second pass is a
+// no-op. That also keeps the repair in C++, where the item template is
+// available -- replicating ReadBaseStats' stat_type/stat_value walk in SQL
+// would mean a characters-DB migration reaching into the world DB, and no
+// migration in data/sql/updates does that.
+//
+// The 50% threshold is safe in both directions:
+//   - Curator rows (BankCollection) store base * 25/50/75/100% and the lower
+//     ranks would match, so they are excluded up front by `item_level <> 0`,
+//     which only BankCollection writes.
+//   - AttuneItemEntry rows already store full base stats, so their ratio is
+//     1.0 and they never match.
+//   - A SacrificeItem row for a heavily levelled item can sit above the
+//     threshold (grown > 5x base) and is simply left alone. This
+//     under-repairs rather than ever over-granting.
+static void RepairUnderbankedAbsorb(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT `item_entry`, `str`, `agi`, `sta`, `intel`, `spi`, `armor` "
+        "FROM `lg_absorb` WHERE `account_id` = {} AND `item_level` <> 0", accountId);
+    if (!result)
+        return;
+
+    uint32 repaired = 0;
+    do
+    {
+        Field* f = result->Fetch();
+        uint32 const entry = f[0].Get<uint32>();
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+        if (!proto)
+            continue;
+
+        LgStats const base = ReadBaseStats(proto);
+        float const baseTotal = base.Total();
+        if (baseTotal <= 0.0f)
+            continue;
+
+        float const storedTotal = f[1].Get<float>() + f[2].Get<float>() + f[3].Get<float>()
+            + f[4].Get<float>() + f[5].Get<float>() + f[6].Get<float>();
+        if (storedTotal >= baseTotal * 0.5f)
+            continue;
+
+        CharacterDatabase.DirectExecute(
+            "UPDATE `lg_absorb` SET `str` = {}, `agi` = {}, `sta` = {}, `intel` = {}, "
+            "`spi` = {}, `armor` = {}, `item_level` = {} "
+            "WHERE `account_id` = {} AND `item_entry` = {}",
+            base.str, base.agi, base.sta, base.intel, base.spi, base.armor,
+            proto->ItemLevel, accountId, entry);
+        ++repaired;
+    } while (result->NextRow());
+
+    if (repaired)
+        LOG_INFO("module.livinggear",
+            "Living Gear: repaired {} under-banked attunement row(s) for account {}.",
+            repaired, accountId);
+}
+
+// DEAD CODE. No call sites since 3fd7203a3 (Attunement stage 2) removed the
+// per-level-up call in AddItemXpAndBank; levelling an item no longer banks
+// anything. Kept because the 1%-to-100% ramp it implements is the reference for
+// AbsorbPctForLevel/XpForNextLevel, whose comments still describe that ramp.
+//
 // Non-destructive: mirrors `itemEntry`'s current grown stats (scaled by
 // AbsorbPctForLevel) into the account's lg_absorb ratchet for that entry.
-// Never destroys anything -- called automatically on every level-up (see
-// AddItemXpAndBank) rather than as a manual one-time sacrifice.
 // Milestones that raise the attunement rate.
 //
 // Every id was read out of var/mmap-output/dbc/Achievement.dbc, anchoring on a
@@ -1581,56 +1656,45 @@ static bool SacrificeItem(Player* player, Item* item, ChatHandler* handler)
         return false;
     }
 
+    if (!player->GetSession())
+        return false;
+
     LgItemState st;
     EnsureItemState(item, player, st);
-    LgStats grown = GrownStats(proto, st);
-    LgStats absorb;
-    absorb.str = grown.str * g_cfg.absorbPct;
-    absorb.agi = grown.agi * g_cfg.absorbPct;
-    absorb.sta = grown.sta * g_cfg.absorbPct;
-    absorb.intel = grown.intel * g_cfg.absorbPct;
-    absorb.spi = grown.spi * g_cfg.absorbPct;
-    absorb.armor = grown.armor * g_cfg.absorbPct;
 
-    uint32 const accountId = player->GetSession()->GetAccountId();
-    float existingTotal = 0.0f;
-    QueryResult prev = CharacterDatabase.Query(
-        "SELECT `str`, `agi`, `sta`, `intel`, `spi`, `armor` FROM `lg_absorb` "
-        "WHERE `account_id` = {} AND `item_entry` = {}", accountId, st.itemEntry);
-    if (prev)
-    {
-        Field* f = prev->Fetch();
-        existingTotal = f[0].Get<float>() + f[1].Get<float>() + f[2].Get<float>()
-            + f[3].Get<float>() + f[4].Get<float>() + f[5].Get<float>();
-    }
-
-    // Bail on equal-or-weaker, not just strictly weaker: an Armory-recreated
-    // item is by definition the exact same entry the account already has
-    // attuned, so without this an item pulled out of the Armory to wear
-    // would immediately get auto-attuned (and destroyed) right back if
-    // auto-attune is on -- a recreate-then-instantly-lose loop.
-    if (absorb.Total() <= existingTotal + 0.01f)
+    // Full parity with ATTUNEALL: both routes go through AttuneItemEntry, which
+    // banks the item's FULL stats and lets attune_pct apply the rate once at
+    // stat-apply time (RefreshStats). This path used to bank
+    // grown * g_cfg.absorbPct (10%) into the row, and attune_pct then took a
+    // further 10% of THAT at apply time -- so a looted piece auto-attuned for
+    // 1% of its stats while the same piece bagged and attuned by hand gave 10%.
+    // Report #103 ("no new items seem to be attuning") was that tenfold gap:
+    // auto-attune destroys the item at loot time, so its 10% row was never
+    // afterwards in bags for BankCollection's ratchet to lift.
+    //
+    // AttuneItemEntry declines an entry the account already holds, which also
+    // preserves the reason the old ratchet bailed on equal-or-weaker copies: an
+    // Armory-recreated item is by definition an entry already attuned, so with
+    // auto-attune on it would otherwise be destroyed the instant it was
+    // materialized -- a recreate-then-instantly-lose loop.
+    LgStats const banked = ReadBaseStats(proto);
+    if (!AttuneItemEntry(player, st.itemEntry))
     {
         handler->PSendSysMessage(
-            "|cffffcc00[Living Gear]|r A copy of this item at least as strong is already "
-            "attuned. Sacrificing this one would do nothing. Item kept.");
+            "|cffffcc00[Living Gear]|r This item is already attuned to the account. "
+            "Sacrificing this one would do nothing. Item kept.");
         return false;
     }
 
-    CharacterDatabase.DirectExecute(
-        "REPLACE INTO `lg_absorb` (`account_id`, `item_entry`, `str`, `agi`, `sta`, "
-        "`intel`, `spi`, `armor`, `item_level`) VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {})",
-        accountId, st.itemEntry, absorb.str, absorb.agi, absorb.sta,
-        absorb.intel, absorb.spi, absorb.armor, st.level);
     CharacterDatabase.DirectExecute("DELETE FROM `lg_item` WHERE `item_guid` = {}", st.itemGuid);
 
     std::string const name = proto->Name1;
     player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
 
     handler->PSendSysMessage(
-        "|cff66ccff[Living Gear]|r {} was attuned and destroyed. Account gained "
+        "|cff66ccff[Living Gear]|r {} was attuned and destroyed. Account banked "
         "+{:.0f} str / +{:.0f} agi / +{:.0f} sta / +{:.0f} int / +{:.0f} spi / +{:.0f} armor.",
-        name, absorb.str, absorb.agi, absorb.sta, absorb.intel, absorb.spi, absorb.armor);
+        name, banked.str, banked.agi, banked.sta, banked.intel, banked.spi, banked.armor);
     RefreshStats(player);
     return true;
 }
@@ -1638,11 +1702,14 @@ static bool SacrificeItem(Player* player, Item* item, ChatHandler* handler)
 // Curator coverage: everything in bags and bank counts for a share of its BASE
 // stats immediately, instead of being drip-fed item XP a point a minute.
 //
-// Base rather than grown stats, deliberately. Worn gear banks its GROWN stats
-// through the level ramp, and grown only ever exceeds base -- so wearing and
-// levelling a piece always overtakes leaving it in the bank, and there is never
-// a reason to hoard rather than equip. BankAttunement's ratchet keeps whichever
-// side is larger, so the two paths cannot fight each other.
+// Base rather than grown stats. NOTE: the original rationale here -- "worn gear
+// banks its GROWN stats through the level ramp, so wearing always overtakes
+// banking" -- has not been true since 3fd7203a3 (Attunement stage 2). Wearing
+// and levelling a piece banks NOTHING; BankAttunement below is dead code kept
+// only for reference. Under stage 2 attunement is earned by SPENDING an item
+// (AttuneItemEntry, full stats) or by Curator coverage (this function, base
+// stats * share). Believing the stale version of this comment is what made the
+// first pass at report #103 conclude the system was working.
 //
 // Runs on login and whenever a Curator rank is bought. Walking the real
 // inventory rather than lg_item matters: an item that has never gained a level
@@ -2013,8 +2080,10 @@ public:
             return;
         if (!player->HasSpell(SPELL_WINDBLOWN))
             player->learnSpell(SPELL_WINDBLOWN);
-        // Before RefreshStats, so a milestone earned offline (or on another
-        // character) is already reflected in the stats applied on login.
+        // Both before RefreshStats, so a milestone earned offline (or on another
+        // character) and any under-banked row repaired here are already
+        // reflected in the stats applied on login.
+        RepairUnderbankedAbsorb(player);
         CheckAttuneMilestones(player);
         RefreshStats(player, true);
     }
@@ -2124,8 +2193,8 @@ public:
     {
         BuildStatBudget();
         if (g_cfg.enabled)
-            LOG_INFO("module", "Living Gear enabled (max level {}, absorb {:.0f}%)",
-                g_cfg.maxLevel, g_cfg.absorbPct * 100.0f);
+            LOG_INFO("module", "Living Gear enabled (max level {}, attune cap level {})",
+                g_cfg.maxLevel, g_cfg.attuneCapLevel);
     }
 };
 

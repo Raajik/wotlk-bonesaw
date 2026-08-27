@@ -466,7 +466,7 @@ local CLASS_PERKS = {
         { id = 910167, name = "Frost", how = "Hungering Cold has no cooldown/runic cost. Frost Strike and Obliterate deal double damage." },
     },
     WARLOCK = {
-        { id = 910157, name = "Affliction", how = "Your DoTs spread to enemies within 15 yards every 1 sec. DoT tick damage is increased by your haste." },
+        { id = 910157, name = "Affliction", how = "Your DoTs spread every 1 sec from every infected enemy to others within 15 yards, creeping outward for as long as there are enemies to reach. DoT tick damage is increased by your haste." },
         { id = 910158, name = "Demonology", how = "Metamorphosis has no cooldown or shard cost. Your demon pet's damage is doubled." },
         { id = 910159, name = "Destruction", how = "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt." },
     },

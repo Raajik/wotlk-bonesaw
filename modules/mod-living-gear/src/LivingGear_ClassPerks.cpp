@@ -403,6 +403,15 @@ uint32 const BM_PACK_DESPAWN_MS = 20000;
 uint32 const HUNTER_TRAP_RADIUS_MOD = 20000; // SetSpellValue(SPELLVALUE_RADIUS_MOD, x) -> RadiusMod = x/10000
 uint32 const WARLOCK_AFFLICTION_SPREAD_TICK_MS = 1000;
 float const WARLOCK_AFFLICTION_SPREAD_RANGE = 15.0f;
+// How far from the warlock we look for already-infected enemies to spread FROM.
+// The hop itself is still SPREAD_RANGE; this only bounds the search, so the
+// plague can creep well past the warlock's own casting range one hop at a time.
+float const WARLOCK_AFFLICTION_CONTAGION_RANGE = 60.0f;
+// One tick is one hop: carriers are snapshotted before anything is applied, so
+// an enemy infected this second only starts infecting others on the next one.
+// That is what makes it read as a spreading plague rather than an instant
+// map-wide application, and it is also what bounds the cost.
+uint32 const WARLOCK_AFFLICTION_MAX_SPREADS_PER_TICK = 60;
 uint32 const DRUID_ECLIPSE_TICK_MS = 3000;
 int32 const DRUID_ECLIPSE_REFRESH_DURATION = 15000;
 uint32 const DRUID_REJUV_SPREAD_TICK_MS = 3000;
@@ -2596,8 +2605,22 @@ void ApplyShamanRestChainHealTargets(Spell* spell, Player* player, SpellInfo con
 
 // -------------------------------------------------------------------------
 // Warlock: Affliction (910157)
-// "Your DoTs spread to enemies within 15 yards every 1 sec. DoT tick
-// damage is increased by your haste (duration is not shortened)."
+// "Your DoTs spread from every infected enemy to others within 15 yards every
+// 1 sec. DoT tick damage is increased by your haste (duration is not
+// shortened)."
+//
+// CONTAGIOUS, not a burst around your target. The first version read the DoTs
+// on your selected target and applied them to that target's neighbours, and
+// that was the whole of it: a newly infected enemy never became a carrier, so
+// the effect was permanently a fixed 15-yard ring around whatever you happened
+// to be looking at. Every carrier is a source now, so the infection creeps
+// outward a hop per second for as long as there are enemies to reach -- which
+// is the spec fantasy, and is deliberately wide.
+//
+// Cost is held down by doing ONE grid search per tick rather than one per
+// carrier: everything hostile within CONTAGION_RANGE is fetched once, split
+// into carriers and clean, and the hop test after that is plain distance
+// arithmetic. Casts are capped per tick as a backstop.
 // -------------------------------------------------------------------------
 void TickWarlockAffliction(Player* player, TickState& st, uint32 diff)
 {
@@ -2611,49 +2634,89 @@ void TickWarlockAffliction(Player* player, TickState& st, uint32 diff)
     // auto-attack victim. GetVictim() is the melee/attack target, so using it
     // alone made the perk silently do nothing after casting Corruption unless
     // the warlock also started wanding or meleeing (report #96).
+    //
+    // It is only a SEED now, not a requirement. Once the infection is running
+    // it feeds itself off whatever is already carrying DoTs, so it must keep
+    // creeping while you tab off, switch targets, or the original victim dies.
+    // Bailing here would have stopped the plague dead the moment you looked away.
     Unit* source = player->GetSelectedUnit();
     if (!source || !player->IsValidAttackTarget(source))
         source = player->GetVictim();
-    if (!source)
-    {
-        LOG_DEBUG("module.livinggear", "affliction spread: no selected/combat target, skipping");
-        return;
-    }
+
     uint32 const guid = player->GetGUID().GetCounter();
     if (!g_reentryGuard.insert(guid).second)
         return;
-    std::vector<uint32> dots;
-    Unit::AuraApplicationMap const& auras = source->GetAppliedAuras();
-    for (Unit::AuraApplicationMap::const_iterator itr = auras.begin(); itr != auras.end(); ++itr)
+
+    // The player's own warlock DoTs currently on a unit, or empty if it is clean.
+    auto dotsOn = [player](Unit* unit)
     {
-        AuraApplication* aa = itr->second;
-        Aura* aura = aa ? aa->GetBase() : nullptr;
-        if (!aura || aura->GetCasterGUID() != player->GetGUID())
-            continue;
-        SpellInfo const* dotInfo = aura->GetSpellInfo();
-        if (dotInfo && dotInfo->SpellFamilyName == SPELLFAMILY_WARLOCK && dotInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE))
-            dots.push_back(dotInfo->Id);
-    }
-    uint32 spread = 0;
-    if (!dots.empty())
-        ForEachHostileNear(player, source, WARLOCK_AFFLICTION_SPREAD_RANGE, [player, source, &dots, &spread](Unit* target)
+        std::vector<uint32> ids;
+        Unit::AuraApplicationMap const& auras = unit->GetAppliedAuras();
+        for (Unit::AuraApplicationMap::const_iterator itr = auras.begin(); itr != auras.end(); ++itr)
         {
-            if (target == source)
-                return;
-            for (uint32 id : dots)
+            AuraApplication* aa = itr->second;
+            Aura* aura = aa ? aa->GetBase() : nullptr;
+            if (!aura || aura->GetCasterGUID() != player->GetGUID())
+                continue;
+            SpellInfo const* dotInfo = aura->GetSpellInfo();
+            if (dotInfo && dotInfo->SpellFamilyName == SPELLFAMILY_WARLOCK && dotInfo->HasAura(SPELL_AURA_PERIODIC_DAMAGE))
+                ids.push_back(dotInfo->Id);
+        }
+        return ids;
+    };
+
+    struct Carrier
+    {
+        Unit* unit;
+        std::vector<uint32> dots;
+    };
+    std::vector<Carrier> carriers;
+    std::vector<Unit*> clean;
+
+    ForEachHostileInRange(player, WARLOCK_AFFLICTION_CONTAGION_RANGE, [&](Unit* unit)
+    {
+        std::vector<uint32> ids = dotsOn(unit);
+        if (ids.empty())
+            clean.push_back(unit);
+        else
+            carriers.push_back({unit, std::move(ids)});
+    });
+
+    // The selected target seeds the very first hop. It is normally found by the
+    // search above, but keep it explicit: report #96 was this perk silently
+    // doing nothing because the one unit that mattered was not being looked at.
+    if (source && std::find_if(carriers.begin(), carriers.end(),
+            [source](Carrier const& c) { return c.unit == source; }) == carriers.end())
+    {
+        std::vector<uint32> ids = dotsOn(source);
+        if (!ids.empty())
+            carriers.push_back({source, std::move(ids)});
+    }
+
+    uint32 spread = 0;
+    for (Unit* target : clean)
+    {
+        if (spread >= WARLOCK_AFFLICTION_MAX_SPREADS_PER_TICK)
+            break;
+        for (Carrier const& carrier : carriers)
+        {
+            if (carrier.unit == target || !target->IsWithinDist(carrier.unit, WARLOCK_AFFLICTION_SPREAD_RANGE))
+                continue;
+            for (uint32 id : carrier.dots)
                 if (!target->HasAura(id, player->GetGUID()))
                 {
-                    // Report #96: "Warlock Affliction perk not working, dots are
-                    // not spreading." The tick loop read correct on inspection,
-                    // so count what actually happens per tick instead of
-                    // guessing again -- same instrumentation shape as the
-                    // shadowstep pickpocket and blizzard counters.
                     ++spread;
                     player->CastSpell(target, id, true);
                 }
-        });
-    LOG_DEBUG("module.livinggear", "affliction spread: {} DoT(s) on victim, {} cast(s) this tick",
-        dots.size(), spread);
+        }
+    }
+
+    // Report #96: "Warlock Affliction perk not working, dots are not spreading."
+    // The tick loop read correct on inspection, so count what actually happens
+    // per tick instead of guessing again -- same instrumentation shape as the
+    // shadowstep pickpocket and blizzard counters.
+    LOG_DEBUG("module.livinggear", "affliction spread: {} carrier(s), {} clean, {} cast(s) this tick",
+        carriers.size(), clean.size(), spread);
     g_reentryGuard.erase(guid);
 }
 
