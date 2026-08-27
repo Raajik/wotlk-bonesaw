@@ -2607,10 +2607,16 @@ void TickWarlockAffliction(Player* player, TickState& st, uint32 diff)
     if (st.acc < WARLOCK_AFFLICTION_SPREAD_TICK_MS)
         return;
     st.acc = 0;
-    Unit* source = player->GetVictim();
+    // Spellcasters commonly have a selected hostile target without an
+    // auto-attack victim. GetVictim() is the melee/attack target, so using it
+    // alone made the perk silently do nothing after casting Corruption unless
+    // the warlock also started wanding or meleeing (report #96).
+    Unit* source = player->GetSelectedUnit();
+    if (!source || !player->IsValidAttackTarget(source))
+        source = player->GetVictim();
     if (!source)
     {
-        LOG_DEBUG("module.livinggear", "affliction spread: no victim, skipping");
+        LOG_DEBUG("module.livinggear", "affliction spread: no selected/combat target, skipping");
         return;
     }
     uint32 const guid = player->GetGUID().GetCounter();

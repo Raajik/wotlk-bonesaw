@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent
 CACHE = ROOT / "cache"
 STAGING = ROOT / "staging" / "DBFilesClient"
 SQL_OUT = ROOT.parent.parent / "data" / "sql" / "updates" / "pending_db_world" / "rev_lfg_raids.sql"
+LEGACY_SQL_OUT = ROOT.parent.parent / "data" / "sql" / "updates" / "pending_db_world" / "rev_lfg_legacy_queues.sql"
 
 LFG_BASE = CACHE / "LFGDungeons.dbc.base"
 LFG_OUT = STAGING / "LFGDungeons.dbc"
@@ -41,6 +42,14 @@ NEW_HEROICS = (
     (293, 802, 2, 8),  # Ruby Sanctum Heroic (10)
     (294, 803, 3, 9),  # Ruby Sanctum Heroic (25)
 )
+
+# Classic normal, Burning Crusade normal/heroic and their random categories.
+# Stock client data caps these below level 80, hiding them from an endgame
+# character even though Bonesaw scales the instance. Keep the minimum and
+# target levels for useful display/recommendations, but remove the upper cap.
+LEGACY_GROUPS = {1, 2, 3}
+LEGACY_RANDOM_IDS = {258, 259, 260}
+LEGACY_MAX_LEVEL = 80
 
 LOCALE_NAMES = 16
 
@@ -131,6 +140,9 @@ def patch_lfg_dungeons() -> list[list[int]]:
         return rec
 
     for rec in recs:
+        if rec[31] in LEGACY_GROUPS or rec[0] in LEGACY_RANDOM_IDS:
+            rec = list(rec)
+            rec[19] = LEGACY_MAX_LEVEL
         if rec[26] == LFG_TYPE_RAID and rec[23] not in SKIP_MAPS:
             rec = apply_raid_row(rec)
             print(f"LFG raid {rec[0]}: {_get_str(sb, rec[1])!r} map={rec[23]} diff={rec[24]} group={rec[31]}")
@@ -170,23 +182,11 @@ def _sql_str(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def write_sql(recs: list[list[int]]) -> None:
-    raid_recs = [rec for rec in recs if rec[26] == LFG_TYPE_DUNGEON and rec[0] >= 42]
-    # Keep only converted raids plus new heroics (type 1, map is raid-sized).
-    raid_ids = []
-    rows = []
-    for rec in recs:
-        if rec[26] != LFG_TYPE_DUNGEON:
-            continue
-        if rec[0] in {42, 46, 48, 50, 159, 160, 161, 175, 176, 177, 193, 194, 195, 196, 197, 199,
-                      223, 224, 227, 237, 238, 239, 240, 243, 244, 246, 247, 248, 250, 257,
-                      279, 280, 293, 294, 800, 801, 802, 803}:
-            raid_ids.append(rec[0])
-            rows.append(rec)
-    raid_ids.sort()
-    id_list = ", ".join(str(i) for i in raid_ids)
+def _write_sql_rows(path: Path, ids: list[int], heading: str) -> None:
+    ids.sort()
+    id_list = ", ".join(str(i) for i in ids)
     lines = [
-        "-- Looking For Dungeon entries for Vanilla through WotLK raids.",
+        heading,
         "-- Client names live in LFGDungeons.dbc (patch-Y.MPQ). This table overrides the server DBC.",
         "",
         f"DELETE FROM `lfgdungeons_dbc` WHERE `ID` IN ({id_list});",
@@ -210,7 +210,7 @@ def write_sql(recs: list[list[int]]) -> None:
     fields, recsize, _, out_recs, sb = _read_dbc(LFG_OUT)
     by_id = {rec[0]: rec for rec in out_recs}
     value_lines = []
-    for rid in raid_ids:
+    for rid in ids:
         rec = by_id[rid]
         name = _get_str(sb, rec[1])
         tex = _get_str(sb, rec[28])
@@ -228,10 +228,29 @@ def write_sql(recs: list[list[int]]) -> None:
             f"{empty_descs}, {rec[48]})"
         )
     lines.append(",\n".join(value_lines) + ";")
-    lines.append("")
-    SQL_OUT.parent.mkdir(parents=True, exist_ok=True)
-    SQL_OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Wrote {SQL_OUT} ({len(raid_ids)} raids)")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Wrote {path} ({len(ids)} entries)")
+
+
+def write_sql(recs: list[list[int]]) -> None:
+    raid_ids = [
+        rec[0] for rec in recs
+        if rec[0] in {42, 46, 48, 50, 159, 160, 161, 175, 176, 177, 193, 194, 195, 196, 197, 199,
+                      223, 224, 227, 237, 238, 239, 240, 243, 244, 246, 247, 248, 250, 257,
+                      279, 280, 293, 294, 800, 801, 802, 803}
+    ]
+    _write_sql_rows(SQL_OUT, raid_ids, "-- Looking For Dungeon entries for Vanilla through WotLK raids.")
+
+    legacy_ids = [
+        rec[0] for rec in recs
+        if rec[31] in LEGACY_GROUPS or rec[0] in LEGACY_RANDOM_IDS
+    ]
+    _write_sql_rows(
+        LEGACY_SQL_OUT,
+        legacy_ids,
+        "-- Classic and Burning Crusade dungeon queues remain available through level 80.",
+    )
 
 
 def patch() -> None:

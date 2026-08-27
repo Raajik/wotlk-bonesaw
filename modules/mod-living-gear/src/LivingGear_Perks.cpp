@@ -135,6 +135,14 @@ uint32 const AID_CLEANSE_MS = 1000;
 uint32 const SPELL_COOK_REGEN = 910174;
 uint32 const NATIVE_FIND_MINERALS = 2580;
 uint32 const NATIVE_FIND_HERBS = 2383;
+uint32 const NATIVE_FIND_FISH = 43308;
+// Native tracking auras ultimately only toggle these PLAYER_TRACK_RESOURCES
+// bits (misc values 3, 2 and 19 respectively). Set the bits directly so ore,
+// herbs and fishing pools stay visible without repeatedly casting Blizzard
+// tracking spells and stealing the player's tracking-dropdown selection.
+uint32 const TRACK_RESOURCE_ORE = 1u << (3 - 1);
+uint32 const TRACK_RESOURCE_HERB = 1u << (2 - 1);
+uint32 const TRACK_RESOURCE_FISH = 1u << (19 - 1);
 uint32 const SPELL_SUBTLETY = 910037;
 uint32 const SPELL_ASSASSINATION = 910035;
 uint32 const NPC_SHADOW_CLONE = 910201;
@@ -523,9 +531,25 @@ void ReconcilePerkSpells(Player* player)
     // g_perks if any of them reach back into the perk system.
     std::vector<uint32> owned(g_perks[acc].begin(), g_perks[acc].end());
     uint32 learned = 0;
+    uint32 retired = 0;
     for (uint32 spellId : owned)
     {
-        if (!PerkIsCastable(spellId) || player->HasSpell(spellId))
+        // Older builds learned every account perk, including passive badges
+        // and retired toggles. Ownership must remain in g_perks, but the stale
+        // spellbook entry must not: otherwise spells such as Auto-Mount,
+        // Craft ranks, tracking badges and Mounted Opener survive forever
+        // merely because the account still owns their underlying perk
+        // (report #100).
+        if (!PerkIsCastable(spellId))
+        {
+            if (player->HasSpell(spellId))
+            {
+                player->removeSpell(spellId, SPEC_MASK_ALL, false);
+                ++retired;
+            }
+            continue;
+        }
+        if (player->HasSpell(spellId))
             continue;
         if (!sSpellMgr->GetSpellInfo(spellId))
             continue;   // already logged loudly by UnlockPerk
@@ -536,6 +560,10 @@ void ReconcilePerkSpells(Player* player)
         LOG_INFO("module.livinggear",
             "Living Gear: {} learned {} account perk spell(s) it was missing.",
             player->GetName(), learned);
+    if (retired)
+        LOG_INFO("module.livinggear",
+            "Living Gear: {} removed {} retired/passive perk spell(s).",
+            player->GetName(), retired);
 
     // The other direction, and the reason a respec can revoke anything at all.
     // Spells cannot be stripped from an offline alt (same constraint the
@@ -2526,8 +2554,6 @@ bool HandleLgChat(Player* player, std::string msg)
                 "INSERT INTO `lg_account_meta` (`account_id`, `track_ore`) VALUES ({}, {}) "
                 "ON DUPLICATE KEY UPDATE `track_ore` = {}",
                 acc, v ? 1 : 0, v ? 1 : 0);
-        if (!v)
-            player->RemoveAurasDueToSpell(NATIVE_FIND_MINERALS);
         SendLine(player, Acore::StringFormat("TRACKORE|{}", v ? 1 : 0));
         return true;
     }
@@ -2540,8 +2566,6 @@ bool HandleLgChat(Player* player, std::string msg)
                 "INSERT INTO `lg_account_meta` (`account_id`, `track_herb`) VALUES ({}, {}) "
                 "ON DUPLICATE KEY UPDATE `track_herb` = {}",
                 acc, v ? 1 : 0, v ? 1 : 0);
-        if (!v)
-            player->RemoveAurasDueToSpell(NATIVE_FIND_HERBS);
         SendLine(player, Acore::StringFormat("TRACKHERB|{}", v ? 1 : 0));
         return true;
     }
@@ -2899,23 +2923,23 @@ public:
                 player->CastSpell(player, SPELL_PULL_RADIUS, true);
             }
         }
-        if (player->GetSession() && g_trackOreOn[player->GetSession()->GetAccountId()]
-            && HasPerk(player, SPELL_TRACK_ORE)
-            && !player->HasAura(NATIVE_FIND_MINERALS))
+        if (player->GetSession())
         {
-            // Report #83: this used to RECAST Find Minerals every 10 seconds.
-            // The aura itself is bit-level and harmless, but each re-application
-            // makes the client re-evaluate its minimap tracking UI, which resets
-            // the player's own "Find Low Level Quests" dropdown selection.
-            // The aura persists on its own -- apply it only when actually missing
-            // (login, death, aura dispel), not on a timer.
-            player->CastSpell(player, NATIVE_FIND_MINERALS, true);
-        }
-        if (player->GetSession() && g_trackHerbOn[player->GetSession()->GetAccountId()]
-            && HasPerk(player, SPELL_TRACK_HERB)
-            && !player->HasAura(NATIVE_FIND_HERBS))
-        {
-            player->CastSpell(player, NATIVE_FIND_HERBS, true);
+            uint32 const acc = player->GetSession()->GetAccountId();
+            bool const ore = g_trackOreOn[acc] && HasPerk(player, SPELL_TRACK_ORE);
+            bool const herb = g_trackHerbOn[acc] && HasPerk(player, SPELL_TRACK_HERB);
+            if (ore)
+                player->SetFlag(PLAYER_TRACK_RESOURCES, TRACK_RESOURCE_ORE);
+            else if (!player->HasAura(NATIVE_FIND_MINERALS))
+                player->RemoveFlag(PLAYER_TRACK_RESOURCES, TRACK_RESOURCE_ORE);
+            if (herb)
+                player->SetFlag(PLAYER_TRACK_RESOURCES, TRACK_RESOURCE_HERB);
+            else if (!player->HasAura(NATIVE_FIND_HERBS))
+                player->RemoveFlag(PLAYER_TRACK_RESOURCES, TRACK_RESOURCE_HERB);
+            if (ore || herb)
+                player->SetFlag(PLAYER_TRACK_RESOURCES, TRACK_RESOURCE_FISH);
+            else if (!player->HasAura(NATIVE_FIND_FISH))
+                player->RemoveFlag(PLAYER_TRACK_RESOURCES, TRACK_RESOURCE_FISH);
         }
     }
 
