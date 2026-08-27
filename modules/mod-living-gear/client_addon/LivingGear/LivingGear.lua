@@ -1,7 +1,7 @@
 -- Living Gear window. Loaded from patch-enUS-4.MPQ via FrameXML, or Interface/AddOns.
 -- Server pushes numbers over addon whispers (prefix LG). ASCII-only strings.
 
-local LG_UI_REV = 24
+local LG_UI_REV = 25
 
 -- Lua 5.1 (what the WotLK 3.3.5 client actually runs) also hard-caps the
 -- main chunk -- the whole file, treated as one implicit function -- at 200
@@ -6255,120 +6255,43 @@ function LG2.TryAutoAccept()
     end
 end
 
--- The 3.3.5 tradeskill/craft window works out "how many can I make"
--- purely from what is in your bags, so a recipe whose reagents are sitting
--- in the reagent vault reads as 0 and the Create button stays greyed out.
--- The server's own top-up (Spell::CheckItems -> TopUpReagentFromVault)
--- only runs on a cast the client is refusing to send, so nothing the
--- server does on its own can unstick it. Tell the server which recipe is
--- selected and let it move the reagents somewhere the client can see.
+-- The CRAFTPREP staging request that used to live here is retired.
 --
--- Hung off LG2 rather than made a file-local on purpose: the OnEvent
--- closure below is already near Lua 5.1's 60-upvalue ceiling (see the
--- BuildLootPanel/BuildClassTabs split-outs above) and LG2 is an upvalue it
--- already holds.
-function LG2.SendCraftPrep(force)
-    local id
-    if GetTradeSkillSelectionIndex and GetTradeSkillRecipeLink then
-        local idx = GetTradeSkillSelectionIndex()
-        if idx and idx > 0 then
-            local link = GetTradeSkillRecipeLink(idx)
-            if link then
-                id = tonumber(string.match(link, "enchant:(%d+)"))
-            end
-        end
-    end
-    if not id and GetCraftSelectionIndex and GetCraftRecipeLink then
-        -- Enchanting (and beast training) use CraftFrame, not TradeSkillFrame.
-        local idx = GetCraftSelectionIndex()
-        if idx and idx > 0 then
-            local link = GetCraftRecipeLink(idx)
-            if link then
-                id = tonumber(string.match(link, "enchant:(%d+)"))
-            end
-        end
-    end
-    if not id then
-        return
-    end
-    -- TRADE_SKILL_UPDATE also fires as a result of the items we just asked
-    -- for landing in the bag, so throttle per recipe. The server side is
-    -- idempotent anyway (it no-ops once the bag already has enough), this
-    -- just keeps us from whispering on every bag tick.
-    local now = GetTime()
-    if not force and LG2._craftPrepId == id and LG2._craftPrepAt and (now - LG2._craftPrepAt) < 1 then
-        return
-    end
-    LG2._craftPrepId = id
-    LG2._craftPrepAt = now
-    SendLine("CRAFTPREP|" .. tostring(id))
-end
+-- It existed because the 3.3.5 tradeskill/craft window works out "how many
+-- can I make" purely from what is in your bags, so a recipe stocked only by
+-- the reagent vault read as 0 and Create stayed greyed out; the addon asked
+-- the server to move one craft's worth of materials into the backpack as a
+-- fallback whenever a craft came back refused. That is the behaviour the
+-- reagent bank exists to prevent -- materials being shovelled out of the
+-- bank into bags for no reason the player can see.
+--
+-- Nothing needs it any more: the GetTradeSkillInfo / GetCraftInfo hooks
+-- above make Create count the vault, the reagent rows are vault-inclusive,
+-- the server answers the craft gate from the vault in place, and
+-- Spell::TakeReagents pays the shortfall straight out of the vault. The
+-- window shows the true potential total, nothing is moved, and a refused
+-- craft is refused for a real reason worth reading instead of covered up
+-- with a quiet withdrawal.
 
 -- Bug report #16, 2026-08-22: "STILL can't do professions directly from reagent
 -- bank, 'missing reagent: x' ... even though it shows up in the profession
 -- interface already."
 --
--- The original reading of that was "the client validates against real bag
--- contents in code we cannot hook", and the fix was to pre-stage ten crafts'
--- worth of materials into the backpack whenever a recipe was selected. It
--- worked, but it made the reagent bank a place things were constantly being
--- shovelled out of and swept back into, for no reason the player could see.
+-- The original reading of that was "pre-stage materials into the backpack
+-- whenever a craft is refused" (CRAFTPREP, with a watchdog that fired on a
+-- cast that never reached the server and a staging attempt on any error
+-- popup). That worked, but it made the reagent bank a place things were
+-- constantly being shovelled out of and swept back into, for no reason the
+-- player could see.
 --
--- The real blocker was narrower and is now handled properly: numAvailable came
--- from GetTradeSkillInfo, computed in C from bag contents, and
--- TradeSkillFrame_Update greys out Create whenever it reads 0. That function is
--- hooked further up, so the window now counts the reagent bank itself and
--- nothing has to be moved in advance -- the server's own top-up in
--- Spell::CheckItems (core-patch 0011) supplies the materials at cast time and
--- they are consumed immediately, so they never sit in a bag at all.
---
--- Staging survives only as a fallback, for the case where the client turns out
--- to refuse the cast for some reason the numAvailable hook does not cover. It
--- fires on a failed craft rather than on every selection, and asks for one
--- craft's worth rather than ten, so worst case a single recipe's materials
--- briefly pass through the bag instead of a standing pile.
-function LG2.CraftFallback()
-    LG2._craftWatch = nil
-    pcall(LG2.SendCraftPrep, true)
-end
-
-local function HookCraftPrep()
-    if LG2._craftPrepHooked then
-        return
-    end
-    LG2._craftPrepHooked = true
-    -- Post-hooks: arm a short watchdog when a craft is requested. If the cast
-    -- never reaches the server (UNIT_SPELLCAST_SENT clears this), stage the
-    -- reagents so the retry has them in the bag.
-    local function armWatch()
-        LG2._craftWatch = GetTime() + 0.5
-    end
-    if type(DoTradeSkill) == "function" then
-        hooksecurefunc("DoTradeSkill", armWatch)
-    end
-    if type(DoCraft) == "function" then
-        hooksecurefunc("DoCraft", armWatch)
-    end
-end
-
-function LG2.NoteCraftCastSent()
-    LG2._craftWatch = nil
-end
-
-function LG2.NoteCraftError()
-    -- Any error message arriving right after Create was pressed is worth one
-    -- staging attempt. Deliberately not matched against a specific string:
-    -- those are locale-dependent and this only costs a redundant top-up.
-    if LG2._craftWatch then
-        LG2.CraftFallback()
-    end
-end
-
-function LG2.TickCraftWatch()
-    if LG2._craftWatch and GetTime() >= LG2._craftWatch then
-        LG2.CraftFallback()
-    end
-end
+-- The real blocker was narrower and is now handled properly: numAvailable
+-- came from GetTradeSkillInfo, computed in C from bag contents, and
+-- TradeSkillFrame_Update greys out Create whenever it reads 0. That
+-- function is hooked further up, so the window counts the reagent bank
+-- itself. With the server answering the craft gate in place and consuming
+-- from the vault directly, the fallback machinery (CraftFallback,
+-- HookCraftPrep, NoteCraftCastSent, NoteCraftError, TickCraftWatch) has
+-- nothing left to do and is gone.
 
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("PLAYER_LOGIN")
@@ -6381,12 +6304,7 @@ ev:RegisterEvent("BANKFRAME_CLOSED")
 ev:RegisterEvent("GOSSIP_SHOW")
 ev:RegisterEvent("QUEST_GREETING")
 ev:RegisterEvent("QUEST_DETAIL")
-ev:RegisterEvent("TRADE_SKILL_SHOW")
-ev:RegisterEvent("TRADE_SKILL_UPDATE")
 ev:RegisterEvent("BAG_UPDATE")
-ev:RegisterEvent("UI_ERROR_MESSAGE")
-ev:RegisterEvent("CRAFT_SHOW")
-ev:RegisterEvent("CRAFT_UPDATE")
 ev:SetScript("OnEvent", function(_, event, a1, a2)
     if event == "PLAYER_LOGIN" then
         LG2.InstallChatFilter()
@@ -6433,26 +6351,17 @@ ev:SetScript("OnEvent", function(_, event, a1, a2)
                 SelectGossipAvailableQuest(1)
             end
         end
-    elseif event == "TRADE_SKILL_SHOW" or event == "TRADE_SKILL_UPDATE"
-        or event == "CRAFT_SHOW" or event == "CRAFT_UPDATE" then
-        pcall(HookCraftPrep)
     elseif event == "BAG_UPDATE" then
         -- Invalidates the craftable-count cache: what is in the bags is half
         -- of that sum.
         LG2._bagGen = (LG2._bagGen or 0) + 1
-    elseif event == "UI_ERROR_MESSAGE" then
-        pcall(LG2.NoteCraftError)
     elseif event == "UNIT_SPELLCAST_SENT" or event == "UNIT_SPELLCAST_SUCCEEDED" then
-        if a1 == "player" then
-            pcall(LG2.NoteCraftCastSent)
-        end
         if a1 == "player" and LG2.IsAccountPerksName(a2) then
             OpenFromCast()
         end
     end
 end)
 ev:SetScript("OnUpdate", function(self, elapsed)
-    pcall(LG2.TickCraftWatch)
     if vaultLayoutPending and ui.reagents and ui.reagents:IsShown() then
         vaultLayoutPending = false
         RefreshVaultPanel()

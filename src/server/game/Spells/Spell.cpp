@@ -103,10 +103,14 @@ bool LivingGear_BypassStealthRequirement(Unit* caster);
 // refunded afterwards -- a refund still requires the caster to have the power
 // to pay up front (LivingGear_ClassPerks.cpp).
 bool LivingGear_SpellIsFreeCast(Unit* caster, uint32 spellId);
-// Living Gear core-patch: tops the bag up from the account reagent vault
-// right before the real reagent check, so banked reagents still count as
-// "in your backpack" for crafting (LivingGear_Vault.cpp).
-void LivingGear_TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed);
+// Living Gear core-patch: does the account reagent vault cover this craft's
+// reagent requirement? Answers in place -- banked reagents count as
+// "in your backpack" for crafting, and nothing is moved (LivingGear_Vault.cpp).
+bool LivingGear_VaultCoversReagent(Player* player, uint32 itemId, uint32 needed);
+// Living Gear core-patch: consumes spell reagents from the bags/bank first,
+// then the account reagent vault, so crafting pays for banked materials
+// without them ever passing through a bag (LivingGear_Vault.cpp).
+void LivingGear_ConsumeReagent(Player* player, uint32 itemId, uint32 count);
 // Living Gear core-patch: does the reagent vault hold a tool that satisfies
 // this requirement? Answers in place -- nothing is moved (LivingGear_Vault.cpp).
 bool LivingGear_VaultHasToolCategory(Player* player, uint32 totemCategory);
@@ -4688,7 +4692,13 @@ void Spell::WriteCastResultInfo(WorldPacket& data, Player* caster, SpellInfo con
                     uint32 itemid    = spellInfo->Reagent[i];
                     uint32 itemcount = spellInfo->ReagentCount[i];
 
-                    if (!caster->HasItemCount(itemid, itemcount))
+                    // Living Gear core-patch, reagent bank: the cast gate
+                    // counts vault stock, so the "missing reagent" name has
+                    // to use the same arithmetic -- otherwise it names an
+                    // item the vault actually holds while the real gap is
+                    // elsewhere in the recipe.
+                    if (!caster->HasItemCount(itemid, itemcount)
+                        && !LivingGear_VaultCoversReagent(caster, itemid, itemcount))
                     {
                         missingItem = itemid;
                         break;
@@ -5635,7 +5645,11 @@ void Spell::TakeReagents()
         if (m_targets.GetItemTargetEntry() == itemid)
             m_targets.SetItemTarget(nullptr);
 
-        p_caster->DestroyItemCount(itemid, itemcount, true);
+        // Living Gear core-patch, reagent bank (core-patch 0029): the craft
+        // gate above accepted vault stock, so consumption has to reach it
+        // too. Bags and bank pay first, the vault covers the shortfall in
+        // place -- nothing is topped up into a bag just to be destroyed.
+        LivingGear_ConsumeReagent(p_caster, itemid, itemcount);
     }
 }
 
@@ -7401,9 +7415,10 @@ SpellCastResult Spell::CheckItems(uint32* param1, uint32* param2)
     {
         // Bonesaw: reagents are not required from players for spells they
         // cast at things. The reagent vault already made "do I physically
-        // hold it" the wrong question (core-patch 0011 tops the bag up
-        // mid-CheckCast); this finishes the job for buffs and utility spells,
-        // where hunting a component adds errand and nothing else.
+        // hold it" the wrong question -- banked reagents answer the check in
+        // place below (core-patch 0029) -- this finishes the job for buffs
+        // and utility spells, where hunting a component adds errand and
+        // nothing else.
         //
         // Crafting is deliberately excluded -- see LivingGear_SpellPaysReagents.
         bool checkReagents = (!LivingGear_IgnoreSpellRequirements()
@@ -7444,8 +7459,12 @@ SpellCastResult Spell::CheckItems(uint32* param1, uint32* param2)
                         }
                     }
                 }
-                LivingGear_TopUpReagentFromVault(player, itemid, itemcount);
-                if (!player->HasItemCount(itemid, itemcount, true))
+                // Living Gear core-patch, reagent bank: banked reagents count
+                // as carried. Answered in place -- nothing is withdrawn into
+                // the bags (core-patch 0029); TakeReagents pays the shortfall
+                // straight out of the vault.
+                if (!player->HasItemCount(itemid, itemcount, true)
+                    && !LivingGear_VaultCoversReagent(player, itemid, itemcount))
                     return SPELL_FAILED_REAGENTS;
             }
         }

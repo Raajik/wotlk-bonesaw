@@ -133,7 +133,7 @@ brief:
 
 ## Core patches
 
-20 of them in `core-patches/`, each a `.core-patch` file describing what
+27 of them in `core-patches/`, each a `.core-patch` file describing what
 changed and **why**, plus a tracked copy of the patched file under
 `src/server/`. The `.core-patch` file is not applied by anything — it is the
 record. Keep writing them; they are how the next person understands why a core
@@ -148,6 +148,8 @@ The ones most likely to surprise you:
   as reagents, so a blanket waiver would delete the crafting economy.
 - **0022** — banked profession tools satisfy `TotemCategory` requirements in
   place, without leaving the reagent bank.
+- **0029** — crafting consumes reagent-bank stock in place. Nothing is
+  withdrawn into the bags any more; the movement half of 0011 is retired.
 
 ---
 

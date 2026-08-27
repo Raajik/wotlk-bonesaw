@@ -88,13 +88,15 @@ like your tree's exact line numbers.
   manual loot window.
 
 - **0011-reagent-vault-craft-from-anywhere.core-patch** -- `Spell.cpp`,
-  `Spell::CheckCast()`. Tops the bag up from the account-wide reagent
-  vault right before the engine's own reagent check, so auto-banked
-  reagents/tools still count as "in your backpack" when crafting instead
-  of needing a manual withdraw first. Required for crafting to work at
-  all once reagents/tools are auto-banked; skip it and anything vaulted
-  becomes invisible to the crafting system (SPELL_FAILED_REAGENTS even
-  though the profession window shows it as available).
+  `Spell::CheckCast()`. Connected the account-wide reagent vault to the
+  engine's own reagent check, so auto-banked reagents/tools count as
+  "in your backpack" when crafting instead of needing a manual withdraw
+  first. Required for crafting to work at all once reagents/tools are
+  auto-banked; skip it and anything vaulted becomes invisible to the
+  crafting system (SPELL_FAILED_REAGENTS even though the profession
+  window shows it as available). Its first cut moved the shortfall into
+  the bags right before checking; **0029** answers the check in place
+  instead and retires the movement.
 
 - **0012-multi-realm-same-worldserver.core-patch** -- `WorldSocket.cpp`,
   `HandleAuthSession()`. Adds `RealmID.Aliases` to worldserver.conf so extra
@@ -139,6 +141,17 @@ like your tree's exact line numbers.
   Recommended for anyone running mod-playerbots with LFG fill on; skip it and
   a bot-filled group is four random idle bots with no guaranteed tank or
   healer.
+
+- **0029-reagent-vault-consume-in-place.core-patch** -- `Spell.cpp`,
+  `Spell::CheckItems()` + `Spell::TakeReagents()`. Banked reagents answer
+  the craft gate in place (bag + bank + vault must cover the requirement;
+  nothing is moved), and consumption pays the bags/bank first and burns
+  the shortfall straight out of the vault. Retires the movement half of
+  0011: the top-up withdrew materials into the backpack on every craft
+  attempt, which is the opposite of what a reagent bank is for. The
+  profession window's potential-craft totals already come from the addon
+  counting the vault, so the client only lost its CRAFTPREP staging
+  request. Tools were already answered in place by 0022 and are untouched.
 
 Per-viewer mob level scaling (previously patch 0008, `Object.cpp`) no
 longer needs a core patch at all -- `Object::BuildValuesUpdate()` turned

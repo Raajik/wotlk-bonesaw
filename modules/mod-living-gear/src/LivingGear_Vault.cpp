@@ -274,16 +274,13 @@ uint32 VaultRemove(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEn
 // OUT of the reagent vault matches the same rule that put it in there, so
 // every withdraw was immediately re-deposited a tick later. Clicking a
 // Reagents row appeared to do nothing; DEPOSITALL looked like the only
-// direction that worked. Worse, this also broke crafting outright: the
-// whole point of PrepareCraftReagents (CRAFTPREP) is to put reagents
-// somewhere the 3.3.5 tradeskill window can see them, and they were being
-// vacuumed straight back out before the client ever counted them, so every
-// recipe kept reading "0 craftable" / missing reagents even with a full
-// vault. This flag is the "these items were deliberately handed to the
-// player, do not re-file them" signal, checked once in ApplyLootRule.
+// direction that worked. This flag is the "these items were deliberately
+// handed to the player, do not re-file them" signal, checked once in
+// ApplyLootRule.
 //
-// A depth counter rather than a bool: TopUpReagentFromVault can be reached
-// from inside a withdraw path already holding it.
+// A depth counter rather than a bool: materialising a withdraw reaches
+// ApplyLootRule, which routes further items, and any of those paths may
+// already be holding the flag.
 uint32 g_vaultGrantDepth = 0;
 
 struct VaultGrantScope
@@ -364,28 +361,52 @@ bool InstantPickLock(Player* player, Item* item)
     return false;
 }
 
-// Called from a core patch in Spell::CheckCast (Spell.cpp), right before
-// the engine's own reagent-count check -- reagents/tools that got
-// auto-banked (ACT_REAGENT_VAULT) need to still "count as in your
-// backpack" for crafting per user request, not require a manual withdraw
-// first. Tops the bag up from the account-wide reagent vault just before
-// the real HasItemCount check runs, so normal consumption/inventory
-// bookkeeping handles everything else completely unmodified.
-void TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
+// Called from a core patch in Spell::CheckItems (Spell.cpp), right before the
+// engine's own reagent-count check -- reagents that got auto-banked
+// (ACT_REAGENT_VAULT) need to still "count as in your backpack" for crafting
+// per user request, not require a manual withdraw first.
+//
+// This ANSWERS the check in place. The old answer moved items: core-patch
+// 0011's first cut withdrew the shortfall into the bag right before
+// HasItemCount ran, so every craft -- and every craft whose later checks
+// failed, and every craft-all batch that was cancelled halfway -- shovelled
+// materials out of the reagent bank and into the backpack. The bank was
+// behaving as a queue into the bags instead of the store it is. The tool
+// checks already answered in place (core-patch 0022); this is the same shape
+// for Reagent[]. Consumption is handled separately by
+// ConsumeReagentBagThenVault, called from Spell::TakeReagents.
+bool VaultCoversReagent(Player* player, uint32 itemId, uint32 needed)
 {
     if (!player || !player->GetSession() || !needed)
+        return false;
+    uint32 const have = player->GetItemCount(itemId, true); // bags + bank
+    if (have >= needed)
+        return true;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadVault(accountId);
+    return have + VaultCount(accountId, 0, VAULT_REAGENT, itemId) >= needed;
+}
+
+// Called from a core patch in Spell::TakeReagents (Spell.cpp), where the
+// engine consumes spell reagents. The craft gate above now accepts vault
+// stock, so consumption has to reach the vault too: pay from the bags and
+// bank first (normal DestroyItemCount bookkeeping), then burn the shortfall
+// straight out of the reagent vault. Nothing passes through the bag on its
+// way to being consumed -- the player asked for banked materials to stay
+// banked, tools and materials alike.
+void ConsumeReagentBagThenVault(Player* player, uint32 itemId, uint32 count)
+{
+    if (!player || !count)
         return;
     uint32 const have = player->GetItemCount(itemId, true);
-    if (have >= needed)
+    uint32 const fromBag = std::min(have, count);
+    if (fromBag)
+        player->DestroyItemCount(itemId, fromBag, true);
+    uint32 const fromVault = count - fromBag;
+    if (!fromVault || !player->GetSession())
         return;
     uint32 const accountId = player->GetSession()->GetAccountId();
-    uint32 const shortfall = needed - have;
-    uint32 const taken = VaultRemove(accountId, 0, VAULT_REAGENT, itemId, shortfall);
-    if (!taken)
-        return;
-    uint32 const stored = StoreFromVault(player, itemId, taken);
-    if (stored < taken)
-        VaultAdd(accountId, 0, VAULT_REAGENT, itemId, taken - stored); // bag full -- put the remainder back
+    VaultRemove(accountId, 0, VAULT_REAGENT, itemId, fromVault);
 
     // Tell the client the vault got smaller. Reported 2026-08-24: cooking from
     // reagent-bank materials worked twice, then said "missing reagent: Gooey
@@ -397,7 +418,7 @@ void TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
     // not the whole story), but VaultRemove updates the database and the
     // in-memory map and sends NOTHING -- so db.vault kept the pre-craft counts
     // and kept promising reagents that had already been spent. The manual
-    // withdraw path has always sent this line; this path never did.
+    // withdraw path has always sent this line; consumption never did.
     //
     // Sending it here also refreshes the Reagents panel, which had the same
     // stale-count problem after every craft.
@@ -412,7 +433,7 @@ void TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
 // The other half of bug report #29. Tool requirements are NOT reagents: they
 // live in SpellInfo::Totem[] (a named item) and SpellInfo::TotemCategory[] (a
 // kind of tool), and are tested with HasItemCount / HasItemTotemCategory,
-// both of which walk real inventory only. TopUpReagentFromVault covers
+// both of which walk real inventory only. VaultCoversReagent covers
 // Reagent[] and nothing else, so a Blacksmith Hammer sitting in the reagent
 // bank left every blacksmithing recipe insisting you needed a hammer -- the
 // item was banked, visible, and useless.
@@ -1468,50 +1489,16 @@ void DrainLegacyQuestVault(Player* player)
             "[Vault] Returned {} item(s) that were stuck in the retired quest vault.", returned);
 }
 
-// How many crafts' worth of reagents to materialise when the fallback runs.
-//
-// This was 10, because staging was the ONLY thing making a recipe look
-// craftable and a permanent "1 craftable" reads as broken. The addon now
-// hooks GetTradeSkillInfo and computes that number from the reagent bank
-// directly, so the count in the window no longer depends on what is sitting
-// in a bag -- which means staging only has to cover the craft actually being
-// attempted. One is the whole requirement, and it is consumed immediately,
-// so nothing accumulates in the backpack.
-uint32 const CRAFT_PREP_BATCH = 1;
-
-// Fallback for a craft the client would not send.
-//
-// This used to run on every recipe selection, because the tradeskill window
-// computes "how many can I make" in C from bag contents and greys out Create
-// at 0 -- so the only way to make a vault-stocked recipe craftable was to put
-// the materials in a bag first. The addon now overrides that number
-// (GetTradeSkillInfo hook) from the vault itself, so the normal path is:
-// window shows the true count, Create is live, the cast goes out, and
-// TopUpReagentFromVault in Spell::CheckItems supplies the materials at cast
-// time. Nothing is staged and nothing is left behind.
-//
-// This remains for the case where a craft is refused anyway. The addon calls
-// it after a failed Create rather than on selection, and CRAFT_PREP_BATCH is
-// 1, so at worst a single recipe's materials pass through the bag.
-void PrepareCraftReagents(Player* player, uint32 spellId)
-{
-    if (!player || !player->GetSession() || !spellId)
-        return;
-    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
-    // Only ever act on a recipe this character actually knows -- an addon
-    // whisper is not a trusted boundary, and without this any spell id
-    // could be used to pull arbitrary reagents out of the vault.
-    if (!info || !player->HasSpell(spellId))
-        return;
-    for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i)
-    {
-        if (info->Reagent[i] <= 0 || !info->ReagentCount[i])
-            continue;
-        TopUpReagentFromVault(player, uint32(info->Reagent[i]),
-            info->ReagentCount[i] * CRAFT_PREP_BATCH);
-    }
-    SendVaultAndRuleSync(player);
-}
+// The craft-prep fallback that used to live here (CRAFTPREP /
+// PrepareCraftReagents) is retired. It staged one craft's worth of reagents
+// into the backpack whenever a craft came back refused, on the theory that
+// the client might refuse to send a cast the bag could not pay for. It
+// cannot: the 3.3.5 client validates nothing about reagents on send, the
+// Create button already counts the vault (GetTradeSkillInfo /
+// GetCraftInfo hooks in the addon), and the server answers the reagent gate
+// from the vault in place. Anything the fallback staged was materials being
+// pulled out of the bank for no reason -- the exact behaviour the reagent
+// bank exists to prevent.
 
 bool HandleVaultChat(Player* player, std::string msg)
 {
@@ -1529,12 +1516,6 @@ bool HandleVaultChat(Player* player, std::string msg)
     if (msg == "DEPOSITALL")
     {
         DepositAll(player);
-        return true;
-    }
-    uint32 craftSpell = 0;
-    if (sscanf(msg.c_str(), "CRAFTPREP|%u", &craftSpell) == 1)
-    {
-        PrepareCraftReagents(player, craftSpell);
         return true;
     }
     uint32 takeKind = 0;
@@ -1808,10 +1789,18 @@ bool LivingGear_TryAutolootPickpocket(Player* player, Unit* target)
     return LivingGearVault::TryAutolootPickpocket(player, target);
 }
 
-// Called from a core patch in Spell::CheckCast (Spell.cpp).
-void LivingGear_TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed)
+// Called from core patches in Spell::CheckItems / Spell::TakeReagents
+// (Spell.cpp). The reagent gate answers in place and consumption pays the
+// vault shortfall directly -- nothing is ever withdrawn into the bags to
+// satisfy a craft.
+bool LivingGear_VaultCoversReagent(Player* player, uint32 itemId, uint32 needed)
 {
-    LivingGearVault::TopUpReagentFromVault(player, itemId, needed);
+    return LivingGearVault::VaultCoversReagent(player, itemId, needed);
+}
+
+void LivingGear_ConsumeReagent(Player* player, uint32 itemId, uint32 count)
+{
+    LivingGearVault::ConsumeReagentBagThenVault(player, itemId, count);
 }
 
 // Bug report #29: profession tools live in SpellInfo::Totem[] and
