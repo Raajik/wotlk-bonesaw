@@ -14,6 +14,18 @@ Whenever Bonesaw, Living Gear, or playerbots features actually ship, include a s
 - Title: `Bonesaw X.Y.Z - patch notes` from `tools/client-update/Bonesaw.version` after bumping it for this ship
 - Bump `Bonesaw.version` on every ship, including server-only, so launcher and Discord stay aligned. Do not skip numbers.
 - List only what is actually in worldserver or the client; omit in-progress work
+- End every ship's notes with a `**Please test these things**` section just before the update line: 1-4 player-facing asks about this ship's own changes, then the longest-waiting open `status:awaiting-retest` issues (fetch with `python tools/retest_list.py --raw`; rephrase, no issue numbers in Discord), roughly 8 bullets max
+- Include a short "Needs testing" section at the end asking players to check the
+  reports awaiting retest. Query the live queue at notes-writing time:
+  `docker exec ac-database mysql -uroot -ppassword -h127.0.0.1 acore_characters
+  -e "SELECT id, description FROM lg_bug_report WHERE status IN ('attempted','open','fixed') ORDER BY id;"`
+  (status='fixed' rows only belong here if they were never retest-confirmed —
+  use the sweep notes from the session that fixed them). "fixed" ships that
+  were closed with a retest confirmation are NOT re-listed. Pick the handful
+  that map to a recent ship, phrase each as a short player-facing ask ("Try
+  X, tell us if Y still happens"), no issue numbers or spell IDs. Keep the
+  section under 5 bullets so it doesn't crowd the changelog; if nothing is
+  genuinely awaiting player retest, omit the section entirely.
 - Bold sparingly if Discord-flavored markdown helps
 - Keep it simple and paste-ready for their Discord channel
 - Extra jump is disabled; do not advertise it

@@ -178,6 +178,33 @@ shipped. Extra jump is disabled - do not advertise it. Title line is
 `**Bonesaw X.Y.Z - patch notes**`. If the client changed, end with *Close Wow
 and run Bonesaw.exe to update.*
 
+**Every notes file ends with a "Please test these things" section**, placed
+just before the update line. Fixes that shipped but were never confirmed
+otherwise silently age out on the tracker, and players are the only test
+environment that counts. Source it live at notes-writing time, never from a
+stale list. GitHub is the canonical tracker and `status:awaiting-retest` is
+its queue of shipped-but-unconfirmed work (in-game `lg_bug_report` rows reach
+that label via `tools/bug-reports/bug_resolve.py` after the sweep):
+
+```
+python tools/retest_list.py --raw
+```
+
+- First 1-4 asks about THIS ship's own changes that only a player can verify
+  ("craft something that needs banked materials - does anything land in your
+  bags?"). Pass them as `-a "..."` to `tools/retest_list.py` for a paste-ready
+  section, then rephrase anything that still reads like a bug title.
+- Then the longest-waiting open `status:awaiting-retest` issues, so stale items
+  get the spotlight instead of aging out. Drop the `[Report #N]` prefix -
+  players cannot see the tracker, so issue numbers never appear in notes.
+- One short ask per item ("Try X, tell us if Y still happens"). Roughly 8
+  bullets max so the notes stay one Discord message where possible.
+- If nothing is genuinely awaiting retest, omit the section. Never re-list an
+  issue that already got a confirmed retest and was closed - the tool only
+  lists open ones, but check before hand-adding anything.
+- `python tools/retest_list.py --check tools/patch-notes/X.Y.Z.md` fails the
+  ship if the section is missing or a `[Report #N]` leaked through.
+
 The file is the record: it is what gets posted, what the GitHub release shows,
 and what the next person reads to see what a version contained. Commit it.
 
@@ -217,3 +244,6 @@ after it.
 Re-run `python tools/bonesaw_status.py`. It should exit 0 with
 "Everything committed, built, imported and published." If it does not, say
 exactly what is still outstanding rather than calling the ship done.
+
+Also confirm the notes end with the test section:
+`python tools/retest_list.py --check tools/patch-notes/X.Y.Z.md`
