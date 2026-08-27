@@ -434,11 +434,34 @@ local CLASS_PERKS = {
         { id = 910033, name = "Fire", how = "Fire spells apply Living Bomb, which spreads every 1 sec and deals +300% damage. Fire Blast detonates every Living Bomb within 15 yards at once, and each blast re-applies Living Bomb around it." },
         { id = 910034, name = "Frost", how = "Blizzard is instant, no cooldown, and lingers like Death and Decay, damaging everything inside it every 1 sec. Frost damage quadrupled. Ice Lance hits nearby enemies every 2 sec." },
     },
+    -- Rogue is the worked example for the `lines` format (see the comment above
+    -- CLASS_PERKS). One entry per ABILITY, not per sentence: the old prose said
+    -- "Learn Envenom" and "Envenom detonates..." as two separate bullets, so a
+    -- reader had to reassemble what any single button actually does now.
+    -- Every spell id below was read out of var/mmap-output/dbc/Spell.dbc at the
+    -- rank a level 80 actually has -- do not guess these, a wrong id shows a
+    -- confidently wrong tooltip.
     ROGUE = {
-        { id = 910035, name = "Assassination", how = "Learn Envenom. Poisons deal +300% damage. Envenom detonates every poison and bleed you own on all enemies within 15 yards, dealing their whole remaining duration at once, then puts them back at full." },
-        { id = 910036, name = "Combat", how = "Learn Adrenaline Rush as a free toggle with no cooldown. While it is up your abilities cost no energy, Blade Flurry strikes everything within 15 yards, and Killing Spree has no cooldown. Blade Flurry is always on." },
+        { id = 910035, name = "Assassination", how = "Learn Envenom. Poisons deal +300% damage. Envenom detonates every poison and bleed you own on all enemies within 15 yards, dealing their whole remaining duration at once, then puts them back at full.",
+          lines = {
+            { spell = 57993, text = "Learned for free. Detonates every poison and bleed you own on all enemies within 15 yards, dealing their whole remaining duration at once, then puts them back to full." },
+            { text = "All your poisons deal +300% damage." },
+          } },
+        { id = 910036, name = "Combat", how = "Learn Adrenaline Rush as a free toggle with no cooldown. While it is up your abilities cost no energy, Blade Flurry strikes everything within 15 yards, and Killing Spree has no cooldown. Blade Flurry is always on.",
+          lines = {
+            { spell = 13750, text = "Learned for free, and a toggle with no cooldown. While it is up your abilities cost no energy." },
+            { spell = 13877, text = "Always on. While Adrenaline Rush is up it strikes everything within 15 yards." },
+            { spell = 51690, text = "No cooldown while Adrenaline Rush is up." },
+          } },
         { id = 910037, name = "Subtlety", how = "Learn Hemorrhage and Shadowstep. Shadowstep (6 sec cooldown) pickpockets every humanoid within 20 yards where you land. Hemorrhage spreads itself, a boosted Ambush and the Garrote bleed to everything within 15 yards. Eviscerate applies Slice and Dice to you and Rupture to everything within 15 yards. Garrote and Rupture deal +2000% damage and tick faster with haste. Learn Shadow Dance.",
-          subPerks = { { id = 910102, name = "Shadow Dance", how = "Permanent. Openers usable without stealth. +10% attack power to your party/raid." } } },
+          lines = {
+            { spell = 48660, text = "Learned for free. Spreads itself, a boosted Ambush and the Garrote bleed to everything within 15 yards." },
+            { spell = 36554, text = "Learned for free, on a 6 sec cooldown. Pickpockets every humanoid within 20 yards of where you land." },
+            { spell = 48668, text = "Also applies Slice and Dice to you, and Rupture to everything within 15 yards." },
+            { spell = 48676, text = "Deals +2000% damage and ticks faster with haste." },
+            { spell = 48672, text = "Deals +2000% damage and ticks faster with haste." },
+          },
+          subPerks = { { id = 910102, spell = 51713, name = "Shadow Dance", how = "Permanent. Openers usable without stealth. +10% attack power to your party/raid." } } },
     },
     PALADIN = {
         { id = 910069, name = "Holy", how = "Consecration follows you and toggles off if recast. Consecration damage +1000%. Holy Shock damage +300% and hits enemies within 10 yards of the target." },
@@ -2095,21 +2118,83 @@ local function LayoutClass()
             -- client strings are ASCII-only in this repo (no real bullet
             -- glyph), and a hyphen next to a "+300%"-style line read as a
             -- minus sign at a glance.
-            -- Sub-perks bring their own coloured bullet (green when known,
-            -- grey when not), so they must not also get the plain "* " prefix
-            -- the how-sentences take -- that is what rendered them as "* *
-            -- Shadow Dance".
-            local lines = {}
-            for _, b in ipairs(SplitHow(info and info.how)) do
-                table.insert(lines, "* " .. b)
-            end
-            if info and info.subPerks then
-                for _, sub in ipairs(info.subPerks) do
-                    local mark = (ownClass and PerkKnown(sub.id)) and "|cff4fd14f*|r " or "|cff666666*|r "
-                    table.insert(lines, mark .. sub.name)
+            -- Two renderers. A spec that has authored `lines` gets icon bullets
+            -- with real spell tooltips; anything still on plain `how` prose
+            -- falls back to the old asterisk block, so converting the remaining
+            -- classes is incremental rather than all-or-nothing.
+            local structured = info and info.lines
+            if structured then
+                btn.body:Hide()
+                local rows = {}
+                for _, ln in ipairs(structured) do
+                    table.insert(rows, { spell = ln.spell, text = ln.text })
                 end
+                if info.subPerks then
+                    for _, sub in ipairs(info.subPerks) do
+                        local known = ownClass and PerkKnown(sub.id)
+                        table.insert(rows, {
+                            spell = sub.spell or sub.id,
+                            text = (known and "|cff4fd14f" or "|cff9a9a9a") .. sub.name .. "|r  " .. (sub.how or ""),
+                        })
+                    end
+                end
+                -- Stacked by measured height rather than a fixed row pitch: a
+                -- one-line bullet and a four-line one differ by 40px, and any
+                -- fixed pitch is either wasteful for the short ones or overlaps
+                -- the long ones.
+                local y = -32
+                for bi = 1, #btn.bullets do
+                    local bl = btn.bullets[bi]
+                    local ln = rows[bi]
+                    if not ln then
+                        bl:Hide()
+                    else
+                        bl.spell = ln.spell
+                        bl.text:SetWidth(btn._textW)
+                        bl.text:SetText(ln.text or "")
+                        local h = bl.text:GetStringHeight() or 12
+                        if h < 14 then
+                            h = 14
+                        end
+                        if ln.spell and GetSpellInfo then
+                            local _, _, tex = GetSpellInfo(ln.spell)
+                            bl.icon:SetTexture(tex or "Interface\\Icons\\INV_Misc_QuestionMark")
+                            bl.icon:SetVertexColor(1, 1, 1)
+                        else
+                            -- No single ability owns this line ("all your
+                            -- poisons"), so it gets a plain marker instead of a
+                            -- borrowed icon that would imply the wrong spell.
+                            bl.icon:SetTexture("Interface\\Buttons\\WHITE8X8")
+                            bl.icon:SetVertexColor(0.42, 0.42, 0.42)
+                        end
+                        bl:ClearAllPoints()
+                        bl:SetPoint("TOPLEFT", 8, y)
+                        bl:SetSize(btn._textW + 18, h + 2)
+                        bl:Show()
+                        y = y - (h + 7)
+                    end
+                end
+            else
+                for bi = 1, #btn.bullets do
+                    btn.bullets[bi]:Hide()
+                end
+                btn.body:Show()
+                -- Sub-perks bring their own coloured bullet (green when known,
+                -- grey when not), so they must not also get the plain "* "
+                -- prefix the how-sentences take -- that is what rendered them
+                -- as "* * Shadow Dance".
+                local lines = {}
+                for _, b in ipairs(SplitHow(info and info.how)) do
+                    table.insert(lines, "* " .. b)
+                end
+                if info and info.subPerks then
+                    for _, sub in ipairs(info.subPerks) do
+                        local mark = (ownClass and PerkKnown(sub.id)) and "|cff4fd14f*|r " or "|cff666666*|r "
+                        table.insert(lines, mark .. sub.name)
+                    end
+                end
+                btn.body:SetText(table.concat(lines, "\n"))
             end
-            btn.body:SetText(table.concat(lines, "\n"))
         else
             btn:Hide()
             btn.id = nil
@@ -4480,6 +4565,45 @@ local function BuildUI()
         -- one, and now that the card fills the panel that height is generous
         -- enough for the longest spec without spilling outside the background.
         btn.body:SetPoint("BOTTOMRIGHT", -6, 8)
+
+        -- Icon bullets. Each line is its own small frame so it can own a
+        -- mouseover: the icon IS the bullet and the hover target, which is what
+        -- lets someone read a spec they have never played and pull up the real
+        -- spell tooltip for each ability it changes.
+        --
+        -- Deliberately not inline |Hspell:| hyperlinks in the body FontString:
+        -- hyperlink hover on a plain frame is not something this addon does
+        -- anywhere, and a per-line frame uses the same OnEnter pattern as every
+        -- other hoverable thing here.
+        btn._textW = CLASS_CARD_W - 32
+        btn.bullets = {}
+        for b = 1, 12 do
+            local bl = CreateFrame("Frame", nil, btn)
+            bl:EnableMouse(true)
+            bl.icon = bl:CreateTexture(nil, "ARTWORK")
+            bl.icon:SetSize(14, 14)
+            bl.icon:SetPoint("TOPLEFT", 0, -1)
+            bl.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+            bl.text = Font(bl, 9, 0.68, 0.68, 0.68)
+            bl.text:SetPoint("TOPLEFT", 18, 0)
+            bl.text:SetJustifyH("LEFT")
+            bl.text:SetJustifyV("TOP")
+            bl.text:SetSpacing(2)
+            bl.text:SetWordWrap(true)
+            bl:SetScript("OnEnter", function(self)
+                if not self.spell then
+                    return
+                end
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetHyperlink("spell:" .. tostring(self.spell))
+                GameTooltip:Show()
+            end)
+            bl:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
+            bl:Hide()
+            btn.bullets[b] = bl
+        end
         btn:SetScript("OnClick", function()
             if btn.id and btn.ownClass then
                 SendLine("CLASS|" .. tostring(btn.id))
