@@ -1904,7 +1904,7 @@ static void BankCollection(Player* player, uint32 pct)
             "`sec_attack_power`, `sec_spell_power`, `sec_defense`, `sec_dodge`, `sec_parry`, "
             "`sec_block`, `sec_mp5`, `sec_health_regen`, `sec_spell_pen`, `sec_block_value`) "
             "VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, "
-            "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+            "{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
             accountId, proto->ItemId, slice.str, slice.agi, slice.sta,
             slice.intel, slice.spi, slice.armor, 0,
             slice.sec[LG_SEC_CRIT], slice.sec[LG_SEC_HIT], slice.sec[LG_SEC_HASTE],
