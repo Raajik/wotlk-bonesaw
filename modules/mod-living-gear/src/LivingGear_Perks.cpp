@@ -3159,8 +3159,17 @@ public:
             FindQuests(player);
         if (info->Id == SPELL_AUTO_QUEST)
             AutoQuestFinish(player);
+        // SendArmory alone only refreshes data. The addon deliberately does not
+        // reveal anything on ARMEND, because that same feed rides every login
+        // sync and would otherwise pop the window open on each one -- so from
+        // the point the armory joined that sync until now, casting this perk
+        // did nothing visible at all (report #104). The reveal has to be its
+        // own message, sent only when the player actually asked.
         if (info->Id == SPELL_ARMORY)
+        {
             SendArmory(player);
+            SendLine(player, "OPENARM");
+        }
         if (info->Id == SPELL_SOLO_QUEUE)
         {
             uint32 acc = player->GetSession()->GetAccountId();

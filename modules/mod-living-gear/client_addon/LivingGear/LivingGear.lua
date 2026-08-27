@@ -549,10 +549,6 @@ local db = {
     ruleOff = 0,
     vaultOff = { [1] = 0, [2] = 0 },
     armory = {},
-    armoryOff = 0,
-    armorySlot = -1,
-    armoryType = "All",
-    armoryAttr = "All",
     reagentCat = "All",
     jump = { mode = 2, max = 0 },
     -- Wayfarer: pct is the share of the dial spent on damage, cap is how far
@@ -1473,7 +1469,7 @@ local function ShowTab(name)
     -- Show() on them, so they have to be hidden explicitly. Dropping them from
     -- the map below did not hide them -- it stopped anything from ever hiding
     -- them, and they drew straight through whichever tab was selected.
-    local retired = { ui.world, ui.gear, ui.attune, ui.armory }
+    local retired = { ui.world, ui.gear, ui.attune }
     for i = 1, #retired do
         if retired[i] then
             retired[i]:Hide()
@@ -2548,136 +2544,12 @@ function LG2.ItemLinkText(entry, fallback)
     return fallback or ("Item " .. tostring(entry))
 end
 
-function LG2.ArmoryEquipType(slot)
-    slot = tonumber(slot) or -1
-    if slot == 15 or slot == 16 or slot == 17 then
-        return "Weapon"
-    end
-    if slot == 1 or slot == 10 or slot == 11 or slot == 12 or slot == 13 or slot == 14 then
-        return "Accessory"
-    end
-    if slot >= 0 and slot <= 9 then
-        return "Armor"
-    end
-    return "Other"
-end
-
-function LG2.ArmoryItemMatches(it)
-    if not it then
-        return false
-    end
-    local slot = tonumber(db.armorySlot)
-    if slot and slot >= 0 and tonumber(it.slot) ~= slot then
-        return false
-    end
-    local typ = db.armoryType or "All"
-    if typ ~= "All" and LG2.ArmoryEquipType(it.slot) ~= typ then
-        return false
-    end
-    local attr = db.armoryAttr or "All"
-    if attr ~= "All" then
-        local key = ARM_ATTR_KEYS[attr]
-        if not key or (tonumber(it[key]) or 0) <= 0 then
-            return false
-        end
-    end
-    return true
-end
-
-local function LayoutArmory()
-    if not ui.armory or not ui.armRows then
-        return
-    end
-    local list = db.armory or {}
-    local slot = tonumber(db.armorySlot) or -1
-    local filtered = {}
-    for i = 1, #list do
-        local it = list[i]
-        if LG2.ArmoryItemMatches(it) then
-            table.insert(filtered, it)
-        end
-    end
-    local off = db.armoryOff or 0
-    if off > 0 and off >= #filtered then
-        off = math.max(0, #filtered - #ui.armRows)
-        db.armoryOff = off
-    end
-    if #filtered == 0 then
-        ui.armEmpty:Show()
-        ui.armEmpty:SetText("No attuned items match these filters.")
-    else
-        ui.armEmpty:Hide()
-    end
-    if ui.armAllSlot then
-        local allOn = slot < 0
-        StyleBtn(ui.armAllSlot, allOn and 0.14 or 0.10, allOn and 0.22 or 0.10, allOn and 0.28 or 0.10)
-        if allOn then
-            ui.armAllSlot.label:SetTextColor(0.85, 0.95, 0.95, 1)
-        else
-            ui.armAllSlot.label:SetTextColor(0.75, 0.75, 0.75, 1)
-        end
-    end
-    if ui.armSlotBtns then
-        for i = 1, #ui.armSlotBtns do
-            local btn = ui.armSlotBtns[i]
-            local on = btn.slot == slot
-            btn._ir, btn._ig, btn._ib = on and 0.14 or 0.10, on and 0.22 or 0.10, on and 0.28 or 0.10
-            Solid(btn.bg, btn._ir, btn._ig, btn._ib, 1)
-            if on then
-                btn.label:SetTextColor(0.85, 0.95, 0.95, 1)
-            else
-                btn.label:SetTextColor(0.75, 0.75, 0.75, 1)
-            end
-        end
-    end
-    if ui.armTypeBtns then
-        for i = 1, #ui.armTypeBtns do
-            local btn = ui.armTypeBtns[i]
-            local on = btn.typ == (db.armoryType or "All")
-            StyleBtn(btn, on and 0.14 or 0.10, on and 0.22 or 0.10, on and 0.28 or 0.10)
-            if on then
-                btn.label:SetTextColor(0.85, 0.95, 0.95, 1)
-            else
-                btn.label:SetTextColor(0.75, 0.75, 0.75, 1)
-            end
-        end
-    end
-    if ui.armAttrBtns then
-        for i = 1, #ui.armAttrBtns do
-            local btn = ui.armAttrBtns[i]
-            local on = btn.attr == (db.armoryAttr or "All")
-            StyleBtn(btn, on and 0.14 or 0.10, on and 0.22 or 0.10, on and 0.28 or 0.10)
-            if on then
-                btn.label:SetTextColor(0.85, 0.95, 0.95, 1)
-            else
-                btn.label:SetTextColor(0.75, 0.75, 0.75, 1)
-            end
-        end
-    end
-    for i = 1, #ui.armRows do
-        local row = ui.armRows[i]
-        local it = filtered[off + i]
-        if it then
-            row:Show()
-            row.entry = it.entry
-            row.slot = tonumber(it.slot) or slot
-            row.link = LG2.ItemLinkText(it.entry, it.name)
-            row.text:SetText(row.link)
-        else
-            row:Hide()
-            row.entry = nil
-            row.link = nil
-        end
-    end
-end
-
 local function LayoutAll()
     LG2.LayoutGear()
     LayoutLoot()
     LG2.LayoutAttune()
     LayoutClass()
     LayoutWorld()
-    LayoutArmory()
     LG2.RefreshItems()
     if ui.reagents then
         LayoutReagentCats()
@@ -2894,6 +2766,50 @@ function LG2.BuildItemsPanel(parent)
     p.summary = Font(p, 10, 0.7, 0.7, 0.7)
     p.summary:SetPoint("TOPLEFT", 10, -26)
     p.summary:SetWordWrap(false)
+
+    -- Attune All belongs here because Items is already where attuned entries
+    -- are listed. It previously lived on the Armory panel, and when that panel
+    -- was retired into this tab the button went with it -- leaving no way to
+    -- attune deliberately anywhere in the UI (report #104).
+    --
+    -- Two presses, never one. The first asks, the second does it. This
+    -- destroys gear -- a single mis-click on a button that eats your bags
+    -- would be indefensible, and no amount of tooltip makes that acceptable.
+    local attuneAll = CreateFrame("Button", nil, p)
+    attuneAll:SetSize(96, 16)
+    attuneAll:SetPoint("TOPRIGHT", -10, -25)
+    StyleBtn(attuneAll, 0.14, 0.24, 0.14)
+    attuneAll.label = Font(attuneAll, 10, 0.85, 0.95, 0.85)
+    attuneAll.label:SetPoint("CENTER", 0, 0)
+    attuneAll.label:SetJustifyH("CENTER")
+    attuneAll.label:SetText("Attune All")
+    attuneAll._armed = 0
+    attuneAll:SetScript("OnClick", function(self)
+        if GetTime() - (self._armed or 0) < 6 then
+            self._armed = 0
+            self.label:SetText("Attune All")
+            SendLine("ATTUNEALL")
+            return
+        end
+        self._armed = GetTime()
+        self.label:SetText("Sure?")
+    end)
+    attuneAll:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("Attune All")
+        GameTooltip:AddLine("Consumes every attunable item in your bags and banks a permanent share of its stats to your account.", 1, 1, 1, true)
+        GameTooltip:AddLine("Each item counts once. Duplicates and anything already attuned are left alone.", 0.7, 0.7, 0.7, true)
+        GameTooltip:AddLine("Equipped gear is never touched.", 0.6, 0.9, 0.6, true)
+        GameTooltip:Show()
+    end)
+    attuneAll:SetScript("OnLeave", function(self)
+        GameTooltip:Hide()
+        if GetTime() - (self._armed or 0) >= 6 then
+            self._armed = 0
+            self.label:SetText("Attune All")
+        end
+    end)
+    ui.attuneAllBtn = attuneAll
 
     p.empty = Font(p, 11, 0.6, 0.6, 0.6)
     p.empty:SetPoint("TOPLEFT", 10, -46)
@@ -3793,218 +3709,6 @@ function LG2.BuildAttunePanel(f)
     end
 end
 
-function LG2.BuildArmoryPanel(f)
-    local ARM_ROWS = 10
-    local arm = CreateFrame("Frame", nil, f)
-    arm:SetFrameStrata("DIALOG")
-    arm:SetPoint("TOPLEFT", 8, -48)
-    arm:SetPoint("BOTTOMRIGHT", -8, 8)
-    arm:SetBackdrop({
-        bgFile = WHITE,
-        edgeFile = WHITE,
-        edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
-    })
-    arm:SetBackdropColor(0.07, 0.07, 0.08, 1)
-    arm:SetBackdropBorderColor(0.18, 0.18, 0.18, 1)
-    arm:Hide()
-    arm:EnableMouse(true)
-    ui.armory = arm
-    ui.armTitle = Font(arm, 12, 0.9, 0.9, 0.9)
-    ui.armTitle:SetPoint("TOPLEFT", 10, -8)
-    ui.armTitle:SetText("Attuned Armory - click to equip")
-    local armClose = CreateFrame("Button", nil, arm)
-    armClose:SetSize(56, 18)
-    armClose:SetPoint("TOPRIGHT", -8, -6)
-    StyleBtn(armClose, 0.28, 0.12, 0.12)
-    armClose.label = Font(armClose, 10, 0.95, 0.8, 0.8)
-    armClose.label:SetPoint("CENTER", 0, 0)
-    armClose.label:SetJustifyH("CENTER")
-    armClose.label:SetText("Close")
-    armClose:SetScript("OnClick", function()
-        arm:Hide()
-    end)
-
-    -- Attune All lives on the Armory's first page because it is the action
-    -- players will use most, and attunement is now deliberate: it consumes the
-    -- items, so there is no automatic path any more.
-    --
-    -- Two presses, never one. The first asks, the second does it. This
-    -- destroys gear -- a single mis-click on a button that eats your bags
-    -- would be indefensible, and no amount of tooltip makes that acceptable.
-    local attuneAll = CreateFrame("Button", nil, arm)
-    attuneAll:SetSize(96, 18)
-    attuneAll:SetPoint("TOPRIGHT", armClose, "TOPLEFT", -6, 0)
-    StyleBtn(attuneAll, 0.14, 0.24, 0.14)
-    attuneAll.label = Font(attuneAll, 10, 0.85, 0.95, 0.85)
-    attuneAll.label:SetPoint("CENTER", 0, 0)
-    attuneAll.label:SetJustifyH("CENTER")
-    attuneAll.label:SetText("Attune All")
-    attuneAll._armed = 0
-    attuneAll:SetScript("OnClick", function(self)
-        if GetTime() - (self._armed or 0) < 6 then
-            self._armed = 0
-            self.label:SetText("Attune All")
-            SendLine("ATTUNEALL")
-            return
-        end
-        self._armed = GetTime()
-        self.label:SetText("Sure?")
-    end)
-    attuneAll:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("Attune All")
-        GameTooltip:AddLine("Consumes every attunable item in your bags and banks a permanent share of its stats to your account.", 1, 1, 1, true)
-        GameTooltip:AddLine("Each item counts once. Duplicates and anything already attuned are left alone.", 0.7, 0.7, 0.7, true)
-        GameTooltip:AddLine("Equipped gear is never touched.", 0.6, 0.9, 0.6, true)
-        GameTooltip:Show()
-    end)
-    attuneAll:SetScript("OnLeave", function(self)
-        GameTooltip:Hide()
-        if GetTime() - (self._armed or 0) >= 6 then
-            self._armed = 0
-            self.label:SetText("Attune All")
-        end
-    end)
-    ui.attuneAllBtn = attuneAll
-    ui.armTypeBtns = {}
-    local typeX = 10
-    for i = 1, #ARM_TYPES do
-        local name = ARM_TYPES[i]
-        local w = 10 + string.len(name) * 7
-        if w < 52 then
-            w = 52
-        end
-        local btn = CreateFrame("Button", nil, arm)
-        btn:SetSize(w, 18)
-        btn:SetPoint("TOPLEFT", typeX, ARM_FILTER_Y)
-        btn.typ = name
-        StyleBtn(btn, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
-        btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
-        btn.label:SetPoint("CENTER", 0, 0)
-        btn.label:SetJustifyH("CENTER")
-        btn.label:SetText(name)
-        btn:SetScript("OnClick", function()
-            db.armoryType = name
-            db.armoryOff = 0
-            LayoutArmory()
-        end)
-        ui.armTypeBtns[i] = btn
-        typeX = typeX + w + 4
-    end
-    ui.armAttrBtns = {}
-    local attrX = ARM_LIST_X
-    for i = 1, #ARM_ATTRS do
-        local name = ARM_ATTRS[i]
-        local w = 10 + string.len(name) * 7
-        if w < 44 then
-            w = 44
-        end
-        local btn = CreateFrame("Button", nil, arm)
-        btn:SetSize(w, 18)
-        btn:SetPoint("TOPLEFT", attrX, ARM_FILTER_Y)
-        btn.attr = name
-        StyleBtn(btn, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
-        btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
-        btn.label:SetPoint("CENTER", 0, 0)
-        btn.label:SetJustifyH("CENTER")
-        btn.label:SetText(name)
-        btn:SetScript("OnClick", function()
-            db.armoryAttr = name
-            db.armoryOff = 0
-            LayoutArmory()
-        end)
-        ui.armAttrBtns[i] = btn
-        attrX = attrX + w + 4
-    end
-    local armAllSlot = CreateFrame("Button", nil, arm)
-    armAllSlot:SetSize(246, 18)
-    armAllSlot:SetPoint("TOPLEFT", 10, ARM_SLOT_Y)
-    StyleBtn(armAllSlot, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
-    armAllSlot.label = Font(armAllSlot, 10, 0.85, 0.85, 0.85)
-    armAllSlot.label:SetPoint("CENTER", 0, 0)
-    armAllSlot.label:SetJustifyH("CENTER")
-    armAllSlot.label:SetText("All slots")
-    armAllSlot:SetScript("OnClick", function()
-        db.armorySlot = -1
-        db.armoryOff = 0
-        LayoutArmory()
-    end)
-    ui.armAllSlot = armAllSlot
-    ui.armSlotBtns = {}
-    for i = 1, #GEAR_SLOTS do
-        local info = GEAR_SLOTS[i]
-        local btn = CreateFrame("Button", nil, arm)
-        btn:SetSize(118, 18)
-        btn.slot = info.slot
-        local col = (i - 1) % 2
-        local row = math.floor((i - 1) / 2)
-        btn:SetPoint("TOPLEFT", 10 + col * 124, ARM_SLOT_Y - 20 - row * 20)
-        StyleBtn(btn, COLOR_BG[1], COLOR_BG[2], COLOR_BG[3])
-        btn.label = Font(btn, 10, 0.85, 0.85, 0.85)
-        btn.label:SetPoint("CENTER", 0, 0)
-        btn.label:SetJustifyH("CENTER")
-        btn.label:SetText(info.name)
-        btn:SetScript("OnClick", function()
-            db.armorySlot = info.slot
-            db.armoryOff = 0
-            LayoutArmory()
-        end)
-        ui.armSlotBtns[i] = btn
-    end
-    ui.armEmpty = Font(arm, 11, 0.6, 0.6, 0.6)
-    ui.armEmpty:SetPoint("TOPLEFT", ARM_LIST_X, ARM_SLOT_Y)
-    ui.armEmpty:SetText("No attuned items match these filters.")
-    ui.armRows = {}
-    for i = 1, ARM_ROWS do
-        local row = CreateFrame("Button", nil, arm)
-        row:SetSize(260, 18)
-        row:SetPoint("TOPLEFT", ARM_LIST_X, ARM_SLOT_Y - (i - 1) * 20)
-        row.bg = row:CreateTexture(nil, "BACKGROUND")
-        row.bg:SetAllPoints(row)
-        Solid(row.bg, 0.10, 0.10, 0.10, 0)
-        row.text = Font(row, 11, 0.85, 0.85, 0.85)
-        row.text:SetPoint("LEFT", 4, 0)
-        row.text:SetPoint("RIGHT", -4, 0)
-        row.text:SetJustifyH("LEFT")
-        row:SetScript("OnEnter", function(self)
-            Solid(self.bg, 0.16, 0.16, 0.16, 1)
-            -- LG2.ItemLinkText() falls back to plain, non-hyperlink text
-            -- (e.g. "Item 12345") when the client hasn't cached that item's
-            -- info yet -- SetHyperlink throws "Unknown link type" if handed
-            -- that instead of a real |Hitem:...|h link.
-            if self.link and self.link:find("|Hitem:", 1, true) and GameTooltip then
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-                GameTooltip:SetHyperlink(self.link)
-                GameTooltip:Show()
-            end
-        end)
-        row:SetScript("OnLeave", function(self)
-            Solid(self.bg, 0.10, 0.10, 0.10, 0)
-            if GameTooltip then
-                GameTooltip:Hide()
-            end
-        end)
-        row:SetScript("OnClick", function(self)
-            if self.entry then
-                SendLine("ARMEQUIP|" .. tostring(self.slot or db.armorySlot or 0) .. "|" .. tostring(self.entry))
-            end
-        end)
-        row:Hide()
-        ui.armRows[i] = row
-    end
-    arm:EnableMouseWheel(true)
-    arm:SetScript("OnMouseWheel", function(_, delta)
-        local off = db.armoryOff or 0
-        off = off - delta
-        if off < 0 then
-            off = 0
-        end
-        db.armoryOff = off
-        LayoutArmory()
-    end)
-end
-
 function LG2.BuildWorldPanel(f)
     local world = MakePanel(f)
     ui.world = world
@@ -4589,7 +4293,6 @@ local function BuildUI()
 
     LG2.BuildAttunePanel(f)
 
-    LG2.BuildArmoryPanel(f)
 
     LG2.BuildLootPanel(f)
 
@@ -4716,6 +4419,21 @@ local function OpenFromCast()
     end
     lastCastOpen = now
     Toggle()
+end
+
+-- Where the *Attuned Armory perk lands. Casting it used to call SendArmory and
+-- nothing else, which only pushes data; the reveal lived on the ARMEND handler
+-- and was removed when the armory feed started riding the ordinary login sync,
+-- so the button silently did nothing from then on (report #104).
+--
+-- Shows rather than toggles: the player asked for the armory by name, so a cast
+-- that happened to close the window would read as the button being broken
+-- again.
+function LG2.OpenArmoryView()
+    LG2.OpenWindow()
+    db.itemFilter = "attuned"
+    ShowTab("items")
+    LG2.RefreshItems()
 end
 
 local function RefreshQuestWatch()
@@ -5221,6 +4939,10 @@ function LG2.HandleAddon(prefix, message)
         OpenFromCast()
         return
     end
+    if message == "OPENARM" then
+        LG2.OpenArmoryView()
+        return
+    end
     if message == "LAND" then
         BeginJumpResume()
         return
@@ -5503,7 +5225,6 @@ function LG2.HandleAddon(prefix, message)
     end
     if p[1] == "ARMCLR" then
         db.armory = {}
-        db.armoryOff = 0
         return
     end
     if p[1] == "ARM" then
@@ -5522,14 +5243,10 @@ function LG2.HandleAddon(prefix, message)
         return
     end
     if p[1] == "ARMEND" then
-        -- Data only. This used to reveal the armory panel and force the whole
-        -- window open, which was reasonable while the feed arrived solely
-        -- because the player had clicked Armory. It now rides the ordinary
-        -- sync, so doing any of that would pop the window open on every login
-        -- and every reload.
-        if db.armorySlot == nil then
-            db.armorySlot = -1
-        end
+        -- Data only, deliberately. This feed rides the ordinary login sync, so
+        -- revealing anything here would pop the window open on every login and
+        -- every reload. The *Attuned Armory perk gets its own OPENARM message
+        -- for the case where the player actually asked to see it.
         LG2.RefreshItems()
         return
     end
