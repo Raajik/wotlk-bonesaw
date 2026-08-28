@@ -80,6 +80,19 @@ float const CLASS_BUFF_PCT = 10.0f;
 float const MENTOR_XP = 2.0f;
 float const AS_DAMAGE_MULT = 4.0f;
 uint32 const AS_CD_MS = 5000;
+// Kit: Paladin Retribution "Sanctified Whirlwind" (plan pass 2, 2026-08-28).
+// The toggle spell is a custom castable self-buff -- 910182 allocated in
+// pending_db_world/rev_living_gear_sanctified_whirlwind.sql (DurationIndex 21
+// = infinite in SpellDuration.dbc, verified). Everything else reuses verified
+// level-80 ranks: Consecration rank 8 = 48819, Avenger's Shield rank 5 =
+// 48827 (both confirmed from acore_world.spell_ranks).
+uint32 const SPELL_SANCTIFIED_WHIRLWIND = 910182;
+uint32 const SPELL_AVENGERS_SHIELD_R5 = 48827;
+uint32 const RET_CS_AS_PROC_CHANCE = 30;      // "30% chance on hit"
+uint32 const DS_WINDOW_MS = 800;              // cast + extra hits at 120/240/360ms
+float const DS_SWING_CLEAVE_PCT = 0.5f;       // "50% of the swing's damage"
+float const DS_SWING_CLEAVE_RANGE = 8.0f;     // "all enemies within 8 yards"
+uint32 const WHIRLWIND_CONSEC_TICK_MS = 3000; // Consecration follow cadence
 uint32 const SPEED_CAP_DEFAULT = 500;
 
 struct NextState
@@ -90,6 +103,8 @@ struct NextState
     uint32 ridingStep = 0;
     uint32 hofTarget = 0;
     uint32 lastTickMs = 0;
+    uint32 dsWindowUntilMs = 0;    // Sanctified Whirlwind: melee cleave window
+    uint32 whirlConsecTickMs = 0;  // Sanctified Whirlwind: Consecration follow
     bool classBuffOn = false;
     uint8 botOrigLevel = 0;
     bool weaponPeakOn = false;
@@ -972,6 +987,10 @@ void DivineStormExtraHits(Player* player)
 {
     if (!player)
         return;
+    // Sanctified Whirlwind opens its cleave window here: the animation window
+    // is this cast plus the three triggered copies below, so ~800ms covers
+    // every hit of the 4-hit sequence.
+    StateFor(player).dsWindowUntilMs = getMSTime() + DS_WINDOW_MS;
     ObjectGuid const playerGuid = player->GetGUID();
     for (uint32 i = 0; i < DIVINE_STORM_EXTRA_HITS; ++i)
     {
@@ -1012,8 +1031,20 @@ void HandlePaladinPerkCast(Player* player, SpellInfo const* info, Unit* target)
     // "While Retribution Aura is up, Crusader Strike also casts Exorcism on
     // nearby enemies." The aura condition is the player's own choice of aura,
     // so it stays a real check rather than being assumed.
-    if (RankOf(info, SPELL_CRUSADER_STRIKE) && player->HasAura(SPELL_RETRIBUTION_AURA))
-        PaladinSplash(player, target, SPELL_EXORCISM, EXORCISM_SPLASH_RANGE);
+    if (RankOf(info, SPELL_CRUSADER_STRIKE))
+    {
+        if (player->HasAura(SPELL_RETRIBUTION_AURA))
+            PaladinSplash(player, target, SPELL_EXORCISM, EXORCISM_SPLASH_RANGE);
+        // Sanctified Whirlwind: "Crusader Strike on hit: 30% chance to fire a
+        // free full Avenger's Shield bounce chain." Mirrors the Protection
+        // Judgement proc (TryPaladinProtJudgementProc) but as a separate CS
+        // trigger -- the prot proc itself is untouched. Rank 5 (48827) is the
+        // level-80 rank; the triggered cast carries the native bounce chain,
+        // and ThrowExtraAvengers/AS_DAMAGE_MULT both match it through RankOf.
+        if (roll_chance_i(RET_CS_AS_PROC_CHANCE) && target
+            && player->IsValidAttackTarget(target))
+            player->CastSpell(target, SPELL_AVENGERS_SHIELD_R5, true);
+    }
 }
 
 void RelocateConsecration(Player* player)
@@ -1030,6 +1061,120 @@ void RelocateConsecration(Player* player)
         if (dyn->GetDuration() < 2000)
             dyn->SetDuration(8000);
     }
+}
+
+// Highest Consecration rank the paladin actually knows (the module never
+// learnSpells perk spells, so "owned" means trained -- same question
+// ClassPerks.cpp' BestOwned answers, resolved locally because the two files
+// are separate translation units).
+uint32 OwnedConsecration(Player* player)
+{
+    uint32 owned = 0;
+    for (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_CONSECRATION); info; info = info->GetNextRankSpell())
+        if (player->HasSpell(info->Id))
+            owned = info->Id;
+    return owned;
+}
+
+// Relocation half of RelocateConsecration, for one known dynobject id -- the
+// Sanctified Whirlwind follow shares the Holy perk's behavior without
+// touching the Holy-gated entry point.
+void RelocateConsecrationDynId(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetMap())
+        return;
+    DynamicObject* dyn = player->GetDynObject(spellId);
+    if (!dyn)
+        return;
+    player->GetMap()->DynamicObjectRelocation(dyn,
+        player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation());
+    if (dyn->GetDuration() < 2000)
+        dyn->SetDuration(8000);
+}
+
+// "Sanctified Whirlwind" on-state, ticked from the per-player update loop the
+// same observe-only way as TickMageArcanePower/TickWarriorArmsBladestorm: the
+// toggle aura's lifetime is never touched while it is being applied (it is
+// infinite -- DurationIndex 21), and every cast below is deferred through
+// m_Events so nothing re-enters a cast in progress.
+void TickSanctifiedWhirlwind(Player* player, uint32 diff)
+{
+    if (!player || !player->IsInWorld() || !HasClassPerk(player, SPELL_PALADIN_RETRIBUTION))
+        return;
+    if (!player->HasAura(SPELL_SANCTIFIED_WHIRLWIND))
+    {
+        StateFor(player).whirlConsecTickMs = 0;
+        return;
+    }
+    NextState& st = StateFor(player);
+    st.whirlConsecTickMs += diff;
+    if (st.whirlConsecTickMs < WHIRLWIND_CONSEC_TICK_MS)
+        return;
+    st.whirlConsecTickMs = 0;
+    // Consecration follows the paladin: an already-standing circle is dragged
+    // along (Holy perk's RelocateConsecration behavior), a missing one is
+    // re-cast at the paladin's position -- "no recast needed" either way.
+    uint32 dynId = 0;
+    for (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_CONSECRATION); info; info = info->GetNextRankSpell())
+        if (player->GetDynObject(info->Id))
+            dynId = info->Id;
+    if (dynId)
+    {
+        RelocateConsecrationDynId(player, dynId);
+        return;
+    }
+    uint32 const consec = OwnedConsecration(player);
+    if (!consec)
+        return;
+    ObjectGuid const guid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([guid, consec]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(guid);
+        if (!p || !LivingGear_SafeToCastOn(p) || !p->IsAlive())
+            return;
+        if (!p->HasAura(SPELL_SANCTIFIED_WHIRLWIND))
+            return;
+        p->CastSpell(p, consec, true);
+    }, std::chrono::milliseconds(1));
+}
+
+// Sanctified Whirlwind DS-window cleave, called from the melee-damage hook:
+// during Divine Storm's animation window every auto-swing also strikes every
+// other enemy within 8 yards for 50% of the swing. Deferred one tick like
+// every other expansion in this module -- DealDamage inside the damage hook
+// itself is the reentrancy shape the module has been burned by repeatedly.
+void SwingCleaveSanctifiedWhirlwind(Unit* target, Unit* attacker, uint32 damage)
+{
+    if (!target || !attacker || !damage)
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || !HasClassPerk(player, SPELL_PALADIN_RETRIBUTION))
+        return;
+    NextState& st = StateFor(player);
+    if (!st.dsWindowUntilMs || getMSTimeDiff(getMSTime(), st.dsWindowUntilMs) > DS_WINDOW_MS)
+        return;
+    ObjectGuid const playerGuid = player->GetGUID();
+    ObjectGuid const mainVictim = target->GetGUID();
+    uint32 const cleave = uint32(float(damage) * DS_SWING_CLEAVE_PCT);
+    player->m_Events.AddEventAtOffset([playerGuid, mainVictim, cleave]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !LivingGear_SafeToCastOn(p) || !p->IsAlive())
+            return;
+        Unit* victim = ObjectAccessor::GetUnit(*p, mainVictim);
+        std::list<Unit*> around;
+        Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(p, p, DS_SWING_CLEAVE_RANGE);
+        Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(p, around, check);
+        Cell::VisitObjects(p, searcher, DS_SWING_CLEAVE_RANGE);
+        for (Unit* u : around)
+        {
+            if (!u || !u->IsAlive() || u == victim || !p->IsValidAttackTarget(u))
+                continue;
+            // This fork's Unit::DealDamage is static and takes the attacker
+            // explicitly.
+            Unit::DealDamage(p, u, cleave, nullptr, SPELL_DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        }
+    }, std::chrono::milliseconds(1));
 }
 
 void ThrowExtraAvengers(Player* player, Spell* spell)
@@ -1222,6 +1367,11 @@ public:
         if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && !player->HasSpell(SPELL_CRUSADER_STRIKE)
             && sSpellMgr->GetSpellInfo(SPELL_CRUSADER_STRIKE))
             player->learnSpell(SPELL_CRUSADER_STRIKE);
+        // Sanctified Whirlwind toggle button. Granted alongside Crusader
+        // Strike so an existing Retribution Paladin gets it on next login.
+        if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && !player->HasSpell(SPELL_SANCTIFIED_WHIRLWIND)
+            && sSpellMgr->GetSpellInfo(SPELL_SANCTIFIED_WHIRLWIND))
+            player->learnSpell(SPELL_SANCTIFIED_WHIRLWIND);
         if (g_hasSpeedCapCol)
         {
             if (QueryResult result = CharacterDatabase.Query(
@@ -1260,7 +1410,7 @@ public:
         g_state.erase(player->GetGUID().GetCounter());
     }
 
-    void OnPlayerUpdate(Player* player, uint32 /*diff*/) override
+    void OnPlayerUpdate(Player* player, uint32 diff) override
     {
         // Crash guard: several ticks below cast auras on the player, and doing
         // that after Player::CleanupsBeforeDelete asserts on !m_cleanupDone and
@@ -1278,6 +1428,7 @@ public:
             ApplySpeedCap(player);
         }
         RelocateConsecration(player);
+        TickSanctifiedWhirlwind(player, diff);
     }
 
     void OnPlayerQuestAccept(Player* player, Quest const* /*quest*/) override
@@ -1400,7 +1551,7 @@ public:
             spell->SetCastTime(0);
     }
 
-    void OnSpellCheckCast(Spell* spell, bool /*strict*/, SpellCastResult& res) override
+    void OnSpellCheckCast(Spell* spell, bool strict, SpellCastResult& res) override
     {
         if (!spell)
             return;
@@ -1424,6 +1575,18 @@ public:
         if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && info->Id == SPELL_HAND_OF_FREEDOM
             && res == SPELL_FAILED_NOT_READY)
             res = SPELL_CAST_OK;
+        // "Sanctified Whirlwind" free-toggle off-switch, same ordering
+        // discipline as TryWarriorArmsBladestormToggleOff: in the strict pass,
+        // recasting while the aura is up removes it and the cast never starts
+        // (SPELL_FAILED_DONT_REPORT); casting while it is down lets the cast
+        // through, which is the toggle turning ON.
+        if (strict && res == SPELL_CAST_OK && info->Id == SPELL_SANCTIFIED_WHIRLWIND
+            && HasClassPerk(player, SPELL_PALADIN_RETRIBUTION)
+            && player->HasAura(SPELL_SANCTIFIED_WHIRLWIND))
+        {
+            player->RemoveAurasDueToSpell(SPELL_SANCTIFIED_WHIRLWIND);
+            res = SPELL_FAILED_DONT_REPORT;
+        }
     }
 
     void OnSpellCast(Spell* spell, Unit* caster, SpellInfo const* spellInfo, bool /*skipCheck*/) override
@@ -1448,13 +1611,34 @@ class NextUnit : public UnitScript
 public:
     NextUnit() : UnitScript("LivingGearNextUnit", true, {
         UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN,
+        UNITHOOK_MODIFY_MELEE_DAMAGE,
+        UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
         UNITHOOK_ON_AURA_APPLY
     }) { }
+
+    // "Divine Storm's cooldown is cleared whenever the paladin deals holy
+    // damage" while Sanctified Whirlwind is up (kill-momentum fantasy).
+    // Guarded on HasSpellCooldown so it only ever fires when DS is actually
+    // on cooldown, and covers both direct spell damage and periodic ticks.
+    void WhirlwindStormMomentum(Unit* attacker, SpellInfo const* spellInfo)
+    {
+        if (!attacker || !spellInfo)
+            return;
+        Player* player = attacker->ToPlayer();
+        if (!player || !HasClassPerk(player, SPELL_PALADIN_RETRIBUTION)
+            || !player->HasAura(SPELL_SANCTIFIED_WHIRLWIND))
+            return;
+        if (!(spellInfo->GetSchoolMask() & SPELL_SCHOOL_MASK_HOLY))
+            return;
+        if (player->HasSpellCooldown(SPELL_DIVINE_STORM))
+            player->RemoveSpellCooldown(SPELL_DIVINE_STORM, true);
+    }
 
     void ModifySpellDamageTaken(Unit* /*target*/, Unit* attacker, int32& damage, SpellInfo const* spellInfo) override
     {
         if (damage <= 0 || !attacker || !spellInfo)
             return;
+        WhirlwindStormMomentum(attacker, spellInfo);
         if (RankOf(spellInfo, SPELL_AVENGERS_SHIELD) && attacker->IsPlayer())
             damage = int32(float(damage) * AS_DAMAGE_MULT);
 
@@ -1469,6 +1653,20 @@ public:
             damage = int32(float(damage) * CONSECRATION_DAMAGE_MULT);
         else if (RankOf(spellInfo, SPELL_HOLY_SHOCK))
             damage = int32(float(damage) * HOLY_SHOCK_DAMAGE_MULT);
+    }
+
+    void ModifyMeleeDamage(Unit* target, Unit* attacker, uint32& damage) override
+    {
+        // Sanctified Whirlwind: swings during Divine Storm's animation window
+        // cleave everything else within 8 yards for 50%.
+        SwingCleaveSanctifiedWhirlwind(target, attacker, damage);
+    }
+
+    void ModifyPeriodicDamageAurasTick(Unit* /*target*/, Unit* attacker, uint32& damage, SpellInfo const* spellInfo) override
+    {
+        if (damage <= 0 || !attacker || !spellInfo)
+            return;
+        WhirlwindStormMomentum(attacker, spellInfo);
     }
 
     void OnAuraApply(Unit* unit, Aura* aura) override

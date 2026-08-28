@@ -491,11 +491,13 @@ local CLASS_PERKS = {
             { spell = 20271, text = "Judgement: 15% chance to trigger a full Avenger's Shield bounce chain." },
             { spell = 48942, text = "Devotion Aura: allies within 40 yards take 10% less damage." },
             { text = "You deal Holy thorns back to attackers equal to 50% of your armor." },
+            { text = "Generates 10x threat on everything you do." },
           } },
-        { id = 910071, name = "Retribution", how = "Each Divine Storm press hits 4 times. Learn Crusader Strike. While Retribution Aura is up, Crusader Strike also casts Exorcism on nearby enemies.",
+        { id = 910071, name = "Retribution", how = "Learn Sanctified Whirlwind, a toggle: your Consecration follows you, and Divine Storm's cooldown clears whenever you deal Holy damage. Each Divine Storm press hits 4 times, and while the storm lasts your melee swings also cleave everything within 8 yards for 50%. Learn Crusader Strike: 30% chance on hit to fire a free Avenger's Shield bounce chain.",
           lines = {
-            { spell = 53385, text = "Divine Storm: each press hits 4 times." },
-            { spell = 35395, text = "Crusader Strike: learned for free. While Retribution Aura is up it also casts Exorcism on nearby enemies." },
+            { spell = 910182, text = "Sanctified Whirlwind: learned for free, a toggle. While it is up your Consecration follows you as you move, and Divine Storm's cooldown is cleared whenever you deal Holy damage." },
+            { spell = 53385, text = "Divine Storm: each press hits 4 times, and while the storm lasts your melee swings also strike everything within 8 yards for 50% of the swing's damage." },
+            { spell = 35395, text = "Crusader Strike: learned for free. While Retribution Aura is up it also casts Exorcism on nearby enemies, and each hit has a 30% chance to fire a free Avenger's Shield bounce chain." },
           } },
     },
     WARRIOR = {
@@ -509,10 +511,12 @@ local CLASS_PERKS = {
             { text = "Titan's Grip. Each melee hit grants +5% attack speed (stacks to 20) and heals 1% of your max health in combat; the attack speed lingers 60 sec after combat." },
             { spell = 47465, text = "Rend and Deep Wounds deal +300% damage." },
           } },
-        { id = 910085, name = "Protection", how = "Learn Shockwave with no cooldown and +300% damage. Thunder Clap radius doubled, and it applies your Rend and Deep Wounds if trained.",
+        { id = 910085, name = "Protection", how = "Learn Shockwave with no cooldown and +300% damage. Learn Avalanche, a castable toggle that drops a 12-yard circle dealing Shield Slam damage and a 50% slow every 1 sec; recast to move it, recast on the circle to dismiss it, and gain +25% block chance while it is up. Shield Slam hits 4 times, each hit rupturing enemies within 8 yards. Thunder Clap radius is tripled and it applies your Rend and Deep Wounds at 3x to every enemy hit.",
           lines = {
             { spell = 46969, text = "Shockwave: learned for free, with no cooldown and +300% damage." },
-            { spell = 47502, text = "Thunder Clap: radius doubled, and it applies your Rend and Deep Wounds if trained." },
+            { spell = 43265, text = "Avalanche: learned for free, a toggle that drops a 12-yard circle at your target. Everything inside takes your Shield Slam damage and a 50% slow every 1 sec. Recast to move it; recast on the circle to dismiss it. +25% block chance while it is on the ground." },
+            { spell = 47488, text = "Shield Slam: each press hits 4 times, and every hit ruptures enemies within 8 yards." },
+            { spell = 47502, text = "Thunder Clap: radius tripled, and it applies your Rend and Deep Wounds at 3x damage to every enemy hit." },
           } },
     },
     HUNTER = {
@@ -526,10 +530,11 @@ local CLASS_PERKS = {
           lines = {
             { spell = 19574, text = "Bestial Wrath: no cooldown, focus cost refunded. Each cast also summons 4 clones of your current pet at 50% health, lasting 20 sec." },
           } },
-        { id = 910154, name = "Survival", how = "Explosive Shot deals double damage. Traps lose their cooldown and their blast radius is doubled. You are immune to your own trap damage.",
+        { id = 910154, name = "Survival", how = "Explosive Shot deals double damage. Traps lose their cooldown and their blast radius is doubled. You are immune to your own trap damage. Traps left on the ground re-arm every 10 sec (up to 3 times) while an enemy stands in them, and Call of the Wilds summons 2 tank bears that taunt and hold a pack for you.",
           lines = {
-            { spell = 60053, text = "Explosive Shot: deals double damage (the direct hit and every tick)." },
-            { spell = 13809, text = "All traps (Immolation, Frost, Freezing, Explosive, Snake): no cooldown and double blast radius." },
+            { spell = 60053, text = "Explosive Shot: deals double damage (the direct hit and every tick). Five ticks banked on a target, the next one detonates for all banked damage to everything within 8 yards." },
+            { spell = 13809, text = "All traps (Immolation, Frost, Freezing, Explosive, Snake): no cooldown and double blast radius. A placed trap re-arms at its spot every 10 sec, up to 3 times, while an enemy stands inside it (max 6 live zones)." },
+            { spell = 910181, text = "Call of the Wilds: summons 2 bear clones of your pet (or wild bears if you have no pet) at 50% health. They taunt everything nearby on arrival and keep holding threat for 60 sec. Recast to refresh." },
             { text = "You take no damage from your own traps." },
           } },
     },
@@ -540,10 +545,13 @@ local CLASS_PERKS = {
             { spell = 60043, text = "Lava Burst: deals double damage." },
             { spell = 49271, text = "Chain Lightning: no target cap (jumps up to 99 targets)." },
           } },
-        { id = 910155, name = "Enhancement", how = "Feral Spirit is effectively permanent: no cooldown/mana cost, and your spirit wolves' melee damage is doubled while the buff lasts. Stormstrike has no cooldown.",
+        { id = 910155, name = "Enhancement", how = "Feral Spirit is effectively permanent: no cooldown/mana cost, and your spirit wolves' melee damage is doubled while the buff lasts, with a 25% chance per wolf strike to call down a lightning strike on its target. Stormstrike has no cooldown and marks its target Charged for 8 sec; Lightning Bolt and Chain Lightning on a Charged target fire a second bolt at 50% damage and refresh the charge. Learn Static Field (a Thorns toggle): a 10-yard storm circle follows you, shocking everything inside every 2 sec for Nature damage that scales with your attack power.",
           lines = {
-            { spell = 51533, text = "Feral Spirit: no cooldown, mana cost refunded. The buff never drops below 10 sec remaining, so your wolves never expire, and their melee damage is doubled." },
-            { spell = 17364, text = "Stormstrike: no cooldown." },
+            { spell = 51533, text = "Feral Spirit: no cooldown, mana cost refunded. The buff never drops below 10 sec remaining, so your wolves never expire, and their melee damage is doubled. Each wolf strike has a 25% chance to call a lightning strike on its target." },
+            { spell = 17364, text = "Stormstrike: no cooldown, and it marks the target Charged for 8 sec." },
+            { spell = 49238, text = "Lightning Bolt: on a Charged target it fires a second bolt at 50% damage and refreshes the charge." },
+            { spell = 49271, text = "Chain Lightning: on a Charged target it fires a second bolt at 50% damage and refreshes the charge." },
+            { spell = 53307, text = "Static Field: learned for free, a toggle. A 10-yard storm circle follows you and shocks everything inside every 2 sec for Nature damage scaled with your attack power." },
           } },
         { id = 910156, name = "Restoration", how = "Riptide has no cooldown and also applies to 2 more injured (below 95% health) allies within 15 yards of your target. Chain Heal has no bounce cap.",
           lines = {
@@ -552,14 +560,17 @@ local CLASS_PERKS = {
           } },
     },
     DEATHKNIGHT = {
-        { id = 910152, name = "Unholy", how = "Summon Gargoyle has no cooldown. Army of the Dead has no cooldown and also summons a 5-ghoul group: 1 tank (3x health), 1 healer (heals your lowest ally every 2 sec), 3 dps. The group lasts 60 sec.",
+        { id = 910152, name = "Unholy", how = "A permanent blight shroud follows you: every 2 sec it applies your Blood Plague and Frost Fever (and Ebon Plague if you know it) to every enemy within 10 yards, refreshing any already infected, and all your diseases deal 5x damage. Summon Gargoyle has no cooldown and your gargoyle stays until it dies. Army of the Dead has no cooldown and also summons a 5-ghoul group: 1 tank (3x health), 1 healer (heals your lowest ally every 2 sec), 3 dps. The group persists while you are in combat and lasts 60 sec after you leave it.",
           lines = {
-            { spell = 49206, text = "Summon Gargoyle: no cooldown." },
-            { spell = 42650, text = "Army of the Dead: no cooldown, and also summons a 5-ghoul group: 1 tank (3x health), 1 healer (heals your lowest ally every 2 sec), 3 dps. The group lasts 60 sec." },
+            { spell = 50536, text = "Your blight shroud is permanent: every 2 sec it applies your diseases to every enemy within 10 yards and refreshes any it already infected." },
+            { spell = 55078, text = "Blood Plague, Frost Fever, and Ebon Plague deal 5x damage." },
+            { spell = 49206, text = "Summon Gargoyle: no cooldown, and your gargoyle stays until it dies." },
+            { spell = 42650, text = "Army of the Dead: no cooldown, and also summons a 5-ghoul group: 1 tank (3x health), 1 healer (heals your lowest ally every 2 sec), 3 dps. The group persists while you are in combat and lasts 60 sec after you leave it." },
           } },
         { id = 910166, name = "Blood", how = "Dancing Rune Weapon has no cooldown/runic cost. While it is up, your melee hits heal you for 5% of the damage dealt.",
           lines = {
             { spell = 49028, text = "Dancing Rune Weapon: no cooldown/runic cost. While it is up, your melee hits heal you for 5% of the damage dealt." },
+            { text = "Generates 10x threat on everything you do." },
           } },
         { id = 910167, name = "Frost", how = "Hungering Cold has no cooldown/runic cost. Frost Strike and Obliterate deal double damage.",
           lines = {
@@ -574,9 +585,12 @@ local CLASS_PERKS = {
             { text = "In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you." },
             { text = "Your DoT ticks deal quadruple damage, and DoT tick damage is also increased by your haste." },
           } },
-        { id = 910158, name = "Demonology", how = "Metamorphosis has no cooldown or mana cost. Your demon pet's damage is doubled.",
+        { id = 910158, name = "Demonology", how = "Learn Imp Legion (a Fel Domination toggle): it summons 8 imps at 35% health for 30 sec; recast refreshes them, recast again dismisses them. Metamorphosis has no cooldown or mana cost and turns the pack into felguards while it lasts. Your demon pet's damage is always doubled, and the legion's firebolts are doubled too.",
           lines = {
-            { spell = 47241, text = "Metamorphosis: no cooldown or mana cost. While it is up, your demon pet's damage is doubled." },
+            { spell = 18708, text = "Imp Legion: learned for free, a toggle with no cooldown or mana cost. Summons 8 imps at 35% health lasting 30 sec. Recast refreshes the pack; recast again to dismiss it." },
+            { spell = 47241, text = "Metamorphosis: no cooldown or mana cost. While it is up, your imp pack becomes felguards until it fades." },
+            { text = "Your demon pet's damage is doubled (always on)." },
+            { text = "The legion's firebolts deal double damage." },
           } },
         { id = 910159, name = "Destruction", how = "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt at the same target.",
           lines = {
@@ -597,6 +611,7 @@ local CLASS_PERKS = {
         { id = 910161, name = "Feral", how = "Berserk has no cooldown. While Berserk is active, your druid abilities cost no energy/rage/mana and lose their cooldowns.",
           lines = {
             { spell = 50334, text = "Berserk: no cooldown. While it is active, your druid abilities cost no energy/rage/mana and lose their cooldowns." },
+            { text = "Generates 10x threat while in Bear Form." },
           } },
         { id = 910162, name = "Restoration", how = "Wild Growth has no cooldown and heals up to 10 allies within 30 yards. Rejuvenation spreads from every rejuvenated ally to injured allies within 15 yards every 3 sec.",
           lines = {
@@ -613,10 +628,12 @@ local CLASS_PERKS = {
           lines = {
             { spell = 47788, text = "Guardian Spirit: no cooldown, and also applies to 2 more injured allies within 20 yards." },
           } },
-        { id = 910165, name = "Shadow", how = "Shadowfiend has no cooldown. Mind Flay deals quadruple damage.",
+        { id = 910165, name = "Shadow", how = "Shadowfiend has no cooldown. Learn Voidform (a Shadowform toggle): while it is up, a free Mind Blast fires at your target every 3 sec. Every Mind Flay channel also sings with 2 shadow constructs that last 9 sec (up to 6 alive). Mind Blast detonates your Shadow Word: Pain on the target, dealing its remaining damage at once and refreshing it to full. Mind Flay deals quadruple damage.",
           lines = {
             { spell = 34433, text = "Shadowfiend: no cooldown." },
-            { spell = 48156, text = "Mind Flay: deals quadruple damage." },
+            { spell = 15473, text = "Voidform: learned for free, a toggle. While it is up, a free Mind Blast fires at your target every 3 sec." },
+            { spell = 48156, text = "Mind Flay: deals quadruple damage, and each channel spawns 2 shadow constructs that last 9 sec (up to 6 alive)." },
+            { spell = 48127, text = "Mind Blast: detonates your Shadow Word: Pain on the target -- its remaining damage dealt at once, then refreshed to full." },
           } },
     },
 }

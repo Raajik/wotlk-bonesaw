@@ -38,6 +38,7 @@
 #include "DynamicObject.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "Log.h"
 #include "Map.h"
@@ -174,6 +175,32 @@ uint32 const BLADESTORM_AUTOCAST_MS = 6000;
 uint32 const SPELL_REND = 772;
 uint32 const SPELL_DEEP_WOUNDS_DOT = 12721;
 uint32 const SPELL_DEEP_WOUNDS_TALENT[] = { 12834, 12849, 12867 };
+// Kit 2 "Lord of Shields and Thunder" (910085). Ranks verified from
+// acore_world.spell_ranks / Spell.dbc: Shield Slam chain 23922 -> 47488
+// (rank 8, the level-80 rank), Thunder Clap 6343 -> 47502, Hamstring 1715,
+// Deep Wounds DoT 12721.
+uint32 const SPELL_SHIELD_SLAM_R1 = 23922;
+// "Shield Slams hit 3 additional times" (Divine Storm multi-hit shape).
+uint32 const WARRIOR_PROT_SS_EXTRA_HITS = 3;
+uint32 const WARRIOR_PROT_SS_HIT_DELAY_MS = 120;
+// Avalanche reuses Death and Decay 43265 (single rank, verified) as its
+// ground-target vehicle: the engine places the 12-yard persistent circle at
+// the target point and the module tick drives damage/slows on top of it.
+uint32 const SPELL_DEATH_AND_DECAY = 43265;
+uint32 const SPELL_HAMSTRING = 1715;
+// Defensive Tactics (29559): single-effect self buff, Aura1 = 112
+// (SPELL_AURA_MOD_BLOCK_PERCENT), self target, ~30s duration. CastCustomSpell
+// overrides the amount so the passive reads exactly +25% block chance while
+// Avalanche is on the ground.
+uint32 const SPELL_AVALANCHE_BLOCK_AURA = 29559;
+int32 const AVALANCHE_BLOCK_PCT = 25;
+uint32 const AVALANCHE_TICK_MS = 1000;
+// Recasting ON TOP of the live circle (within this distance of its centre)
+// toggles it off; casting further away moves it.
+float const AVALANCHE_TOGGLE_RANGE = 5.0f;
+// RadiusMod is a direct multiplier (Spell.cpp: radius * RadiusMod), so x3 is
+// 30000 -- a second RADIUS_MOD_DOUBLE (20000) would give x4, not x3.
+uint32 const RADIUS_MOD_TRIPLE = 30000;
 uint32 const SPELL_AVENGERS_SHIELD = 31935;
 uint32 const SPELL_DEVOTION_AURA = 465;
 uint32 const SPELL_BLADE_FLURRY = 13877;
@@ -190,6 +217,36 @@ uint32 const NPC_GHOUL_TANK = 910202;
 uint32 const NPC_GHOUL_HEALER = 910203;
 uint32 const NPC_GHOUL_DPS = 910204;
 
+// Kit 7 (Unholy 910152, user-revised definition). Disease ids verified from
+// Spell.dbc + acore_world.spell_ranks at level-80 rank:
+// - Blood Plague 55078 and Frost Fever 55095 are SINGLE ids for all ranks in
+//   3.3.5 (Plague Strike 45462/49917-49921 all trigger 55078; Icy Touch
+//   45477..49909 all trigger 55095 -- verified in the DBC trigger columns),
+//   so there is no rank chain to walk and spell_ranks (which lacks both) is
+//   irrelevant for them.
+// - Ebon Plaguebringer 51726->51734->51735 (spell_ranks chain, rank 3 =
+//   level 80). Talent-only: BestOwned() may legitimately return 0.
+// - Unholy Blight 49194->50536 has no spell_ranks chain (not loaded), so the
+//   rank is picked explicitly via HasSpell below.
+// - 65142 (the plan's Desecration-visual candidate) does not exist in this
+//   DBC. Visual marker instead: Unholy Blight itself, the canonical blight
+//   aura wrapped around the DK (green swirl, client-visible), re-cast on the
+//   DK every tick so it reads as a permanent shroud.
+uint32 const SPELL_BLOOD_PLAGUE_DISEASE = 55078;
+uint32 const SPELL_FROST_FEVER_DISEASE = 55095;
+uint32 const SPELL_EBON_PLAGUE_R1 = 51726;
+uint32 const SPELL_UNHOLY_BLIGHT_R1 = 49194;
+uint32 const SPELL_UNHOLY_BLIGHT_R2 = 50536;
+uint32 const NPC_EBON_GARGOYLE = 27829; // summoned by 49206/61777 (DBC basepoints)
+uint32 const DK_UNHOLY_BLIGHT_TICK_MS = 2000;
+float const DK_UNHOLY_BLIGHT_RANGE = 10.0f;
+// x5, matching the MAGE_DAMAGE_MULT/WARLOCK_AFFLICTION_DOT_MULT precedent
+// (hook-applied multiplier in the periodic-damage-tick hook).
+uint32 const DK_UNHOLY_DISEASE_MULT = 5;
+// Refreshed into the gargoyle's TempSummon timer every blight tick while the
+// creature is alive, so it only ever dies to damage, never to its own timer.
+uint32 const DK_GARGOYLE_REFRESH_MS = 30000;
+
 // Hunter
 uint32 const SPELL_BESTIAL_WRATH = 19574;
 uint32 const SPELL_EXPLOSIVE_SHOT_R1 = 53301;
@@ -197,6 +254,11 @@ uint32 const SPELL_EXPLOSIVE_SHOT_R1 = 53301;
 uint32 const SPELL_EXPLOSIVE_SHOT_DAMAGE = 53352;
 uint32 const SPELL_HUNTER_TRAP_FIRST_RANKS[] = { 13795 /*Immolation*/, 1499 /*Freezing*/, 13809 /*Frost*/, 13813 /*Explosive*/ };
 uint32 const SPELL_SNAKE_TRAP = 34600; // no rank chain
+// Survival "Call of the Wilds" -- a new castable (spell_dbc row lives in
+// rev_living_gear_call_of_the_wilds; client DBC entry in
+// tools/client-patch/build_patch.py). Declared here, above CLASS_PERK_GRANTS,
+// which hands it out.
+uint32 const SPELL_CALL_OF_WILDS = 910181;
 // Shaman
 uint32 const SPELL_FERAL_SPIRIT = 51533;
 uint32 const SPELL_STORMSTRIKE = 17364;
@@ -205,6 +267,10 @@ uint32 const SPELL_RIPTIDE = 61295;
 uint32 const SPELL_CHAIN_HEAL_R1 = 1064;
 // Warlock
 uint32 const SPELL_METAMORPHOSIS = 47241;
+// Fel Domination (18708) is Demonology's Imp Legion toggle button. Present in
+// var/mmap-output/dbc/Spell.dbc. Declared here, ABOVE CLASS_PERK_GRANTS,
+// which grants it (a talent spell, so it needs the explicit grant -- #123).
+uint32 const SPELL_FEL_DOMINATION = 18708;
 uint32 const SPELL_CHAOS_BOLT_R1 = 50796;
 uint32 const SPELL_CONFLAGRATE_R1 = 17962;
 // Reports #105/#116: Haunt is the Affliction perk's button. The auto-applied
@@ -228,6 +294,10 @@ uint32 const SPELL_REJUVENATION_R1 = 774;
 uint32 const SPELL_INSECT_SWARM_R1 = 5570;
 uint32 const SPELL_MOONKIN_FORM = 24858;
 uint32 const SPELL_THORNS_R1 = 467;
+// Enhancement "The Storm Caller" echo bolts + wolf procs need the Lightning
+// Bolt chain head; verified from acore_world.spell_ranks (403 = rank 1,
+// 49238 = rank 14, the level-80 rank).
+uint32 const SPELL_LIGHTNING_BOLT_R1 = 403;
 // Report #120: Moonfire/Hurricane and the Wrath/Starfire pair. Rank chains
 // verified in acore_world.spell_ranks (ranks in comment).
 uint32 const SPELL_MOONFIRE_R1 = 8921;    // 8921..48463, 14 ranks
@@ -245,6 +315,21 @@ uint32 const SPELL_SHADOWFIEND = 34433;
 uint32 const SPELL_MIND_FLAY_R1 = 15407;
 // The spell that actually carries Mind Flay's damage, for all nine ranks.
 uint32 const SPELL_MIND_FLAY_DAMAGE = 58381;
+// Shadow Priest "The Void Choir" (910165). Rank chains from acore_world.spell_ranks:
+// Mind Blast 8092 -> 48127 (13 ranks), Shadow Word: Pain 589 -> 48125 (12 ranks).
+// Shadowform (15473, single rank) is the Voidform toggle vehicle -- a permanent
+// aura-bearing castable the priest already knows, same trick Starfall's toggle uses.
+uint32 const SPELL_MIND_BLAST_R1 = 8092;
+uint32 const SPELL_SW_PAIN_R1 = 589;
+uint32 const SPELL_SHADOWFORM = 15473;
+// What Shadowfiend (34433) actually summons: Spell.dbc row 34433, Effect_2 = 28
+// (SPELL_EFFECT_SUMMON), EffectMiscValue = 19668 -- creature_template 19668
+// "Shadowfiend". The tendrils clone that entry so they reuse its model/stats.
+uint32 const PRIEST_SHADOWFIEND_ENTRY = 19668;
+uint32 const PRIEST_VOID_TENDRIL_COUNT = 2;        // spawned per Mind Flay channel
+uint32 const PRIEST_VOID_TENDRIL_MAX_ALIVE = 6;    // oldest despawned beyond this
+uint32 const PRIEST_VOID_TENDRIL_LIFETIME_MS = 9000; // 3s flay channel + 6s linger
+uint32 const PRIEST_VOID_TICK_MS = 3000;           // Voidform free Mind Blast cadence
 // Death Knight
 uint32 const SPELL_DANCING_RUNE_WEAPON = 49028;
 uint32 const SPELL_HUNGERING_COLD = 49203;
@@ -332,9 +417,12 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     // 0 -- silently doing nothing -- for a warrior who has not trained them).
     { SPELL_WARRIOR_ARMS,        { SPELL_BLADESTORM, SPELL_WHIRLWIND,
                                    SPELL_THUNDER_CLAP, 0 } },
-    // Protection doubles Thunder Clap's radius and makes it apply Rend.
+    // Protection: TC radius x3 and applies 3x Rend + Deep Wounds to every
+    // enemy hit; Shield Slam launches 3 extra hits, each rupturing for 8 yards;
+    // Death and Decay is the Avalanche toggle's castable ground-target vehicle
+    // (recast to move, recast on the circle to dismiss).
     { SPELL_WARRIOR_PROTECTION,  { SPELL_SHOCKWAVE, SPELL_THUNDER_CLAP,
-                                   SPELL_REND, 0 } },
+                                   SPELL_REND, SPELL_DEATH_AND_DECAY, 0 } },
     { SPELL_ROGUE_ASSASSINATION, { SPELL_ENVENOM_R1, 0, 0 } },
     { SPELL_ROGUE_COMBAT,        { SPELL_BLADE_FLURRY, SPELL_KILLING_SPREE,
                                    SPELL_ADRENALINE_RUSH_R1, 0 } },
@@ -361,11 +449,14 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
                                    SPELL_HUNTER_TRAP_FIRST_RANKS[1],
                                    SPELL_HUNTER_TRAP_FIRST_RANKS[2],
                                    SPELL_HUNTER_TRAP_FIRST_RANKS[3],
-                                   SPELL_SNAKE_TRAP, 0 } },
+                                   SPELL_SNAKE_TRAP, SPELL_CALL_OF_WILDS, 0 } },
     // Lava Burst is doubled and Chain Lightning loses its target cap.
     { SPELL_SHAMAN_ELEMENTAL,    { SPELL_THUNDERSTORM, SPELL_LAVA_BURST_R1,
                                    SPELL_CHAIN_LIGHTNING_R1, 0 } },
-    { SPELL_SHAMAN_ENHANCEMENT,  { SPELL_FERAL_SPIRIT, SPELL_STORMSTRIKE, 0 } },
+    // Storm Caller: Thorns is the Static Field toggle vehicle (see the state
+    // block comment above) -- granted so a level-1 spec pick can toggle it.
+    { SPELL_SHAMAN_ENHANCEMENT,  { SPELL_FERAL_SPIRIT, SPELL_STORMSTRIKE,
+                                   SPELL_THORNS_R1, 0 } },
     // "Chain Heal has no bounce cap."
     { SPELL_SHAMAN_RESTORATION,  { SPELL_RIPTIDE, SPELL_CHAIN_HEAL_R1, 0 } },
     { SPELL_DK_UNHOLY,           { SPELL_SUMMON_GARGOYLE, SPELL_ARMY_OF_THE_DEAD, 0 } },
@@ -373,7 +464,9 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     // "Frost Strike and Obliterate deal double damage."
     { SPELL_DK_FROST,            { SPELL_HUNGERING_COLD, SPELL_FROST_STRIKE_R1,
                                    SPELL_OBLITERATE_R1, 0 } },
-    { SPELL_WARLOCK_DEMONOLOGY,  { SPELL_METAMORPHOSIS, 0, 0 } },
+    // Fel Domination is Demonology's Imp Legion toggle button (talent spell,
+    // so it needs the explicit grant per report #123's lesson).
+    { SPELL_WARLOCK_DEMONOLOGY,  { SPELL_METAMORPHOSIS, SPELL_FEL_DOMINATION, 0 } },
     // Was empty. The entire perk is Chaos Bolt + Conflagrate, both talents, so
     // an untalented Destruction warlock had a perk that did literally nothing.
     { SPELL_WARLOCK_DESTRUCTION, { SPELL_CHAOS_BOLT_R1, SPELL_CONFLAGRATE_R1, 0 } },
@@ -395,8 +488,11 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     { SPELL_DRUID_RESTORATION,   { SPELL_WILD_GROWTH_R1, SPELL_REJUVENATION_R1, 0 } },
     { SPELL_PRIEST_DISCIPLINE,   { SPELL_PENANCE_R1, 0, 0 } },
     { SPELL_PRIEST_HOLY,         { SPELL_GUARDIAN_SPIRIT, 0, 0 } },
-    // "Mind Flay deals quadruple damage."
-    { SPELL_PRIEST_SHADOW,       { SPELL_SHADOWFIEND, SPELL_MIND_FLAY_R1, 0 } },
+    // "Mind Flay deals quadruple damage." Shadowform is granted as the Voidform
+    // toggle vehicle: a level-1 priest gets the button too, and spec-switch
+    // revokes it with the rest (the report #54 rule).
+    { SPELL_PRIEST_SHADOW,       { SPELL_SHADOWFIEND, SPELL_MIND_FLAY_R1,
+                                   SPELL_SHADOWFORM, 0 } },
 };
 
 float const CLASS_PERK_RANGE = 15.0f;
@@ -436,6 +532,24 @@ uint32 const ARMY_HEALER_HEAL_THRESHOLD_PCT = 90;
 uint32 const BM_PACK_SIZE = 4;
 uint32 const BM_PACK_DESPAWN_MS = 20000;
 uint32 const HUNTER_TRAP_RADIUS_MOD = 20000; // SetSpellValue(SPELLVALUE_RADIUS_MOD, x) -> RadiusMod = x/10000
+// Survival "The Trap Engineer" (910154) additions. Call of the Wilds is a new
+// castable, so it exists in both spell_dbc (rev_living_gear_call_of_the_wilds)
+// and the client DBC patch (tools/client-patch/build_patch.py) like every
+// other 9101xx button.
+uint32 const SPELL_TAUNT = 355;
+// No-pet fallback body: Shardtooth Bear (acore_world.creature_template 7444).
+uint32 const NPC_WILDS_FALLBACK_BEAR = 7444;
+uint32 const WILDS_BEAR_COUNT = 2;
+uint32 const WILDS_BEAR_DESPAWN_MS = 60000;
+float const WILDS_BEAR_TAUNT_RANGE = 10.0f;
+uint32 const WILDS_BEAR_THREAT_TICK_MS = 2000;
+uint32 const SHRAPNEL_MAX_STACKS = 5;
+uint32 const SHRAPNEL_LIFETIME_S = 8; // refreshed by every Explosive Shot tick
+float const SHRAPNEL_BLAST_RANGE = 8.0f;
+uint32 const TRAP_ZONE_REARM_MS = 10000;
+uint32 const TRAP_ZONE_MAX_REARMS = 3;
+uint32 const TRAP_ZONE_MAX_LIVE = 6;   // live re-arm zones per hunter
+float const HUNTER_TRAP_RADIUS_MULT = 2.0f; // matches HUNTER_TRAP_RADIUS_MOD
 uint32 const WARLOCK_AFFLICTION_SPREAD_TICK_MS = 1000;
 float const WARLOCK_AFFLICTION_SPREAD_RANGE = 15.0f;
 // How far from the warlock we look for already-infected enemies to spread FROM.
@@ -501,6 +615,76 @@ std::unordered_map<uint32, std::vector<ObjectGuid>> g_armyGroup;
 // as g_armyGroup.
 std::unordered_map<uint32, std::vector<ObjectGuid>> g_bmPack;
 
+// Survival Hunter "The Trap Engineer": persistent trap zones (a trap placement
+// is remembered by position and re-cast in place on a 10s cadence while an
+// enemy stands inside its radius), Shrapnel stack counters (per target, banked
+// tick damage until the detonating hit), and the Call of the Wilds bears.
+// All keyed by char guid; stored GUIDs are re-resolved at use time.
+struct HunterTrapZone
+{
+    uint32 spellId = 0;
+    uint32 mapId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    uint32 rearmAcc = 0;
+    uint8 rearms = 0;
+};
+
+struct HunterShrapnel
+{
+    uint8 stacks = 0;
+    int32 accDamage = 0;
+    uint32 expireS = 0;
+};
+
+std::unordered_map<uint32, std::vector<HunterTrapZone>> g_trapZones;
+std::unordered_map<uint32, std::unordered_map<uint32, HunterShrapnel>> g_shrapnel;
+std::unordered_map<uint32, std::vector<ObjectGuid>> g_wildsBears;
+
+// Warlock Demonology (910158) "The Imp Lord" -- char guid -> the imp-legion
+// pack + whether Meta currently has it upgraded to felguards. Same
+// one-slot-per-owner dedupe shape as g_bmPack.
+// Spell ids verified in var/mmap-output/dbc/Spell.dbc (field col 110 =
+// EffectMiscValue_1): spell 688 Summon Imp -> creature 416 "Imp",
+// spell 30146 Summon Felguard -> creature 17252 "Felguard" (both rows
+// confirmed in the DBC, creature names confirmed in acore_world).
+// 18708 Fel Domination confirmed present in the same DBC; it is the
+// toggle button. 47241 Metamorphosis is already SPELL_METAMORPHOSIS above.
+uint32 const DEMO_IMP_ENTRY = 416;
+uint32 const DEMO_FELGUARD_ENTRY = 17252;
+uint32 const DEMO_LEGION_SIZE = 8;
+uint32 const DEMO_LEGION_DESPAWN_MS = 30000;
+uint32 const DEMO_LEGION_HP_PCT = 35;
+uint32 const DEMO_IMP_FIREBOLT_COOLDOWN_MS = 2000;
+struct WarlockDemoLegion
+{
+    std::vector<ObjectGuid> pack;
+    bool metaForm = false;
+};
+std::unordered_map<uint32, WarlockDemoLegion> g_demoLegion;
+
+// Enhancement Shaman (910155) "The Storm Caller".
+// Spell ids verified: Stormstrike 17364 (single rank, present in
+// var/mmap-output/dbc/Spell.dbc), Chain Lightning 421 -> 49271 and Lightning
+// Bolt 403 -> 49238 (acore_world.spell_ranks), Feral Spirit 51533.
+// Static Field's toggle vehicle is Thorns (467 -> 53307): an existing
+// aura-bearing NATURE-school castable the shaman does not natively train,
+// same vehicle trick as Starfall's toggle (Spell 48505) and Voidform's
+// (Shadowform 15473). Granted through CLASS_PERK_GRANTS so spec-switch
+// reclaims it. Gated on own-cast only (aura caster == the shaman), so a
+// druid's Thorns buff can never silently switch the field on.
+uint32 const SHAMAN_CHARGE_DURATION_MS = 8000;   // Stormstrike "Charged" window
+float const SHAMAN_ECHO_PCT = 0.5f;              // echo bolt at 50% damage
+float const SHAMAN_STATIC_FIELD_AP_PCT = 0.25f;  // tick damage = 25% of AP
+uint32 const SHAMAN_STATIC_FIELD_TICK_MS = 2000; // shock cadence
+float const SHAMAN_STATIC_FIELD_RANGE = 10.0f;   // storm-circle radius
+uint32 const SHAMAN_WOLF_BOLT_CHANCE = 25;       // wolf strike -> free bolt
+uint32 const SHAMAN_WOLF_BOLT_DELAY_MS = 1;      // deferred out of the damage hook
+// char guid -> (target low guid -> "Charged" expiry, ms timer). Module-tracked
+// instead of an aura because there is no existing 8s shaman debuff to reuse.
+std::unordered_map<uint32, std::unordered_map<uint32, uint32>> g_shamanCharged;
+
 // Shaman Elemental tick accumulator reused for a couple of other per-tick
 // perks below (Warlock Affliction spread, Druid Eclipse refresh, Druid
 // Rejuvenation spread) -- one small struct per class instead of yet more
@@ -513,13 +697,26 @@ std::unordered_map<uint32, TickState> g_afflictionTick;
 // Bladestorm autocast accumulator, keyed by character guid. See
 // TickWarriorArmsBladestorm (bug report #19).
 std::unordered_map<uint32, uint32> g_bladestormTick;
+// Avalanche's per-second tick accumulator, keyed like g_bladestormTick.
+std::unordered_map<uint32, uint32> g_protAvalancheTick;
 std::unordered_map<uint32, TickState> g_eclipseTick;
 std::unordered_map<uint32, TickState> g_rejuvTick;
 std::unordered_map<uint32, TickState> g_thornsTick;
 std::unordered_map<uint32, TickState> g_insectTick;
+// Unholy DK blight tick accumulator (Kit 7). Same TickState shape as above.
+std::unordered_map<uint32, TickState> g_dkUnholyTick;
 
 std::unordered_set<uint32> g_perkLoaded;              // account ids already loaded
 std::unordered_map<uint32, std::unordered_set<uint32>> g_perks; // account id -> unlocked spell ids
+
+// Shadow Priest "Void Choir" -- char guid -> void-tendril GUIDs, oldest first
+// (despawn the front when the cap is hit). Same one-slot-per-owner shape as
+// g_armyGroup / g_bmPack.
+std::unordered_map<uint32, std::vector<ObjectGuid>> g_voidTendrils;
+// Voidform free-Mind-Blast cadence accumulator (TickPriestShadowVoidform).
+std::unordered_map<uint32, TickState> g_voidTick;
+// Static Field damage accumulator, same shape as g_voidTick.
+std::unordered_map<uint32, TickState> g_shamanStaticTick;
 
 bool g_schemaReady = false;
 bool g_hasClassPerkTable = false;
@@ -1989,9 +2186,18 @@ void ApplyFuryBleedPeriodic(Unit* attacker, uint32& damage, SpellInfo const* inf
 }
 
 // -------------------------------------------------------------------------
-// Warrior: Protection (910085)
-// "Learn Shockwave with no cooldown and +300% damage. Thunder Clap radius
-// doubled. Thunder Clap applies your Rend and Deep Wounds if trained."
+// Warrior: Protection (910085) -- "Lord of Shields and Thunder"
+// "Shield Slam hits 3 additional times, each hit rupturing for 8 yards.
+// Thunder Clap radius x3 and applies your Rend and Deep Wounds at 3x to
+// every enemy hit. Avalanche: a castable toggle that drops a 12-yard
+// Death and Decay-style circle at your target -- shield-slam-grade damage
+// and a 50% slow inside every second; recast to move it, recast on the
+// circle to dismiss it. +25% block chance while it is on the ground."
+//
+// Avalanche deliberately reuses Death and Decay (43265) instead of a new
+// spell_dbc row: the DBC row is verified single-rank and ground-target, so
+// the engine already owns "place a persistent circle at the clicked point",
+// and CLASS_PERK_GRANTS handles un-learning it on spec switch for free.
 // -------------------------------------------------------------------------
 void ThunderClapApplyBleeds(Player* player)
 {
@@ -2024,6 +2230,44 @@ void ThunderClapApplyBleeds(Player* player)
     g_reentryGuard.erase(guid);
 }
 
+// The 8-yard rupture behind every Shield Slam hit. Thunder Clap's own damage
+// component is the existing cheap AoE with the right footprint (radius index
+// 14 = 8yd at rank 8, verified from Spell.dbc), so the rupture simply casts
+// the player's TC rank triggered on themselves. Triggered casts never re-enter
+// OnPlayerSpellCast (the hook returns early on IsTriggered), so there is no
+// bleed-recursion path.
+void WarriorProtRupture(Player* player)
+{
+    if (!player || !player->IsAlive())
+        return;
+    if (uint32 const tc = BestOwned(player, SPELL_THUNDER_CLAP))
+        player->CastSpell(player, tc, true);
+}
+
+// "Shield Slams hit 3 additional times": three extra triggered copies of the
+// player's Shield Slam rank on top of the one they cast (Divine Storm shape),
+// each carrying its own rupture.
+void QueueProtShieldSlamExtraHits(Player* player)
+{
+    if (!player)
+        return;
+    ObjectGuid const guid = player->GetGUID();
+    for (uint32 i = 0; i < WARRIOR_PROT_SS_EXTRA_HITS; ++i)
+    {
+        player->m_Events.AddEventAtOffset([guid]()
+        {
+            Player* p = ObjectAccessor::FindPlayer(guid);
+            if (!LivingGear_SafeToCastOn(p))
+                return;
+            Unit* victim = p->GetVictim();
+            if (uint32 const ss = BestOwned(p, SPELL_SHIELD_SLAM_R1))
+                if (victim && p->IsValidAttackTarget(victim))
+                    p->CastSpell(victim, ss, true);
+            WarriorProtRupture(p);
+        }, std::chrono::milliseconds(WARRIOR_PROT_SS_HIT_DELAY_MS * (i + 1)));
+    }
+}
+
 void TryWarriorProtOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_WARRIOR_PROTECTION)
@@ -2036,8 +2280,110 @@ void TryWarriorProtOnCast(Player* player, Spell* spell)
         ClearCooldownAfterCast(player, SPELL_SHOCKWAVE, info->GetCategory());
         return;
     }
+    if (RankOf(info, SPELL_SHIELD_SLAM_R1))
+    {
+        QueueProtShieldSlamExtraHits(player);
+        WarriorProtRupture(player);
+        return;
+    }
+    if (RankOf(info, SPELL_DEATH_AND_DECAY))
+    {
+        ClearCooldownAfterCast(player, SPELL_DEATH_AND_DECAY, info->GetCategory());
+        // Recast while a circle is live = MOVE it: drop the old dynobj so the
+        // engine places the fresh one at the new target point. (Toggling off
+        // lives in TryWarriorProtAvalancheToggleOff, strict CheckCast pass.)
+        player->RemoveDynObject(SPELL_DEATH_AND_DECAY);
+        return;
+    }
     if (RankOf(info, SPELL_THUNDER_CLAP))
         ThunderClapApplyBleeds(player);
+}
+
+// "3x their normal damage": ThunderClapApplyBleeds applies the real Rend /
+// Deep Wounds auras, whose per-tick damage reaches
+// ModifyPeriodicDamageAurasTick (the Fury multiplier's hook, for the same
+// reason -- these are pure PERIODIC_DAMAGE auras, never direct damage).
+void ApplyProtTCBleedPeriodic(Unit* attacker, uint32& damage, SpellInfo const* info)
+{
+    if (!attacker || !damage || !info)
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_WARRIOR_PROTECTION)
+        return;
+    if (RankOf(info, SPELL_REND) || info->Id == SPELL_DEEP_WOUNDS_DOT)
+        damage *= 3;
+}
+
+// Avalanche's off-switch, strict CheckCast pass (Bladestorm toggle-off
+// discipline: removing the circle here means the cast never starts). Casting
+// ON TOP of the live circle dismisses it; casting anywhere else falls through
+// and TryWarriorProtOnCast's Death and Decay branch turns the cast into a move.
+void TryWarriorProtAvalancheToggleOff(Spell* spell, bool strict, SpellCastResult& res)
+{
+    if (!strict || res != SPELL_CAST_OK || !spell)
+        return;
+    Unit* caster = spell->GetCaster();
+    Player* player = caster ? caster->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_WARRIOR_PROTECTION)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_DEATH_AND_DECAY))
+        return;
+    DynamicObject* dyn = player->GetDynObject(SPELL_DEATH_AND_DECAY);
+    if (!dyn)
+        return;                     // no circle on the ground -> toggle ON
+    WorldLocation const* dest = spell->m_targets.GetDstPos();
+    if (!dest || dyn->GetExactDist(*dest) > AVALANCHE_TOGGLE_RANGE)
+        return;                     // casting elsewhere -> this cast moves it
+    player->RemoveDynObject(SPELL_DEATH_AND_DECAY);
+    player->RemoveAurasDueToSpell(SPELL_AVALANCHE_BLOCK_AURA);
+    res = SPELL_FAILED_DONT_REPORT; // toggle OFF, and the cast never happens
+}
+
+// Avalanche's ground: while the Death and Decay dynobj is live, every second
+// everything inside takes the player's Shield Slam (shield-slam-grade, rank-
+// correct via BestOwned) and the player's Hamstring (50% slow, rank-agnostic).
+// The +25% block chance passive is a Defensive Tactics (29559) aura with the
+// amount overridden to 25, refreshed from here while the circle lives.
+void TickWarriorProtAvalanche(Player* player, uint32& acc, uint32 diff)
+{
+    if (!player)
+        return;
+    bool const isProt = GetClassPerk(player) == SPELL_WARRIOR_PROTECTION && player->IsAlive();
+    DynamicObject* dyn = player->GetDynObject(SPELL_DEATH_AND_DECAY);
+    if (!isProt || !dyn)
+    {
+        // Expired, dismissed, or the perk was switched away: the passive goes
+        // with it. The aura's own ~30s duration bounds the worst case.
+        if (player->HasAura(SPELL_AVALANCHE_BLOCK_AURA))
+            player->RemoveAurasDueToSpell(SPELL_AVALANCHE_BLOCK_AURA);
+        acc = 0;
+        return;
+    }
+
+    acc += diff;
+    if (acc < AVALANCHE_TICK_MS)
+        return;
+    acc = 0;
+
+    if (!player->HasAura(SPELL_AVALANCHE_BLOCK_AURA))
+    {
+        int32 const blockPct = AVALANCHE_BLOCK_PCT;
+        player->CastCustomSpell(player, SPELL_AVALANCHE_BLOCK_AURA, &blockPct, nullptr, nullptr, true);
+    }
+
+    float radius = dyn->GetRadius();
+    if (radius <= 0.0f)
+        radius = CLASS_PERK_RANGE;
+    uint32 const hamstring = BestOwned(player, SPELL_HAMSTRING);
+    uint32 const ss = BestOwned(player, SPELL_SHIELD_SLAM_R1);
+    ForEachHostileNear(player, dyn, radius, [player, hamstring, ss](Unit* target)
+    {
+        if (hamstring)
+            player->CastSpell(target, hamstring, true);
+        if (ss)
+            player->CastSpell(target, ss, true);
+    });
 }
 
 void ApplyProtThunderClapRadius(Spell* spell, Player* player, SpellInfo const* info)
@@ -2045,7 +2391,7 @@ void ApplyProtThunderClapRadius(Spell* spell, Player* player, SpellInfo const* i
     if (!spell || !player || !info || GetClassPerk(player) != SPELL_WARRIOR_PROTECTION)
         return;
     if (RankOf(info, SPELL_THUNDER_CLAP))
-        spell->SetSpellValue(SPELLVALUE_RADIUS_MOD, RADIUS_MOD_DOUBLE);
+        spell->SetSpellValue(SPELLVALUE_RADIUS_MOD, RADIUS_MOD_TRIPLE);
 }
 
 void ApplyProtShockwaveDamage(Unit* attacker, int32& damage, SpellInfo const* info)
@@ -2142,17 +2488,27 @@ void ApplyShamanElementalChainLightningTargets(Spell* spell, Player* player, Spe
 }
 
 // -------------------------------------------------------------------------
-// Death Knight: Unholy (910152)
-// "Summon Gargoyle has no cooldown. Army of the Dead has no cooldown and
-// summons a 5-ghoul group instead of a uniform swarm: 1 tank (holds
-// threat), 1 healer (heals whoever in the group is lowest), 3 dps."
+// Death Knight: Unholy (910152) -- Kit 7, user-revised definition
+// "A permanent blight aura follows you: every 2 seconds it applies all of
+// your diseases to every enemy within 10 yards and refreshes any it already
+// infected. Your diseases deal 5x damage. Your Army of the Dead group
+// persists while you are in combat and despawns 60s after you leave it.
+// Your Gargoyle stays until it dies."
+// (Replaces the plan's original Desecration circle: 65142 does not exist in
+// this DBC, and the user's revision defines the kit as a disease aura.)
+// Existing, unchanged: Summon Gargoyle and Army of the Dead have no cooldown;
+// the Army group is 1 tank + 1 healer + 3 dps.
 //
-// SIMPLIFICATION: "Summon Gargoyle lasts until it dies instead of on a
-// timer" (as originally discussed) was dropped -- doing that safely means
-// reaching into TempSummon's internal despawn timer, which nothing else in
-// this codebase does and isn't proven safe here. Removing the cooldown
-// gets the same practical result (near-permanent uptime via re-summoning)
-// without touching that code at all.
+// ARMY PERSISTENCE is native, not tick-driven: the ghouls are summoned as
+// TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, whose TempSummon::Update resets
+// m_timer back to m_lifetime (60s) on every tick while in combat and only
+// counts down out of combat. Exactly the requested behavior -- indefinite in
+// combat, 60s after leaving -- with zero module-side timer management.
+//
+// GARGOYLE is refreshed from the blight tick below while the creature is
+// alive (its TempSummon timer is topped back up every 2s), so its vanilla
+// despawn timer can never run out. The timer drive uses the public
+// SetTimer() setter only (m_lifetime untouched).
 //
 // The vanilla ghoul swarm from Army of the Dead is left completely alone
 // (its own engine-side aura/summon logic in spell_dk.cpp is not touched --
@@ -2168,7 +2524,10 @@ void ApplyShamanElementalChainLightningTargets(Spell* spell, Player* player, Spe
 // share one look.
 static TempSummon* SpawnArmyGhoul(Player* player, uint32 entry, Position const& pos, uint32 healthPct)
 {
-    TempSummon* s = player->SummonCreature(entry, pos, TEMPSUMMON_TIMED_DESPAWN, ARMY_GROUP_DESPAWN_MS);
+    // OUT_OF_COMBAT: TempSummon::Update holds m_timer at m_lifetime while in
+    // combat and counts the 60s down only after combat ends (Kit 7 army
+    // persistence). No tick-side refresh needed for the group.
+    TempSummon* s = player->SummonCreature(entry, pos, TEMPSUMMON_TIMED_DESPAWN_OUT_OF_COMBAT, ARMY_GROUP_DESPAWN_MS);
     if (!s)
         return nullptr;
     s->SetOwnerGUID(player->GetGUID());
@@ -2239,6 +2598,75 @@ void TryDkUnholyOnCast(Player* player, Spell* spell)
             if (p->IsInWorld() && GetClassPerk(p) == SPELL_DK_UNHOLY)
                 SummonArmyGroup(p);
     }, std::chrono::milliseconds(1));
+}
+
+// Kit 7: the permanent blight aura, on the shared 2s module tick (same
+// cadence as the warlock/druid spread ticks; reentry guard like the rest).
+// Every tick, while the perk is selected and the DK is alive:
+// 1. Unholy Blight is re-cast on the DK as the client-visible blight marker
+//    (it IS the canonical blight shroud; re-casting also refreshes its own
+//    short duration, so the visual never drops).
+// 2. Every hostile within 10 yards gets all the DK's diseases cast on them.
+//    A target already carrying a disease gets it refreshed by the recast
+//    (the Insect Swarm refresh pattern in TickDruidBalanceInsectContagion:
+//    same-caster reapplication refreshes duration).
+// 3. A living Ebon Gargoyle (Kit 7 toggle persistence) has its TempSummon
+//    despawn timer topped back up, so it only ever dies to damage.
+void TickDkUnholyBlight(Player* player, TickState& st, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_DK_UNHOLY || !player->IsAlive())
+        return;
+    st.acc += diff;
+    if (st.acc < DK_UNHOLY_BLIGHT_TICK_MS)
+        return;
+    st.acc = 0;
+
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+
+    // Blood Plague/Frost Fever are single ids all ranks (see constants
+    // block); Ebon Plague is talent-only and may be unowned.
+    player->CastSpell(player,
+        player->HasSpell(SPELL_UNHOLY_BLIGHT_R2) ? SPELL_UNHOLY_BLIGHT_R2 : SPELL_UNHOLY_BLIGHT_R1, true);
+    uint32 const ebon = BestOwned(player, SPELL_EBON_PLAGUE_R1);
+    ForEachHostileInRange(player, DK_UNHOLY_BLIGHT_RANGE, [&](Unit* target)
+    {
+        player->CastSpell(target, SPELL_BLOOD_PLAGUE_DISEASE, true);
+        player->CastSpell(target, SPELL_FROST_FEVER_DISEASE, true);
+        if (ebon)
+            player->CastSpell(target, ebon, true);
+    });
+
+    // Gargoyle persistence: refresh the vanilla despawn timer of any living
+    // Ebon Gargoyle this player controls. Timer-only (SetTimer), so the
+    // summon type and lifetime are untouched; once the gargoyle is dead it
+    // stays dead, and a dead/not-summoned one is never resurrected here.
+    for (Unit* controlled : player->m_Controlled)
+        if (Creature* c = controlled->ToCreature())
+            if (c->GetEntry() == NPC_EBON_GARGOYLE)
+                if (TempSummon* s = c->ToTempSummon())
+                    s->SetTimer(DK_GARGOYLE_REFRESH_MS);
+
+    g_reentryGuard.erase(guid);
+}
+
+// Kit 7: disease damage x5. Fires from ModifyPeriodicDamageAurasTick, same
+// hook the Affliction DoT multiplier uses. The disease set is exactly the
+// one the blight aura applies -- Blood Plague, Frost Fever, Ebon Plague
+// (Unholy Blight's own pulse is the marker visual, not a disease, and is
+// deliberately left at its base damage).
+void ApplyDkUnholyDiseaseDamage(Unit* attacker, uint32& damage, SpellInfo const* info)
+{
+    if (!attacker || damage <= 0 || !info)
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_DK_UNHOLY)
+        return;
+    if (info->Id != SPELL_BLOOD_PLAGUE_DISEASE && info->Id != SPELL_FROST_FEVER_DISEASE
+        && !RankOf(info, SPELL_EBON_PLAGUE_R1))
+        return;
+    damage *= DK_UNHOLY_DISEASE_MULT;
 }
 
 // -------------------------------------------------------------------------
@@ -2524,6 +2952,105 @@ void ApplyHunterSurvivalExplosiveShotDamage(Unit* attacker, int32& damage, Spell
     damage *= 2;
 }
 
+// Shrapnel: every Explosive Shot hit on a target banks its (doubled) damage
+// and a stack -- 5 max, lifetime refreshed to 8s by every hit. The hit that
+// arrives while the target already carries 5 stacks detonates instead:
+// everything within 8 yards of the target takes damage equal to the five
+// banked ticks, then the counter clears and the cycle restarts. Same
+// rank/blast recognition as the x2 above (53352 is not in 53301's chain).
+void ApplyHunterSurvivalShrapnel(Unit* attacker, Unit* victim, int32& damage, SpellInfo const* info)
+{
+    if (!attacker || !victim || damage <= 0 || !info)
+        return;
+    if (info->Id != SPELL_EXPLOSIVE_SHOT_DAMAGE && !RankOf(info, SPELL_EXPLOSIVE_SHOT_R1))
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || GetClassPerk(player) != SPELL_HUNTER_SURVIVAL)
+        return;
+    uint32 const playerGuid = player->GetGUID().GetCounter();
+    uint32 const targetGuid = victim->GetGUID().GetCounter();
+    HunterShrapnel& track = g_shrapnel[playerGuid][targetGuid];
+    uint32 const now = uint32(GameTime::GetGameTime().count());
+    if (now >= track.expireS)
+    {
+        track.stacks = 0;
+        track.accDamage = 0;
+    }
+    if (track.stacks < SHRAPNEL_MAX_STACKS)
+    {
+        ++track.stacks;
+        track.accDamage += damage;
+        track.expireS = now + SHRAPNEL_LIFETIME_S;
+        return;
+    }
+    // Detonate. Clear BEFORE dealing the blast so a reentrant Explosive Shot
+    // tick can never read a half-consumed counter.
+    int32 const blast = track.accDamage;
+    g_shrapnel[playerGuid].erase(targetGuid);
+    if (blast <= 0)
+        return;
+    ForEachHostileNear(player, victim, SHRAPNEL_BLAST_RANGE, [player, blast](Unit* target)
+    {
+        Unit::DealDamage(player, target, uint32(blast), nullptr, SPELL_DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_FIRE, nullptr, false);
+    });
+}
+
+// Module tick for the persistent trap zones (2s cadence -- OnPlayerUpdate).
+// Each zone re-casts its trap spell at the recorded position every 10s, max
+// TRAP_ZONE_MAX_REARMS re-arms per placement, and only while at least one
+// enemy stands inside the zone's (doubled) blast radius, so nothing churns
+// in an empty room.
+float HunterTrapZoneRadius(Player* player, SpellInfo const* info);
+void TickHunterSurvivalTrapZones(Player* player, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_HUNTER_SURVIVAL)
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    auto it = g_trapZones.find(guid);
+    if (it == g_trapZones.end() || it->second.empty())
+        return;
+    std::vector<HunterTrapZone>& zones = it->second;
+    for (size_t i = 0; i < zones.size();)
+    {
+        HunterTrapZone& zone = zones[i];
+        SpellInfo const* trapInfo = sSpellMgr->GetSpellInfo(zone.spellId);
+        if (zone.mapId != player->GetMapId() || !trapInfo || zone.rearms >= TRAP_ZONE_MAX_REARMS)
+        {
+            zones.erase(zones.begin() + i);
+            continue;
+        }
+        zone.rearmAcc += diff;
+        if (zone.rearmAcc < TRAP_ZONE_REARM_MS)
+        {
+            ++i;
+            continue;
+        }
+        zone.rearmAcc = 0;
+        float const radius = HunterTrapZoneRadius(player, trapInfo);
+        bool enemyInside = false;
+        ForEachHostileNear(player, player,
+            player->GetDistance(zone.x, zone.y, zone.z) + radius,
+            [&zone, radius, &enemyInside](Unit* target)
+        {
+            if (!enemyInside && target->IsWithinDist2d(zone.x, zone.y, radius))
+                enemyInside = true;
+        });
+        if (!enemyInside)
+        {
+            ++i;
+            continue;
+        }
+        // Triggered cast: no GCD, no focus, no cooldown bookkeeping, and the
+        // cast hook above never sees it.
+        player->CastSpell(zone.x, zone.y, zone.z, zone.spellId, true);
+        ++zone.rearms;
+        ++i;
+    }
+    if (zones.empty())
+        g_trapZones.erase(guid);
+}
+
 bool IsHunterTrapSpell(SpellInfo const* info)
 {
     if (!info)
@@ -2536,14 +3063,190 @@ bool IsHunterTrapSpell(SpellInfo const* info)
     return false;
 }
 
+// The (doubled) blast radius of a trap spell, used both to size the persistent
+// zone's "is anyone standing in it" check and to bound the tick's search.
+float HunterTrapZoneRadius(Player* player, SpellInfo const* info)
+{
+    float radius = 0.0f;
+    if (!player || !info)
+        return radius;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (info->Effects[i].IsEffect() && info->Effects[i].HasRadius())
+            radius = std::max(radius, info->Effects[i].CalcRadius(player));
+    // Matches the perk's own x2 radius modifier (ApplyHunterSurvivalTrapRadius).
+    return std::max(5.0f, radius * HUNTER_TRAP_RADIUS_MULT);
+}
+
+void RecordHunterTrapZone(Player* player, SpellInfo const* info)
+{
+    uint32 const guid = player->GetGUID().GetCounter();
+    std::vector<HunterTrapZone>& zones = g_trapZones[guid];
+    // Hard cap: the oldest placement is dropped first once the hunter is
+    // holding TRAP_ZONE_MAX_LIVE zones.
+    if (zones.size() >= TRAP_ZONE_MAX_LIVE)
+        zones.erase(zones.begin());
+    HunterTrapZone zone;
+    zone.spellId = info->Id;
+    zone.mapId = player->GetMapId();
+    zone.x = player->GetPositionX();
+    zone.y = player->GetPositionY();
+    zone.z = player->GetPositionZ();
+    zone.rearmAcc = 0;
+    zone.rearms = 0;
+    zones.push_back(zone);
+}
+
+// -------------------------------------------------------------------------
+// Call of the Wilds bear: tank-flavored temp pet. Attached via
+// AIM_Initialize() on the hunter's pet's own entry (or the fallback bear
+// entry when there is no pet), so it needs no creature_template/ScriptName
+// row of its own -- same shape as npc_lg_temp_petAI above.
+// -------------------------------------------------------------------------
+struct npc_lg_wilds_bearAI : public ScriptedAI
+{
+    npc_lg_wilds_bearAI(Creature* c) : ScriptedAI(c) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_DEFENSIVE);
+        _threatTickMs = 0;
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        Unit* ownerUnit = me->GetOwner();
+        Player* owner = ownerUnit ? ownerUnit->ToPlayer() : nullptr;
+        if (!owner || !owner->IsInWorld() || !me->IsWithinDistInMap(owner, 60.0f))
+        {
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        if (!me->GetVictim())
+        {
+            if (Unit* attacker = me->getAttackerForHelper())
+            {
+                AttackStart(attacker);
+                HoldThreat(attacker);
+                DoMeleeAttackIfReady();
+                return;
+            }
+        }
+
+        Unit* ownerTarget = owner->GetSelectedUnit();
+        bool const ownerFighting = owner->IsInCombat() && ownerTarget && ownerTarget->IsAlive()
+            && owner->IsValidAttackTarget(ownerTarget);
+
+        if (!ownerFighting)
+        {
+            if (me->GetVictim())
+                me->AttackStop();
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+                me->GetMotionMaster()->MoveFollow(owner, 3.0f, frand(0.0f, 2.0f * float(M_PI)));
+            return;
+        }
+
+        if (me->GetVictim() != ownerTarget)
+            AttackStart(ownerTarget);
+        HoldThreat(ownerTarget);
+        // The spawn Taunt is one-off and threat keeps climbing from dots and
+        // heals after it, so re-assert top threat on whatever we are tanking.
+        if (_threatTickMs > diff)
+            _threatTickMs -= diff;
+        else
+        {
+            _threatTickMs = WILDS_BEAR_THREAT_TICK_MS;
+            if (Unit* victim = me->GetVictim())
+                HoldThreat(victim);
+        }
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    uint32 _threatTickMs = 0;
+
+    // Same raw-threat push the Army tank ghoul uses -- not a real Taunt cast,
+    // which bosses can resist or ignore.
+    void HoldThreat(Unit* target)
+    {
+        if (target && target->IsAlive())
+            target->GetThreatMgr().AddThreat(me, 500.0f, nullptr, true, true);
+    }
+};
+
+void SummonWildsBears(Player* player)
+{
+    if (!player || !player->IsInWorld())
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    // Refresh per cast: despawn any previous pair still standing rather than
+    // letting pairs pile up -- same one-slot-per-owner rule as g_bmPack.
+    auto old = g_wildsBears.find(guid);
+    if (old != g_wildsBears.end())
+    {
+        for (ObjectGuid const& g : old->second)
+            if (Creature* c = ObjectAccessor::GetCreature(*player, g))
+                c->DespawnOrUnsummon();
+        old->second.clear();
+    }
+    Pet* pet = player->GetPet();
+    uint32 const entry = pet ? pet->GetEntry() : NPC_WILDS_FALLBACK_BEAR;
+    uint32 const hp = std::max<uint32>(1, (pet ? pet->GetMaxHealth() : player->GetMaxHealth()) / 2);
+    std::vector<ObjectGuid>& bears = g_wildsBears[guid];
+    for (uint32 i = 0; i < WILDS_BEAR_COUNT; ++i)
+    {
+        Position p = player->GetPosition();
+        p.RelocateOffset({ frand(-3.0f, 3.0f), frand(-3.0f, 3.0f), 0.0f, 0.0f });
+        TempSummon* s = player->SummonCreature(entry, p, TEMPSUMMON_TIMED_DESPAWN, WILDS_BEAR_DESPAWN_MS);
+        if (!s)
+            continue;
+        s->SetOwnerGUID(player->GetGUID());
+        s->SetFaction(player->GetFaction());
+        s->SetLevel(player->GetLevel());
+        s->SetMaxHealth(hp);
+        s->SetHealth(hp);
+        s->AIM_Initialize(new npc_lg_wilds_bearAI(s));
+        bears.push_back(s->GetGUID());
+        // Taunt on spawn: a real Taunt cast at everything nearby, backed by
+        // the raw threat push so a resisted/immune Taunt never leaves the
+        // pair standing idle.
+        ForEachHostileInRange(player, WILDS_BEAR_TAUNT_RANGE, [s](Unit* target)
+        {
+            if (!target || !target->IsAlive())
+                return;
+            s->CastSpell(target, SPELL_TAUNT, true);
+            target->GetThreatMgr().AddThreat(s, 1000.0f, nullptr, true, true);
+        });
+    }
+}
+
 void TryHunterSurvivalOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_HUNTER_SURVIVAL)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
+    if (!info)
+        return;
+    if (info->Id == SPELL_CALL_OF_WILDS)
+    {
+        // Deferred for the same reentrancy reason as the BM pack summon --
+        // see TryHunterBmOnCast above.
+        ObjectGuid playerGuid = player->GetGUID();
+        player->m_Events.AddEventAtOffset([playerGuid]()
+        {
+            if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+                if (p->IsInWorld() && GetClassPerk(p) == SPELL_HUNTER_SURVIVAL)
+                    SummonWildsBears(p);
+        }, std::chrono::milliseconds(1));
+        return;
+    }
     if (!IsHunterTrapSpell(info))
         return;
     ClearCooldownAfterCast(player, info->Id, info->GetCategory());
+    // Persistent zone: remember where this trap went down so the module tick
+    // can re-cast the trap at the same spot. Re-arms are triggered casts, so
+    // they never land here (OnPlayerSpellCast skips triggered spells).
+    RecordHunterTrapZone(player, info);
 }
 
 void ApplyHunterSurvivalTrapRadius(Spell* spell, Player* player, SpellInfo const* info)
@@ -2567,10 +3270,60 @@ void ApplyHunterSurvivalTrapImmunity(Unit* attacker, Unit* victim, int32& damage
 }
 
 // -------------------------------------------------------------------------
-// Shaman: Enhancement (910155)
+// Shaman: Enhancement (910155) -- "The Storm Caller"
 // "Feral Spirit is a free toggle: your 2 spirit wolves never expire while
-// it's active and deal double damage. Stormstrike has no cooldown."
+// it's active and deal double damage, and 25% of their strikes call down a
+// free Lightning Bolt on the target. Stormstrike has no cooldown and marks
+// its target Charged for 8 sec; Lightning Bolt and Chain Lightning on a
+// Charged target echo a second bolt at 50% damage and refresh the charge.
+// Static Field is a free toggle: a 10-yard storm circle follows you,
+// shocking everything inside every 2 sec for nature damage scaled with
+// attack power."
 // -------------------------------------------------------------------------
+
+// Stormstrike marks: char guid -> target low guid -> expiry (ms timer).
+// Expired entries are pruned whenever a new mark lands.
+void MarkShamanTargetCharged(Player* player, Unit* target)
+{
+    if (!player || !target)
+        return;
+    uint32 const now = getMSTime();
+    auto& charges = g_shamanCharged[player->GetGUID().GetCounter()];
+    for (auto itr = charges.begin(); itr != charges.end();)
+    {
+        if (itr->second <= now)
+            itr = charges.erase(itr);
+        else
+            ++itr;
+    }
+    charges[target->GetGUID().GetCounter()] = now + SHAMAN_CHARGE_DURATION_MS;
+}
+
+bool IsTargetCharged(Player* player, Unit* target)
+{
+    if (!player || !target)
+        return false;
+    auto const itr = g_shamanCharged.find(player->GetGUID().GetCounter());
+    if (itr == g_shamanCharged.end())
+        return false;
+    uint32 const now = getMSTime();
+    auto const exp = itr->second.find(target->GetGUID().GetCounter());
+    return exp != itr->second.end() && exp->second > now;
+}
+
+// Static Field is ON while the shaman's OWN Thorns aura is up. Own-cast only:
+// a Thorns buff from a friendly druid must never switch the field on.
+Aura* GetOwnStaticFieldAura(Player* player)
+{
+    if (!player)
+        return nullptr;
+    for (uint32 id = SPELL_THORNS_R1; id; id = sSpellMgr->GetNextSpellInChain(id))
+        if (Aura* aura = player->GetAura(id))
+            if (aura->GetCasterGUID() == player->GetGUID())
+                return aura;
+    return nullptr;
+}
+
 void TryShamanEnhOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_SHAMAN_ENHANCEMENT)
@@ -2588,7 +3341,47 @@ void TryShamanEnhOnCast(Player* player, Spell* spell)
     if (info->Id == SPELL_STORMSTRIKE)
     {
         ClearCooldownAfterCast(player, SPELL_STORMSTRIKE, info->GetCategory());
+        if (Unit* target = spell->m_targets.GetUnitTarget())
+            MarkShamanTargetCharged(player, target);
+        return;
     }
+    // Static Field toggle ON: Thorns casts free and off cooldown; the aura
+    // applying IS the on-state (GetOwnStaticFieldAura observes it).
+    if (RankOf(info, SPELL_THORNS_R1))
+    {
+        if (int32 const cost = spell->GetPowerCost())
+            player->ModifyPower(POWER_MANA, cost);
+        ClearCooldownAfterCast(player, info->Id, info->GetCategory());
+        return;
+    }
+    // Charged bolt echo.
+    if (!RankOf(info, SPELL_LIGHTNING_BOLT_R1) && !RankOf(info, SPELL_CHAIN_LIGHTNING_R1))
+        return;
+    Unit* target = spell->m_targets.GetUnitTarget();
+    if (!target || !IsTargetCharged(player, target))
+        return;
+    // Same rank as the hand cast. School Damage is effect 0 on both chains and
+    // a DieSides-1 effect's calculated value is BasePoints + 1, so the echo's
+    // BASE_POINT0 override is (BasePoints + 1) * 50%. The echo is a TRIGGERED
+    // cast and OnPlayerSpellCast early-returns on those, so it can never reach
+    // this code again -- that is the recursion protection.
+    int32 const bp = int32(float(info->Effects[0].BasePoints + 1) * SHAMAN_ECHO_PCT);
+    ObjectGuid playerGuid = player->GetGUID();
+    ObjectGuid targetGuid = target->GetGUID();
+    uint32 const boltRank = info->Id;
+    // Deferred like the BM pack: this hook fires midway through Spell::cast().
+    player->m_Events.AddEventAtOffset([playerGuid, targetGuid, boltRank, bp]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !p->IsInWorld() || GetClassPerk(p) != SPELL_SHAMAN_ENHANCEMENT)
+            return;
+        Unit* victim = ObjectAccessor::GetUnit(*p, targetGuid);
+        if (!victim || !victim->IsAlive() || !p->IsValidAttackTarget(victim))
+            return;
+        p->CastCustomSpell(victim, boltRank, &bp, nullptr, nullptr, true);
+        // The echo refreshes the charge.
+        MarkShamanTargetCharged(p, victim);
+    }, std::chrono::milliseconds(1));
 }
 
 void TickShamanEnhWolves(Player* player)
@@ -2600,6 +3393,59 @@ void TickShamanEnhWolves(Player* player)
     if (Aura* aura = player->GetAura(SPELL_FERAL_SPIRIT))
         if (aura->GetDuration() >= 0 && aura->GetDuration() < 10000)
             aura->SetDuration(45000);
+}
+
+// Static Field heartbeat: while the field is on, everything within 10 yards
+// takes a nature shock every 2 sec scaled with the shaman's attack power
+// (same AP access as the core's weapon-damage math). The field is
+// player-centered, so unlike Consecration there is no dynobject to relocate
+// on a cadence -- the circle follows by construction. Thorns is a 10-minute
+// aura, so unlike the wolf refresh nothing expires mid-fight, but the
+// duration is topped up anyway so the toggle never silently dies.
+void TickShamanEnhStaticField(Player* player, TickState& st, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_SHAMAN_ENHANCEMENT || !player->IsAlive())
+        return;
+    Aura* field = GetOwnStaticFieldAura(player);
+    if (!field)
+        return; // Static Field toggled off
+    if (field->GetDuration() >= 0 && field->GetDuration() < 60000)
+        field->SetDuration(600000);
+    st.acc += diff;
+    if (st.acc < SHAMAN_STATIC_FIELD_TICK_MS)
+        return;
+    st.acc = 0;
+    uint32 const damage = uint32(float(player->GetTotalAttackPowerValue(BASE_ATTACK)) * SHAMAN_STATIC_FIELD_AP_PCT);
+    if (!damage)
+        return;
+    ForEachHostileInRange(player, SHAMAN_STATIC_FIELD_RANGE, [player, damage](Unit* unit)
+    {
+        if (!unit || !unit->IsAlive() || !player->IsValidAttackTarget(unit))
+            return;
+        Unit::DealDamage(player, unit, damage, nullptr, SPELL_DIRECT_DAMAGE,
+            SPELL_SCHOOL_MASK_NATURE, nullptr, false);
+    });
+}
+
+// The off-switch, in CheckCast's strict pass (same ordering argument as the
+// Starfall toggle): recasting Thorns while the field is up switches it off
+// and the cast never starts.
+void TryShamanEnhStaticFieldToggleOff(Spell* spell, bool strict, SpellCastResult& res)
+{
+    if (!strict || res != SPELL_CAST_OK || !spell)
+        return;
+    Unit* caster = spell->GetCaster();
+    Player* player = caster ? caster->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_SHAMAN_ENHANCEMENT)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_THORNS_R1))
+        return;
+    Aura* field = GetOwnStaticFieldAura(player);
+    if (!field)
+        return;                     // not running -> let the cast through, toggle ON
+    player->RemoveAurasDueToSpell(field->GetId());
+    res = SPELL_FAILED_DONT_REPORT; // toggle OFF, and the cast never happens
 }
 
 bool IsOwnedSpiritWolf(Unit* unit, uint32& ownerGuidOut)
@@ -2620,7 +3466,34 @@ void ApplyShamanEnhWolfMeleeDamage(Unit* attacker, uint32& damage)
         return;
     Player* owner = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(ownerGuid));
     if (owner && GetClassPerk(owner) == SPELL_SHAMAN_ENHANCEMENT)
+    {
         damage *= 2;
+        // "each wolf strike has 25% to call a mini lightning strike on its
+        // target" -- the shaman fires a free triggered Lightning Bolt (best
+        // owned rank) at the wolf's victim. Deferred into the owner's event
+        // queue: casting synchronously from inside a melee-damage hook is the
+        // reentry the Starfall proc comment warns about.
+        if (roll_chance_i(SHAMAN_WOLF_BOLT_CHANCE))
+        {
+            Unit* victim = attacker->GetVictim();
+            if (victim && victim->IsAlive() && owner->IsValidAttackTarget(victim))
+            {
+                uint32 const bolt = BestOwnedOrFirst(owner, SPELL_LIGHTNING_BOLT_R1);
+                ObjectGuid ownerGuidObj = owner->GetGUID();
+                ObjectGuid victimGuid = victim->GetGUID();
+                owner->m_Events.AddEventAtOffset([ownerGuidObj, victimGuid, bolt]()
+                {
+                    Player* p = ObjectAccessor::FindPlayer(ownerGuidObj);
+                    if (!p || !p->IsInWorld() || GetClassPerk(p) != SPELL_SHAMAN_ENHANCEMENT)
+                        return;
+                    Unit* target = ObjectAccessor::GetUnit(*p, victimGuid);
+                    if (!target || !target->IsAlive() || !p->IsValidAttackTarget(target))
+                        return;
+                    p->CastSpell(target, bolt, true);
+                }, std::chrono::milliseconds(SHAMAN_WOLF_BOLT_DELAY_MS));
+            }
+        }
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -2829,46 +3702,263 @@ void TryWarlockAfflictionOnCast(Player* player, Spell* spell)
 }
 
 // -------------------------------------------------------------------------
-// Warlock: Demonology (910158)
+// Warlock: Demonology (910158) -- "The Imp Lord"
 // "Metamorphosis has no cooldown or shard cost. Your demon pet's damage is
-// doubled."
+// doubled. Fel Domination is now your Imp Legion toggle: summon 8 imps
+// cloned from your own imp at 35% health for 30 sec; recast to refresh,
+// recast again to dismiss. Metamorphosis upgrades the pack to felguards
+// until it fades."
 //
 // SIMPLIFICATION: "auto-resummons if it dies" was dropped -- there's no
 // cheap way to know which summon spell produced the current pet (Imp vs
 // Voidwalker vs Succubus vs Felhunter vs Felguard) without tracking every
 // summon cast, and getting that wrong would resummon the wrong demon. Not
 // worth it for one perk's flavor clause.
+//
+// The doubling on the MAIN pet stays unconditional (not gated on the legion
+// being up) -- the doubling predates the pack and gating it would have
+// nerfed the perk's core clause.
 // -------------------------------------------------------------------------
+struct npc_lg_demo_legionAI : public ScriptedAI
+{
+    npc_lg_demo_legionAI(Creature* c, bool castFirebolt) : ScriptedAI(c),
+        _castFirebolt(castFirebolt), _boltAcc(urand(500, DEMO_IMP_FIREBOLT_COOLDOWN_MS)) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_DEFENSIVE);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        Unit* ownerUnit = me->GetOwner();
+        Player* owner = ownerUnit ? ownerUnit->ToPlayer() : nullptr;
+        if (!owner || !owner->IsInWorld() || !me->IsWithinDistInMap(owner, 60.0f))
+        {
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        // Imp firebolt: data-driven, same store the core's own pet spell
+        // loading uses (Pet::InitLevelupSpellsForLevel -> SpellMgr's
+        // SkillLineAbility map for CREATURE_FAMILY_IMP). rbegin() is the
+        // highest SpellLevel entry, i.e. the level-80 rank. Felguard form
+        // melee-only.
+        if (_castFirebolt && _boltAcc < DEMO_IMP_FIREBOLT_COOLDOWN_MS)
+            _boltAcc += diff;
+
+        if (_castFirebolt && _boltAcc >= DEMO_IMP_FIREBOLT_COOLDOWN_MS
+            && me->GetVictim() && !me->HasUnitState(UNIT_STATE_CASTING)
+            && me->IsWithinDistInMap(me->GetVictim(), 30.0f))
+        {
+            if (PetLevelupSpellSet const* bolts = sSpellMgr->GetPetLevelupSpellList(CREATURE_FAMILY_IMP))
+            {
+                if (!bolts->empty())
+                {
+                    _boltAcc = 0;
+                    me->CastSpell(me->GetVictim(), bolts->rbegin()->second, true);
+                }
+            }
+        }
+
+        if (!me->GetVictim())
+        {
+            if (Unit* attacker = me->getAttackerForHelper())
+            {
+                AttackStart(attacker);
+                DoMeleeAttackIfReady();
+                return;
+            }
+        }
+        Unit* ownerTarget = owner->GetSelectedUnit();
+        bool const ownerFighting = owner->IsInCombat() && ownerTarget && ownerTarget->IsAlive()
+            && owner->IsValidAttackTarget(ownerTarget);
+        if (!ownerFighting)
+        {
+            if (me->GetVictim())
+                me->AttackStop();
+            if (me->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE)
+                me->GetMotionMaster()->MoveFollow(owner, 4.0f, frand(0.0f, 2.0f * float(M_PI)));
+            return;
+        }
+        if (me->GetVictim() != ownerTarget)
+            AttackStart(ownerTarget);
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    bool _castFirebolt;
+    uint32 _boltAcc;
+};
+
+void DespawnWarlockDemoLegion(Player* player)
+{
+    auto itr = g_demoLegion.find(player->GetGUID().GetCounter());
+    if (itr == g_demoLegion.end())
+        return;
+    for (ObjectGuid const& g : itr->second.pack)
+        if (Creature* c = ObjectAccessor::GetCreature(*player, g))
+            c->DespawnOrUnsummon();
+    itr->second.pack.clear();
+    itr->second.metaForm = false;
+}
+
+void SummonWarlockDemoLegion(Player* player, bool meta)
+{
+    if (!player || !player->IsInWorld())
+        return;
+    DespawnWarlockDemoLegion(player);
+    WarlockDemoLegion& state = g_demoLegion[player->GetGUID().GetCounter()];
+    // Clone the player's own imp entry when they actually have one up;
+    // otherwise the default warlock imp summon entry (688 -> 416, verified
+    // in the DBC -- see the comment at g_demoLegion).
+    Pet* pet = player->GetPet();
+    uint32 const entry = meta ? DEMO_FELGUARD_ENTRY
+        : (pet && pet->GetEntry() == DEMO_IMP_ENTRY) ? pet->GetEntry() : DEMO_IMP_ENTRY;
+    for (uint32 i = 0; i < DEMO_LEGION_SIZE; ++i)
+    {
+        Position p = player->GetPosition();
+        p.RelocateOffset({ frand(-3.0f, 3.0f), frand(-3.0f, 3.0f), 0.0f, 0.0f });
+        TempSummon* s = player->SummonCreature(entry, p, TEMPSUMMON_TIMED_DESPAWN, DEMO_LEGION_DESPAWN_MS);
+        if (!s)
+            continue;
+        s->SetOwnerGUID(player->GetGUID());
+        s->SetFaction(player->GetFaction());
+        s->SetLevel(player->GetLevel());
+        uint32 const base = std::max<uint32>(s->GetMaxHealth(), pet ? pet->GetMaxHealth() : 0);
+        uint32 const hp = std::max<uint32>(1, base * DEMO_LEGION_HP_PCT / 100);
+        s->SetMaxHealth(hp);
+        s->SetHealth(hp);
+        s->AIM_Initialize(new npc_lg_demo_legionAI(s, !meta));
+        state.pack.push_back(s->GetGUID());
+    }
+    state.metaForm = meta;
+}
+
+// Prune dead members and observe Meta's aura. Runs from the per-player
+// update tick (see TickWarriorArmsBladestorm for why the tick observes and
+// never interferes with an aura's lifetime): when Meta drops, the felguard
+// pack is re-summoned as imps. No aura is removed here, so none of the
+// CheckCast-after-removal reentrancy traps are reachable.
+void TickWarlockDemo(Player* player)
+{
+    if (!player || GetClassPerk(player) != SPELL_WARLOCK_DEMONOLOGY)
+        return;
+    WarlockDemoLegion& state = g_demoLegion[player->GetGUID().GetCounter()];
+    std::erase_if(state.pack, [player](ObjectGuid const& g)
+    {
+        Creature const* c = ObjectAccessor::GetCreature(*player, g);
+        return !c || !c->IsAlive();
+    });
+    if (state.metaForm && !player->HasAura(SPELL_METAMORPHOSIS))
+    {
+        state.metaForm = false;
+        if (!state.pack.empty())
+            SummonWarlockDemoLegion(player, false);
+    }
+}
+
+// Toggle: Fel Domination (18708) summons/refreshes the legion when it is
+// down; when it is up, the STRICT OnSpellCheckCast pass despawns it and
+// kills the cast (same shape as TryWarriorArmsBladestormToggleOff).
+void TryWarlockDemoLegionToggleOff(Spell* spell, bool strict, SpellCastResult& res)
+{
+    if (!strict || res != SPELL_CAST_OK || !spell)
+        return;
+    Unit* caster = spell->GetCaster();
+    Player* player = caster ? caster->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_WARLOCK_DEMONOLOGY)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || info->Id != SPELL_FEL_DOMINATION)
+        return;
+    auto itr = g_demoLegion.find(player->GetGUID().GetCounter());
+    if (itr == g_demoLegion.end() || itr->second.pack.empty())
+        return;                     // no legion up -> let the cast through, toggle ON
+    DespawnWarlockDemoLegion(player);
+    res = SPELL_FAILED_DONT_REPORT; // toggle OFF, and the cast never happens
+}
+
 void TryWarlockDemoOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_WARLOCK_DEMONOLOGY)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
-    if (!info || info->Id != SPELL_METAMORPHOSIS)
+    if (!info)
+        return;
+    if (info->Id == SPELL_FEL_DOMINATION)
+    {
+        if (int32 const cost = spell->GetPowerCost())
+            player->ModifyPower(POWER_MANA, cost);
+        ClearCooldownAfterCast(player, SPELL_FEL_DOMINATION, info->GetCategory());
+        // It is a pure toggle here -- strip Fel Domination's native
+        // instant-next-summon buff so the button reads as one thing.
+        player->RemoveAurasDueToSpell(SPELL_FEL_DOMINATION);
+        // Deferred for the same reason as the BM pack -- see TryHunterBmOnCast.
+        ObjectGuid playerGuid = player->GetGUID();
+        player->m_Events.AddEventAtOffset([playerGuid]()
+        {
+            if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+                if (p->IsInWorld() && GetClassPerk(p) == SPELL_WARLOCK_DEMONOLOGY)
+                    SummonWarlockDemoLegion(p, false);
+        }, std::chrono::milliseconds(1));
+        return;
+    }
+    if (info->Id != SPELL_METAMORPHOSIS)
         return;
     if (int32 const cost = spell->GetPowerCost())
         player->ModifyPower(POWER_MANA, cost);
     ClearCooldownAfterCast(player, SPELL_METAMORPHOSIS, info->GetCategory());
+    // Meta upgrades an alive legion to felguards for its duration; the
+    // revert runs in TickWarlockDemo when the aura drops.
+    auto itr = g_demoLegion.find(player->GetGUID().GetCounter());
+    if (itr != g_demoLegion.end() && !itr->second.pack.empty() && !itr->second.metaForm)
+    {
+        itr->second.metaForm = true;
+        ObjectGuid playerGuid = player->GetGUID();
+        player->m_Events.AddEventAtOffset([playerGuid]()
+        {
+            if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+                if (p->IsInWorld() && GetClassPerk(p) == SPELL_WARLOCK_DEMONOLOGY && p->HasAura(SPELL_METAMORPHOSIS))
+                    SummonWarlockDemoLegion(p, true);
+        }, std::chrono::milliseconds(1));
+    }
+}
+
+// The doubling covers the main demon pet AND every living legion member --
+// their owner-attributed spell damage (the imps' firebolts) and melee both
+// route through these two hooks, which previously gated on GetPet() only
+// and never saw the temp-summoned pack.
+Player* GetWarlockDemoDoublingOwner(Unit const* attacker)
+{
+    if (!attacker)
+        return nullptr;
+    Unit* owner = attacker->GetOwner();
+    Player* player = owner ? owner->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_WARLOCK_DEMONOLOGY)
+        return nullptr;
+    if (player->GetPet() == attacker)
+        return player;              // main demon: unconditional, as before
+    auto itr = g_demoLegion.find(player->GetGUID().GetCounter());
+    if (itr == g_demoLegion.end())
+        return nullptr;
+    ObjectGuid const attackerGuid = attacker->GetGUID();
+    for (ObjectGuid const& packGuid : itr->second.pack)
+        if (packGuid == attackerGuid)
+            return player;
+    return nullptr;
 }
 
 void ApplyWarlockDemoPetDamage(Unit* attacker, uint32& damage)
 {
-    if (!attacker || !damage)
-        return;
-    Unit* owner = attacker->GetOwner();
-    Player* player = owner ? owner->ToPlayer() : nullptr;
-    if (!player || player->GetPet() != attacker || GetClassPerk(player) != SPELL_WARLOCK_DEMONOLOGY)
+    if (!GetWarlockDemoDoublingOwner(attacker))
         return;
     damage *= 2;
 }
 
 void ApplyWarlockDemoPetSpellDamage(Unit* attacker, int32& damage)
 {
-    if (!attacker || damage <= 0)
-        return;
-    Unit* owner = attacker->GetOwner();
-    Player* player = owner ? owner->ToPlayer() : nullptr;
-    if (!player || player->GetPet() != attacker || GetClassPerk(player) != SPELL_WARLOCK_DEMONOLOGY)
+    if (damage <= 0 || !GetWarlockDemoDoublingOwner(attacker))
         return;
     damage *= 2;
 }
@@ -3598,24 +4688,174 @@ void TryPriestHolyOnCast(Player* player, Spell* spell)
 }
 
 // -------------------------------------------------------------------------
-// Priest: Shadow (910165)
-// "Shadowfiend has no cooldown. Mind Flay deals quadruple damage."
+// Priest: Shadow (910165) -- "The Void Choir"
+// "Shadowfiend has no cooldown. Mind Flay deals quadruple damage. Every
+// Mind Flay channel sings with two void tendrils. Mind Blast detonates your
+// Shadow Word: Pain -- its remaining duration dealt at once, then refreshed
+// to full. Voidform (toggle): a free Mind Blast at your target every 3 sec."
 //
-// SIMPLIFICATION: "up to 3 out at once" was dropped -- no cooldown already
-// gets near-permanent uptime from a single fiend via spam-recast, and a
-// real "3 simultaneous fiends" would mean bypassing the engine's one-
-// controlled-minion-slot rule the same way the Army of the Dead group does
-// with brand new creatures, which felt like more risk than one perk's
-// flavor clause was worth here.
+// Tendrils are cloned from the Shadowfiend's own summon entry (19668, read
+// out of Spell.dbc 34433's SUMMON effect), given the shared temp-pet AI, and
+// capped at 6 alive per priest with oldest-first despawn -- the exact
+// discipline SummonBmPack uses. Shadowform (15473) is the Voidform toggle
+// vehicle: an existing permanent aura-bearing castable, so the on-state is
+// just "is the aura up" and the off-switch is a STRICT OnSpellCheckCast pass
+// that removes it and fails the recast with SPELL_FAILED_DONT_REPORT.
 // -------------------------------------------------------------------------
+void SummonVoidTendrils(Player* player)
+{
+    if (!player || !player->IsInWorld())
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    std::vector<ObjectGuid>& pack = g_voidTendrils[guid];
+    while (pack.size() >= PRIEST_VOID_TENDRIL_MAX_ALIVE)
+    {
+        if (Creature* oldest = ObjectAccessor::GetCreature(*player, pack.front()))
+            oldest->DespawnOrUnsummon();
+        pack.erase(pack.begin());
+    }
+    uint32 const hp = std::max<uint32>(1, player->GetMaxHealth() / 5); // 20%
+    for (uint32 i = 0; i < PRIEST_VOID_TENDRIL_COUNT; ++i)
+    {
+        Position p = player->GetPosition();
+        p.RelocateOffset({ frand(-3.0f, 3.0f), frand(-3.0f, 3.0f), 0.0f, 0.0f });
+        TempSummon* s = player->SummonCreature(PRIEST_SHADOWFIEND_ENTRY, p,
+            TEMPSUMMON_TIMED_DESPAWN, PRIEST_VOID_TENDRIL_LIFETIME_MS);
+        if (!s)
+            continue;
+        s->SetOwnerGUID(player->GetGUID());
+        s->SetFaction(player->GetFaction());
+        s->SetLevel(player->GetLevel());
+        s->SetMaxHealth(hp);
+        s->SetHealth(hp);
+        s->AIM_Initialize(new npc_lg_temp_petAI(s));
+        pack.push_back(s->GetGUID());
+    }
+}
+
 void TryPriestShadowOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_PRIEST_SHADOW)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
-    if (!info || info->Id != SPELL_SHADOWFIEND)
+    if (!info)
         return;
-    ClearCooldownAfterCast(player, SPELL_SHADOWFIEND, info->GetCategory());
+    if (info->Id == SPELL_SHADOWFIEND)
+        ClearCooldownAfterCast(player, SPELL_SHADOWFIEND, info->GetCategory());
+    if (!RankOf(info, SPELL_MIND_FLAY_R1))
+        return;
+    // Deferred like the BM pack: this hook fires midway through Spell::cast(),
+    // so the summons wait one tick.
+    ObjectGuid playerGuid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([playerGuid]()
+    {
+        if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+            if (p->IsInWorld() && GetClassPerk(p) == SPELL_PRIEST_SHADOW)
+                SummonVoidTendrils(p);
+    }, std::chrono::milliseconds(1));
+}
+
+// Mind Blast on a target carrying the priest's own Shadow Word: Pain
+// detonates it -- the Envenom detonator math (TryRogueAssassinationDetonate):
+// remaining duration's worth of ticks dealt at once, then the DoT is put
+// back at full duration. Single target by design: the blast cashes in what
+// it hits, it is not an AoE cleanse.
+void TryPriestShadowMindBlastDetonate(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_PRIEST_SHADOW)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_MIND_BLAST_R1))
+        return;
+    Unit* target = spell->m_targets.GetUnitTarget();
+    if (!target || !target->IsAlive() || !player->IsValidAttackTarget(target))
+        return;
+
+    ObjectGuid const owner = player->GetGUID();
+    // Collect first: dealing damage can kill the target and invalidate the
+    // aura list mid-walk (the discipline the Envenom detonator established).
+    std::vector<Aura*> pending;
+    for (AuraEffect* eff : target->GetAuraEffectsByType(SPELL_AURA_PERIODIC_DAMAGE))
+    {
+        Aura* aura = eff->GetBase();
+        if (!aura || aura->GetCasterGUID() != owner)
+            continue;
+        if (!RankOf(aura->GetSpellInfo(), SPELL_SW_PAIN_R1))
+            continue;
+        if (aura->GetDuration() <= 0 || eff->GetAmplitude() <= 0)
+            continue;
+        pending.push_back(aura);
+    }
+
+    for (Aura* aura : pending)
+    {
+        if (!target->IsAlive())
+            break;
+        AuraEffect* damEff = aura->GetEffect(0); // SW:P effect 0 is the periodic damage
+        if (!damEff)
+            continue;
+        int32 const period = damEff->GetAmplitude();
+        int32 const left = aura->GetDuration();
+        int32 const ticks = left / period;
+        if (ticks <= 0)
+            continue;
+        int32 const damage = damEff->GetAmount() * ticks;
+        Unit::DealDamage(player, target, uint32(std::max(0, damage)), nullptr,
+            SPELL_DIRECT_DAMAGE, aura->GetSpellInfo()->GetSchoolMask(),
+            aura->GetSpellInfo(), false);
+        // Refreshed to full rather than consumed -- detonation, not dispel.
+        if (Aura* again = target->GetAura(aura->GetId(), owner))
+            again->RefreshDuration();
+    }
+}
+
+// The off-switch, in CheckCast's strict pass (same ordering argument as the
+// Starfall toggle): recasting Shadowform while it is up turns Voidform off
+// and the cast never starts.
+void TryPriestShadowVoidformToggleOff(Spell* spell, bool strict, SpellCastResult& res)
+{
+    if (!strict || res != SPELL_CAST_OK || !spell)
+        return;
+    Unit* caster = spell->GetCaster();
+    Player* player = caster ? caster->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_PRIEST_SHADOW)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_SHADOWFORM) || !HasAuraRankOf(player, SPELL_SHADOWFORM))
+        return;                     // not running -> let the cast through, toggle ON
+    player->RemoveAurasDueToSpell(SPELL_SHADOWFORM);
+    res = SPELL_FAILED_DONT_REPORT; // toggle OFF, and the cast never happens
+}
+
+// Voidform's on-state heartbeat: while Shadowform is up, fire a free
+// triggered Mind Blast at the priest's current target every 3s. Shadowform's
+// duration is permanent (-1), so unlike Starfall nothing needs refreshing --
+// the aura observation is just the gate. Skip while the priest is mid-cast
+// or channeling so the free blast never clips a Mind Flay channel. Triggered
+// casts early-return from OnPlayerSpellCast, so the free blast cannot
+// recursively detonate (or proc anything else that fires from the cast hook).
+void TickPriestShadowVoidform(Player* player, TickState& st, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_PRIEST_SHADOW || !player->IsAlive())
+        return;
+    if (!HasAuraRankOf(player, SPELL_SHADOWFORM))
+        return; // Voidform off
+    st.acc += diff;
+    if (st.acc < PRIEST_VOID_TICK_MS)
+        return;
+    st.acc = 0;
+    if (player->IsNonMeleeSpellCast(false))
+        return;
+    Unit* target = player->GetSelectedUnit();
+    if (!target || !target->IsAlive() || !player->IsValidAttackTarget(target))
+        target = player->GetVictim(); // #96: GetVictim fallback for target-driven casters
+    if (!target || !target->IsAlive() || !player->IsValidAttackTarget(target))
+        return;
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+    player->CastSpell(target, BestOwnedOrFirst(player, SPELL_MIND_BLAST_R1), true);
+    g_reentryGuard.erase(guid);
 }
 
 // Mind Flay's damage arrives as its PERIODIC_TRIGGER_SPELL_WITH_VALUE effect
@@ -3938,6 +5178,7 @@ public:
         g_bladestormTick.erase(guid);
         g_eclipseTick.erase(guid);
         g_insectTick.erase(guid);
+        g_dkUnholyTick.erase(guid); // Kit 7 Unholy blight tick state
         g_rejuvTick.erase(guid);
         auto army = g_armyGroup.find(guid);
         if (army != g_armyGroup.end())
@@ -3954,6 +5195,25 @@ public:
                 if (Creature* c = ObjectAccessor::GetCreature(*player, g))
                     c->DespawnOrUnsummon();
             g_bmPack.erase(pack);
+        }
+        auto tendrils = g_voidTendrils.find(guid);
+        if (tendrils != g_voidTendrils.end())
+        {
+            for (ObjectGuid const& g : tendrils->second)
+                if (Creature* c = ObjectAccessor::GetCreature(*player, g))
+                    c->DespawnOrUnsummon();
+            g_voidTendrils.erase(tendrils);
+        }
+        g_voidTick.erase(guid);
+        g_trapZones.erase(guid);
+        g_shrapnel.erase(guid);
+        auto bears = g_wildsBears.find(guid);
+        if (bears != g_wildsBears.end())
+        {
+            for (ObjectGuid const& g : bears->second)
+                if (Creature* c = ObjectAccessor::GetCreature(*player, g))
+                    c->DespawnOrUnsummon();
+            g_wildsBears.erase(bears);
         }
     }
 
@@ -3996,10 +5256,19 @@ public:
         else if (selected == SPELL_SHAMAN_ENHANCEMENT)
         {
             TickShamanEnhWolves(player);
+            TickShamanEnhStaticField(player, g_shamanStaticTick[player->GetGUID().GetCounter()], diff);
+        }
+        else if (selected == SPELL_HUNTER_SURVIVAL)
+        {
+            TickHunterSurvivalTrapZones(player, diff);
         }
         else if (selected == SPELL_WARLOCK_AFFLICTION)
         {
             TickWarlockAffliction(player, g_afflictionTick[player->GetGUID().GetCounter()], diff);
+        }
+        else if (selected == SPELL_WARLOCK_DEMONOLOGY)
+        {
+            TickWarlockDemo(player);
         }
         else if (selected == SPELL_DRUID_BALANCE)
         {
@@ -4013,8 +5282,24 @@ public:
         {
             TickDruidRestRejuvSpread(player, g_rejuvTick[player->GetGUID().GetCounter()], diff);
         }
+        else if (selected == SPELL_PRIEST_SHADOW)
+        {
+            TickPriestShadowVoidform(player, g_voidTick[player->GetGUID().GetCounter()], diff);
+        }
+        else if (selected == SPELL_DK_UNHOLY)
+        {
+            // Kit 7: permanent blight aura (disease apply/refresh), Unholy
+            // Blight visual marker, gargoyle timer refresh.
+            TickDkUnholyBlight(player, g_dkUnholyTick[player->GetGUID().GetCounter()], diff);
+        }
         if (player->getClass() == CLASS_WARRIOR)
+        {
             TickWarriorFury(player);
+            // Called for every warrior, not just Prot: the function itself
+            // revokes the Avalanche block passive when the perk is switched
+            // away or the circle expires.
+            TickWarriorProtAvalanche(player, g_protAvalancheTick[player->GetGUID().GetCounter()], diff);
+        }
     }
 
     void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override
@@ -4064,6 +5349,7 @@ public:
         TryPriestDiscOnCast(player, spell);
         TryPriestHolyOnCast(player, spell);
         TryPriestShadowOnCast(player, spell);
+        TryPriestShadowMindBlastDetonate(player, spell);
         TryDkBloodOnCast(player, spell);
         TryDkFrostOnCast(player, spell);
     }
@@ -4094,6 +5380,10 @@ public:
     {
         TryDruidBalanceStarfallToggleOff(spell, strict, res);
         TryWarriorArmsBladestormToggleOff(spell, strict, res);
+        TryWarlockDemoLegionToggleOff(spell, strict, res);
+        TryPriestShadowVoidformToggleOff(spell, strict, res);
+        TryShamanEnhStaticFieldToggleOff(spell, strict, res);
+        TryWarriorProtAvalancheToggleOff(spell, strict, res);
     }
 
     void OnSpellPrepare(Spell* spell, Unit* caster, SpellInfo const* spellInfo) override
@@ -4125,14 +5415,37 @@ public:
     // (+1000%). Fires for melee, spells, and periodic damage alike because the
     // hook sits at the bottom of ThreatManager::AddThreat, after the engine's
     // own modifiers -- so taunts, dps-threat and heal-threat all hold.
+    // The other tank specs carry the same x11: Protection paladin always,
+    // Feral druid only in Bear/Dire Bear Form, Blood DK always.
     void OnCalculateThreat(Unit* attacker, Unit* victim, float& threat, SpellInfo const* /*spell*/) override
     {
         if (!attacker || threat <= 0.0f)
             return;
         Player* player = attacker->ToPlayer();
-        if (!player || GetClassPerk(player) != SPELL_WARRIOR_PROTECTION)
+        if (!player)
             return;
         if (victim && !player->IsValidAttackTarget(victim))
+            return;
+
+        bool isTankSpec = false;
+        switch (GetClassPerk(player))
+        {
+            case SPELL_WARRIOR_PROTECTION:
+            case SPELL_PALADIN_PROTECTION:
+            case SPELL_DK_BLOOD:
+                isTankSpec = true;
+                break;
+            case SPELL_DRUID_FERAL:
+            {
+                ShapeshiftForm form = player->GetShapeshiftForm();
+                isTankSpec = form == FORM_BEAR || form == FORM_DIREBEAR;
+                break;
+            }
+            default:
+                break;
+        }
+
+        if (!isTankSpec)
             return;
         threat *= 11.0f;
     }
@@ -4153,6 +5466,8 @@ public:
         ApplyProtShockwaveDamage(attacker, damage, spellInfo);
         ApplyShamanElementalLavaBurstDamage(attacker, damage, spellInfo);
         ApplyHunterSurvivalExplosiveShotDamage(attacker, damage, spellInfo);
+        if (target)
+            ApplyHunterSurvivalShrapnel(target, attacker, damage, spellInfo);
         ApplyPriestShadowMindFlayDamage(attacker, damage, spellInfo);
         ApplyDkFrostDamage(attacker, damage, spellInfo);
         ApplyMageFireDamage(attacker, damage, spellInfo);
@@ -4184,6 +5499,10 @@ public:
         ApplyWarlockAfflictionHaste(target, attacker, damage, spellInfo);
         ApplyMageFirePeriodic(attacker, damage, spellInfo);
         ApplyFuryBleedPeriodic(attacker, damage, spellInfo);
+        ApplyProtTCBleedPeriodic(attacker, damage, spellInfo);
+        // Kit 7: Unholy DK diseases (Blood Plague / Frost Fever / Ebon
+        // Plague) tick for 5x damage.
+        ApplyDkUnholyDiseaseDamage(attacker, damage, spellInfo);
     }
 };
 

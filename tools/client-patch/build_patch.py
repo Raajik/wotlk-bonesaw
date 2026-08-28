@@ -197,6 +197,9 @@ CUSTOM_SPELLS = {
     910154: ("*Hunter: Survival", "Explosive Shot deals double damage. Traps lose their cooldown and get a bigger blast radius. You are immune to your own trap damage.", 95),
     910155: ("*Shaman: Enhancement", "Feral Spirit is a free toggle: your 2 spirit wolves never expire while it's active and deal double damage. Stormstrike has no cooldown.", 95),
     910156: ("*Shaman: Restoration", "Riptide has no cooldown and also jumps to 2 more injured allies within 15 yards. Chain Heal has no bounce cap.", 95),
+    # Trap Engineer castable. Also ships server-side in
+    # rev_living_gear_call_of_the_wilds.sql; icon 406 (confirmed rendering).
+    910181: ("*Call of the Wilds", "Summons 2 tank bears cloned from your pet (or the wilds themselves if you have no pet) at 50% health. They taunt nearby enemies and hold them while you shoot. Lasts 60 sec.", 406),
     910157: ("*Warlock: Affliction", "Your DoTs spread to enemies within 15 yards every 1 sec. DoT tick damage is increased by your haste.", 95),
     910158: ("*Warlock: Demonology", "Metamorphosis has no cooldown or shard cost. Your demon pet's damage is doubled.", 95),
     910159: ("*Warlock: Destruction", "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt.", 95),
