@@ -230,6 +230,12 @@ public:
     ObjectGuid GetGUID() const;
     char const* GetLeaderName() const;
     LootMethod GetLootMethod() const;
+    // Loot method with the personal-loot override applied: when
+    // CONFIG_PERSONAL_LOOT_ALL ("Loot.PersonalLootAll", default true) is on,
+    // every shared/group method (Round Robin, Master Loot, Group Loot,
+    // Need Before Greed) reads as FREE_FOR_ALL so all loot is lootable
+    // personally by every eligible member - no rolls, no master looter.
+    LootMethod GetEffectiveLootMethod() const;
     ObjectGuid GetLooterGuid() const;
     ObjectGuid GetMasterLooterGuid() const;
     ItemQualities GetLootThreshold() const;

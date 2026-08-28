@@ -103,6 +103,7 @@ bool LivingGear_BypassStealthRequirement(Unit* caster);
 // refunded afterwards -- a refund still requires the caster to have the power
 // to pay up front (LivingGear_ClassPerks.cpp).
 bool LivingGear_SpellIsFreeCast(Unit* caster, uint32 spellId);
+bool LivingGear_SpellIsInstantCast(Unit* caster, uint32 spellId);
 // Living Gear core-patch: does the account reagent vault cover this craft's
 // reagent requirement? Answers in place -- banked reagents count as
 // "in your backpack" for crafting, and nothing is moved (LivingGear_Vault.cpp).
@@ -3616,6 +3617,13 @@ SpellCastResult Spell::prepare(SpellCastTargets const* targets, AuraEffect const
     if (m_caster->IsPlayer())
         if (m_caster->ToPlayer()->GetCommandStatus(CHEAT_CASTTIME))
             m_casttime = 0;
+
+    // Living Gear core-patch 0032: an ability a class perk advertises as
+    // instant has its cast time zeroed here, after CalcCastTime, the same
+    // point where the CHEAT_CASTTIME override lands. See
+    // LivingGear_SpellIsInstantCast in mod-living-gear.
+    if (LivingGear_SpellIsInstantCast(m_caster, m_spellInfo->Id))
+        m_casttime = 0;
 
     sScriptMgr->OnSpellPrepare(this, m_caster, m_spellInfo);
 

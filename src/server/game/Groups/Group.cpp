@@ -2628,6 +2628,29 @@ LootMethod Group::GetLootMethod() const
     return m_lootMethod;
 }
 
+LootMethod Group::GetEffectiveLootMethod() const
+{
+    // Personal loot (#114): when enabled, bypass all shared/group loot rules -
+    // every method behaves as FREE_FOR_ALL (each member may loot everything
+    // personally, first come first served; no rolls, no master looter).
+    // FREE_FOR_ALL and PERSONAL_LOOT are already personal and pass through.
+    if (sWorld->getBoolConfig(CONFIG_PERSONAL_LOOT_ALL))
+    {
+        switch (m_lootMethod)
+        {
+            case ROUND_ROBIN:
+            case MASTER_LOOT:
+            case GROUP_LOOT:
+            case NEED_BEFORE_GREED:
+                return FREE_FOR_ALL;
+            default:
+                break;
+        }
+    }
+
+    return m_lootMethod;
+}
+
 ObjectGuid Group::GetLooterGuid() const
 {
     return m_looterGuid;

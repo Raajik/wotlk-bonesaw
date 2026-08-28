@@ -196,6 +196,14 @@ uint32 const SPELL_CHAIN_HEAL_R1 = 1064;
 uint32 const SPELL_METAMORPHOSIS = 47241;
 uint32 const SPELL_CHAOS_BOLT_R1 = 50796;
 uint32 const SPELL_CONFLAGRATE_R1 = 17962;
+// Reports #105/#116: Haunt is the Affliction perk's button. The auto-applied
+// debuffs are listed as rank-1 chain heads; BestOwned() picks the highest one
+// the warlock actually learned.
+uint32 const SPELL_HAUNT = 48181;
+uint32 const SPELL_UNSTABLE_AFFLICTION_R1 = 30108;
+uint32 const SPELL_CORRUPTION_R1 = 172;
+uint32 const SPELL_CURSE_OF_AGONY_R1 = 980;
+uint32 const SPELL_CURSE_OF_ELEMENTS_R1 = 1490;
 // Druid
 uint32 const SPELL_STARFALL = 48505;
 uint32 const SPELL_ECLIPSE_SOLAR = 48517;
@@ -209,6 +217,12 @@ uint32 const SPELL_REJUVENATION_R1 = 774;
 uint32 const SPELL_INSECT_SWARM_R1 = 5570;
 uint32 const SPELL_MOONKIN_FORM = 24858;
 uint32 const SPELL_THORNS_R1 = 467;
+// Report #120: Moonfire/Hurricane and the Wrath/Starfire pair. Rank chains
+// verified in acore_world.spell_ranks (ranks in comment).
+uint32 const SPELL_MOONFIRE_R1 = 8921;    // 8921..48463, 14 ranks
+uint32 const SPELL_HURRICANE_R1 = 16914;  // 16914,17401,17402,27012,48467
+uint32 const SPELL_WRATH_R1 = 5176;       // 5176..48461, 12 ranks
+uint32 const SPELL_STARFIRE_R1 = 2912;    // 2912..48465, 10 ranks
 // Priest
 uint32 const SPELL_PENANCE_R1 = 47540;
 // Penance's damage half, ranked in lockstep with the channel above
@@ -352,6 +366,11 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     // Was empty. The entire perk is Chaos Bolt + Conflagrate, both talents, so
     // an untalented Destruction warlock had a perk that did literally nothing.
     { SPELL_WARLOCK_DESTRUCTION, { SPELL_CHAOS_BOLT_R1, SPELL_CONFLAGRATE_R1, 0 } },
+    // Was the only spec with no entry. Reports #105/#116 gave Affliction a
+    // named ability: Haunt is the perk's button (instant, no cooldown, seeds
+    // the whole DoT set on the target), so it is granted here and auto-applies
+    // the rest from the best rank the warlock owns.
+    { SPELL_WARLOCK_AFFLICTION,  { SPELL_HAUNT, 0, 0 } },
     // Fury multiplies Rend and Deep Wounds. Deep Wounds is a pure talent with
     // no castable spell to learn, so only Rend can be handed over.
     { SPELL_WARRIOR_FURY,        { SPELL_REND, 0, 0 } },
@@ -412,6 +431,8 @@ float const WARLOCK_AFFLICTION_CONTAGION_RANGE = 60.0f;
 // That is what makes it read as a spreading plague rather than an instant
 // map-wide application, and it is also what bounds the cost.
 uint32 const WARLOCK_AFFLICTION_MAX_SPREADS_PER_TICK = 60;
+// Report #106: every Affliction DoT periodic tick deals x4 damage.
+float const WARLOCK_AFFLICTION_DOT_MULT = 4.0f;
 uint32 const DRUID_ECLIPSE_TICK_MS = 3000;
 int32 const DRUID_ECLIPSE_REFRESH_DURATION = 15000;
 uint32 const DRUID_REJUV_SPREAD_TICK_MS = 3000;
@@ -2605,9 +2626,11 @@ void ApplyShamanRestChainHealTargets(Spell* spell, Player* player, SpellInfo con
 
 // -------------------------------------------------------------------------
 // Warlock: Affliction (910157)
-// "Your DoTs spread from every infected enemy to others within 15 yards every
-// 1 sec. DoT tick damage is increased by your haste (duration is not
-// shortened)."
+// "Haunt is instant, has no cooldown, and casting it applies Unstable
+// Affliction, Corruption, Curse of Agony and Curse of the Elements to the
+// target. Your DoTs spread from every infected enemy to others within 15
+// yards every 1 sec. DoT tick damage is increased by your haste and deals
+// quadruple damage (duration is not shortened)."
 //
 // CONTAGIOUS, not a burst around your target. The first version read the DoTs
 // on your selected target and applied them to that target's neighbours, and
@@ -2724,12 +2747,39 @@ void ApplyWarlockAfflictionHaste(Unit* target, Unit* attacker, uint32& damage, S
 {
     if (!target || !attacker || !damage || !info || info->SpellFamilyName != SPELLFAMILY_WARLOCK)
         return;
+    // The hook fires for every periodic aura tick; report #106 is about DoTs
+    // only, so require an actual periodic-damage effect.
+    if (!info->HasAura(SPELL_AURA_PERIODIC_DAMAGE))
+        return;
     Player* player = attacker->ToPlayer();
     if (!player || GetClassPerk(player) != SPELL_WARLOCK_AFFLICTION)
         return;
     float const haste = player->GetRatingBonusValue(CR_HASTE_SPELL);
-    if (haste > 0.0f)
-        damage = uint32(float(damage) * (1.0f + haste / 100.0f));
+    float const mult = WARLOCK_AFFLICTION_DOT_MULT * (1.0f + (haste > 0.0f ? haste / 100.0f : 0.0f));
+    damage = uint32(float(damage) * mult);
+}
+
+// Reports #105/#116: Haunt is the Affliction perk's button. Three things
+// happen on cast: the cooldown is cleared (deferred -- the hook fires before
+// the engine writes its own cooldown entry, see ClearCooldownAfterCast), the
+// cast is instant (LivingGear_SpellIsInstantCast is consulted from
+// Spell::prepare via core-patch 0032), and the target is seeded with the
+// full DoT set from the best rank the warlock owns.
+void TryWarlockAfflictionOnCast(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_WARLOCK_AFFLICTION)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_HAUNT))
+        return;
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
+    Unit* target = spell->m_targets.GetUnitTarget();
+    if (!target)
+        return;
+    for (uint32 const firstId : { SPELL_UNSTABLE_AFFLICTION_R1, SPELL_CORRUPTION_R1,
+                                  SPELL_CURSE_OF_AGONY_R1, SPELL_CURSE_OF_ELEMENTS_R1 })
+        if (uint32 const best = BestOwned(player, firstId))
+            player->CastSpell(target, best, true);
 }
 
 // -------------------------------------------------------------------------
@@ -2981,6 +3031,70 @@ void TryDruidBalanceInsectOnStruck(Unit* attacker, Unit* victim)
     if (attacker->HasAura(SPELL_INSECT_SWARM_R1, player->GetGUID()))
         return;
     player->CastSpell(attacker, BestOwnedOrFirst(player, SPELL_INSECT_SWARM_R1), true);
+}
+
+// -------------------------------------------------------------------------
+// Report #120: Moonfire auto-applies Hurricane, and Wrath/Starfire pair up.
+//
+// Moonfire (any rank the player owns) cast on an enemy also casts a free
+// Hurricane centered ON that enemy. Hurricane is a caster-centered channel --
+// its area reference is the cast's SOURCE location, and
+// Spell::InitExplicitTargets only fills the source with the caster's position
+// when the caller left it unset (Spell.cpp:853). Supplying an explicit source
+// at the enemy's position (plus dst and the unit target, so both SRC- and
+// DEST-referenced variants land the same way) moves the circle onto the enemy.
+//
+// RECURSION GUARD: every free cast here goes out with `true`
+// (TRIGGERED_FULL_MASK), and OnPlayerSpellCast bails out on any triggered
+// spell before the Try* hooks run (the `if (spell->IsTriggered()) return;`
+// early return in the dispatch below). So the free Starfire fired from Wrath
+// never fires a free Wrath back, and vice versa -- verified, not assumed; that
+// early return is what every sibling perk's free cast already relies on.
+//
+// Rank selection uses BestOwned -- the highest rank the player genuinely
+// LEARNED, same helper the hunter sting perks use. A Balance druid trains all
+// four lines natively, so nothing is granted here.
+// -------------------------------------------------------------------------
+void TryDruidBalanceMoonfireHurricane(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_DRUID_BALANCE)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info || !RankOf(info, SPELL_MOONFIRE_R1))
+        return;
+    uint32 const hurricane = BestOwned(player, SPELL_HURRICANE_R1);
+    if (!hurricane)
+        return;
+    Unit* target = spell->m_targets.GetUnitTarget();
+    if (!target || !player->IsValidAttackTarget(target))
+        return;
+    SpellCastTargets targets;
+    targets.SetUnitTarget(target);
+    targets.SetSrc(target->GetPosition());
+    targets.SetDst(target->GetPosition());
+    player->CastSpell(targets, sSpellMgr->GetSpellInfo(hurricane), nullptr, TRIGGERED_FULL_MASK);
+}
+
+void TryDruidBalanceStarPair(Player* player, Spell* spell)
+{
+    if (!player || !spell || GetClassPerk(player) != SPELL_DRUID_BALANCE)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info)
+        return;
+    bool const isWrath = RankOf(info, SPELL_WRATH_R1);
+    bool const isStarfire = RankOf(info, SPELL_STARFIRE_R1);
+    if (!isWrath && !isStarfire)
+        return;
+    uint32 const twin = BestOwned(player, isWrath ? SPELL_STARFIRE_R1 : SPELL_WRATH_R1);
+    if (!twin)
+        return;
+    Unit* target = spell->m_targets.GetUnitTarget();
+    if (!target || !player->IsValidAttackTarget(target))
+        return;
+    // Triggered -> TRIGGERED_FULL_MASK: free, instant, no cooldown, and the
+    // IsTriggered() dispatch guard keeps it from firing its own twin back.
+    player->CastSpell(target, twin, true);
 }
 
 // Thorns on the party. Same observe-only shape as the Eclipse tick --
@@ -3657,10 +3771,15 @@ public:
         TryHunterSurvivalOnCast(player, spell);
         TryShamanEnhOnCast(player, spell);
         TryShamanRestOnCast(player, spell);
+        TryWarlockAfflictionOnCast(player, spell);
         TryWarlockDemoOnCast(player, spell);
         TryWarlockDestroOnCast(player, spell);
         TryDruidBalanceInsectSpread(player, spell);
         TryDruidBalanceOnCast(player, spell);
+        // Report #120: after the Starfall no-cooldown bookkeeping above, so
+        // the free twins below are ordinary triggered casts.
+        TryDruidBalanceMoonfireHurricane(player, spell);
+        TryDruidBalanceStarPair(player, spell);
         TryDruidFeralOnCast(player, spell);
         TryDruidRestOnCast(player, spell);
         TryPriestDiscOnCast(player, spell);
@@ -3851,6 +3970,21 @@ bool LivingGear_SpellIsFreeCast(Unit* caster, uint32 spellId)
     Player* player = caster->ToPlayer();
     return player
         && LivingGearClassPerks::GetClassPerk(player) == LivingGearClassPerks::SPELL_WARRIOR_ARMS;
+}
+
+// Core-patch callback from Spell::prepare (0030). Haunt is instant for
+// Affliction perk holders only -- other specs keep the real cast time. Runs
+// at the same point as CHEAT_CASTTIME so hasted and cheat paths compose the
+// same way, and matches the whole Haunt chain so a future rank cannot regress.
+bool LivingGear_SpellIsInstantCast(Unit* caster, uint32 spellId)
+{
+    if (!caster)
+        return false;
+    Player* player = caster->ToPlayer();
+    if (!player || LivingGearClassPerks::GetClassPerk(player) != LivingGearClassPerks::SPELL_WARLOCK_AFFLICTION)
+        return false;
+    return spellId
+        && sSpellMgr->GetFirstSpellInChain(spellId) == LivingGearClassPerks::SPELL_HAUNT;
 }
 
 // Addon-command entry point, called by the dispatcher in LivingGear.cpp.

@@ -1,0 +1,177 @@
+From: Bonesaw personal loot (#114) <core-patch 0029>
+Subject: [PATCH 0029] personal loot: bypass shared/group loot rules
+
+NOTE: 0029 may collide with a parallel agent landing 0029; parent renumbers
+at commit time.
+
+WHAT
+----
+Issue #114: players must never roll or fight over drops. All loot becomes
+personal: every eligible group member can loot every item of a kill/chest
+independently, first come first served. No Need/Greed rolls, no Master
+Looter distribution, no Round Robin ownership.
+
+CHOSEN SEMANTICS (precise)
+--------------------------
+Not per-member duplicate world drops. Each item still drops ONCE from the
+single shared Loot object; the change only changes WHO MAY LOOT:
+
+- A new Group::GetEffectiveLootMethod() returns FREE_FOR_ALL instead of
+  ROUND_ROBIN / MASTER_LOOT / GROUP_LOOT / NEED_BEFORE_GREED whenever the
+  worldserver config option "Loot.PersonalLootAll" is true (default ON,
+  registered as CONFIG_PERSONAL_LOOT_ALL). FREE_FOR_ALL and PERSONAL_LOOT
+  pass through unchanged.
+- All loot-decision call sites now consult GetEffectiveLootMethod() instead
+  of GetLootMethod():
+  * Player.cpp creature + gameobject chest loot-open switches -> the
+    Group::GroupLoot / NeedBeforeGreed / MasterLoot roll machinery is never
+    entered, so no rolls ever start.
+  * Player.cpp loot permission switch -> every group member gets
+    ALL_PERMISSION (sees and may take everything), instead of
+    MASTER/RESTRICTED/GROUP/ROUND_ROBIN permissions.
+  * Player::isAllowedToLoot (PlayerStorage.cpp) -> any group member may open
+    the corpse like FFA.
+  * Player::StoreLootItem exploit-protection (Player.cpp ~13874) -> the
+    master-looter-only guard never applies.
+  * WorldSession::HandleLootMasterGive (LootHandler.cpp) -> master-give
+    packets are rejected even if the group's stored method is Master Loot.
+- The group's stored m_lootMethod (persisted in characters DB, shown in the
+  client group UI) is untouched; only loot behaviour is overridden.
+- Money is unaffected: HandleLootMoneyOpcode already splits gold equally to
+  all members within loot-reward distance for any group method.
+- Quest items / conditional items are untouched: they already flow through
+  per-player views (PlayerQuestItems / PlayerNonQuestNonFFAConditionalItems
+  filled by Loot::FillNotNormalLootFor for every member at FillLoot time),
+  which is exactly the existing per-player duplication AzerothCore uses for
+  FFA.
+- Playerbots loot through the same player loot paths and are unaffected
+  beyond no longer needing to answer rolls.
+
+WHY THIS MECHANISM
+------------------
+AzerothCore's FREE_FOR_ALL path IS the per-player loot view (ALL_PERMISSION
++ per-player FFA/quest/conditional lists); routing every shared method into
+it reuses proven code instead of duplicating LootItems per member.
+
+FILES
+-----
+ src/server/game/World/WorldConfig.h          | add CONFIG_PERSONAL_LOOT_ALL
+ src/server/game/World/WorldConfig.cpp        | register Loot.PersonalLootAll (true)
+ src/server/game/Groups/Group.h               | declare GetEffectiveLootMethod()
+ src/server/game/Groups/Group.cpp             | implement GetEffectiveLootMethod()
+ src/server/game/Entities/Player/Player.cpp   | 4 call sites -> effective method
+ src/server/game/Entities/Player/PlayerStorage.cpp | isAllowedToLoot
+ src/server/game/Handlers/LootHandler.cpp     | HandleLootMasterGive guard
+---
+--- a/src/server/game/Groups/Group.h
++++ b/src/server/game/Groups/Group.h
+@@ -230,6 +230,12 @@
+     ObjectGuid GetGUID() const;
+     char const* GetLeaderName() const;
+     LootMethod GetLootMethod() const;
++    // Loot method with the personal-loot override applied: when
++    // CONFIG_PERSONAL_LOOT_ALL ("Loot.PersonalLootAll", default true) is on,
++    // every shared/group method (Round Robin, Master Loot, Group Loot,
++    // Need Before Greed) reads as FREE_FOR_ALL so all loot is lootable
++    // personally by every eligible member - no rolls, no master looter.
++    LootMethod GetEffectiveLootMethod() const;
+     ObjectGuid GetLooterGuid() const;
+     ObjectGuid GetMasterLooterGuid() const;
+     ItemQualities GetLootThreshold() const;
+--- a/src/server/game/Groups/Group.cpp
++++ b/src/server/game/Groups/Group.cpp
+@@ -2628,6 +2628,29 @@
+     return m_lootMethod;
+ }
+ 
++LootMethod Group::GetEffectiveLootMethod() const
++{
++    // Personal loot (#114): when enabled, bypass all shared/group loot rules -
++    // every method behaves as FREE_FOR_ALL (each member may loot everything
++    // personally, first come first served; no rolls, no master looter).
++    // FREE_FOR_ALL and PERSONAL_LOOT are already personal and pass through.
++    if (sWorld->getBoolConfig(CONFIG_PERSONAL_LOOT_ALL))
++    {
++        switch (m_lootMethod)
++        {
++            case ROUND_ROBIN:
++            case MASTER_LOOT:
++            case GROUP_LOOT:
++            case NEED_BEFORE_GREED:
++                return FREE_FOR_ALL;
++            default:
++                break;
++        }
++    }
++
++    return m_lootMethod;
++}
++
+ ObjectGuid Group::GetLooterGuid() const
+ {
+     return m_looterGuid;
+--- a/src/server/game/World/WorldConfig.h
++++ b/src/server/game/World/WorldConfig.h
+@@ -519,6 +519,7 @@
+     CONFIG_TRIAL_MONEY_CAP,
+     CONFIG_TRIAL_TRADE_SKILL_CAP,
+ 
++    CONFIG_PERSONAL_LOOT_ALL,
+     CONFIG_CAIS_ENABLED,
+ 
+     MAX_NUM_SERVER_CONFIGS
+--- a/src/server/game/World/WorldConfig.cpp
++++ b/src/server/game/World/WorldConfig.cpp
+@@ -360,6 +360,8 @@
+     SetConfigValue<uint32>(CONFIG_TRIAL_MONEY_CAP, "Trial.MoneyCap", 100000); // copper, 10 gold
+ 
++    SetConfigValue<bool>(CONFIG_PERSONAL_LOOT_ALL, "Loot.PersonalLootAll", true);
++
+     SetConfigValue<bool>(CONFIG_CAIS_ENABLED, "CAIS.Enable", false);
+ 
+     SetConfigValue<uint32>(CONFIG_EVENT_ANNOUNCE, "Event.Announce", 0);
+--- a/src/server/game/Entities/Player/Player.cpp
++++ b/src/server/game/Entities/Player/Player.cpp
+@@ -8079,7 +8079,7 @@
+                 if (Group* group = GetGroup())
+                 {
+-                    switch (group->GetLootMethod())
++                    switch (group->GetEffectiveLootMethod())
+                     {
+                         case GROUP_LOOT:
+@@ -8263,7 +8263,7 @@
+                 if (recipientGroup)
+                 {
+-                    switch (recipientGroup->GetLootMethod())
++                    switch (recipientGroup->GetEffectiveLootMethod())
+                     {
+                         case GROUP_LOOT:
+@@ -8311,7 +8311,7 @@
+                     if (GetGroup() == recipientGroup)
+                     {
+-                        switch (recipientGroup->GetLootMethod())
++                        switch (recipientGroup->GetEffectiveLootMethod())
+                         {
+                             case MASTER_LOOT:
+@@ -13874,7 +13874,7 @@
+-    if (!item->is_underthreshold && loot->roundRobinPlayer && !GetLootGUID().IsItem() && GetGroup() && GetGroup()->GetLootMethod() == MASTER_LOOT && GetGUID() != GetGroup()->GetMasterLooterGuid())
++    if (!item->is_underthreshold && loot->roundRobinPlayer && !GetLootGUID().IsItem() && GetGroup() && GetGroup()->GetEffectiveLootMethod() == MASTER_LOOT && GetGUID() != GetGroup()->GetMasterLooterGuid())
+--- a/src/server/game/Entities/Player/PlayerStorage.cpp
++++ b/src/server/game/Entities/Player/PlayerStorage.cpp
+@@ -5767,7 +5767,7 @@
+-    switch (thisGroup->GetLootMethod())
++    switch (thisGroup->GetEffectiveLootMethod())
+     {
+         case MASTER_LOOT:
+         case FREE_FOR_ALL:
+             return true;
+--- a/src/server/game/Handlers/LootHandler.cpp
++++ b/src/server/game/Handlers/LootHandler.cpp
+@@ -482,7 +482,7 @@
+-    if (!_player->GetGroup() || _player->GetGroup()->GetMasterLooterGuid() != _player->GetGUID() || _player->GetGroup()->GetLootMethod() != MASTER_LOOT)
++    if (!_player->GetGroup() || _player->GetGroup()->GetMasterLooterGuid() != _player->GetGUID() || _player->GetGroup()->GetEffectiveLootMethod() != MASTER_LOOT)
+     {
+         _player->SendLootError(lootguid, LOOT_ERROR_DIDNT_KILL);
+         return;
+-- 
+2. Bonesaw core-patch series

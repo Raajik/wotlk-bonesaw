@@ -568,10 +568,11 @@ local CLASS_PERKS = {
           } },
     },
     WARLOCK = {
-        { id = 910157, name = "Affliction", how = "In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you. DoT tick damage is increased by your haste.",
+        { id = 910157, name = "Affliction", how = "Haunt is instant with no cooldown and seeds your whole DoT set on the target. In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you. DoT ticks deal quadruple damage, increased further by your haste.",
           lines = {
+            { spell = 48181, text = "Haunt: instant, no cooldown, and applies Unstable Affliction, Corruption, Curse of Agony and Curse of the Elements to the target." },
             { text = "In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you." },
-            { text = "DoT tick damage is increased by your haste." },
+            { text = "Your DoT ticks deal quadruple damage, and DoT tick damage is also increased by your haste." },
           } },
         { id = 910158, name = "Demonology", how = "Metamorphosis has no cooldown or mana cost. Your demon pet's damage is doubled.",
           lines = {
@@ -584,12 +585,14 @@ local CLASS_PERKS = {
           } },
     },
     DRUID = {
-        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once. Insect Swarm spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you. Thorns is maintained on you and your party.",
+        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once. Insect Swarm spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you. Thorns is maintained on you and your party. Moonfire also casts a free Hurricane centered on the target, and Wrath and Starfire each fire the other free and instant at the same target.",
           lines = {
             { spell = 53201, text = "Starfall: a free toggle. Cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled." },
             { text = "You are permanently in both Solar and Lunar Eclipse at once." },
             { spell = 48468, text = "Insect Swarm: spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you." },
             { spell = 53307, text = "Thorns: maintained on you and your party." },
+            { spell = 8921, text = "Moonfire: also casts a free Hurricane centered on the target." },
+            { spell = 2912, text = "Wrath and Starfire: casting one also fires the other free and instant at the same target." },
           } },
         { id = 910161, name = "Feral", how = "Berserk has no cooldown. While Berserk is active, your druid abilities cost no energy/rage/mana and lose their cooldowns.",
           lines = {
@@ -3439,6 +3442,13 @@ function LG2.RefreshItems()
                     end
                 end
                 local r2, g2, b2 = GetItemQualityColor(LevelQuality(lv))
+                -- growth can be nil here: the ATT| live-sync path builds rows
+                -- through a different constructor than the full sync and does
+                -- not always set it. Never hand a nil to %s.
+                local growth = r.growth or ""
+                if growth == "" then
+                    growth = "|cff707070no growth|r"
+                end
                 -- 24px icon width, clamped to the pixel so a 3px bar can take
                 -- any fraction cleanly.
                 row.barBg:Show()

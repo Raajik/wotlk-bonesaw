@@ -163,6 +163,15 @@ LivingGear.KillXpFloor.ElitePct = 4
 # playerbots -- gets nothing at all from a scaled-up low-level zone.
 LivingGear.GroupKillXp = 1
 
+# Party XP (bug report #107). With NoLowLevelPenalty on, grouping with
+# lower-level players no longer cuts your kill XP (the engine's
+# level/sum-of-levels share factor is skipped; the group size rate still
+# applies). With EqualBonus on, every party member earns the highest
+# member's XP bonus (the leveling-perk multiplier from account max-level
+# alts), not just their own. Kill XP only -- quest XP is untouched.
+LivingGear.PartyXp.NoLowLevelPenalty = 1
+LivingGear.PartyXp.EqualBonus = 1
+
 # Quest items always drop (bug report #12). Covers loot entries flagged as quest
 # drops, and ordinary items that are an objective of a quest the looting player
 # is currently on. Players not on the quest see normal drop rates.

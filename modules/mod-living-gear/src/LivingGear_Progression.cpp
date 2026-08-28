@@ -18,9 +18,11 @@
 
 #include "AllBattlegroundScript.h"
 #include "Chat.h"
+#include "Config.h"
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
+#include "Group.h"
 #include "Log.h"
 #include "Player.h"
 #include "ReputationMgr.h"
@@ -496,6 +498,23 @@ void CheckLevelingPerks(Player* player)
 }
 
 // ---------------------------------------------------------------------
+// Party XP equal bonus (Bonesaw #107): every party member earns the
+// highest member's XP bonus, not just their own. Currently that is the
+// leveling-perk multiplier (account max-level alt tiers); if more
+// personal XP bonuses appear, fold them in here.
+// ---------------------------------------------------------------------
+float PartyLevelingXpMultiplier(Player* player)
+{
+    float best = LevelingXpMultiplier(player);
+    if (Group* group = player->GetGroup())
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            if (Player* member = itr->GetSource())
+                if (member != player)
+                    best = std::max(best, LevelingXpMultiplier(member));
+    return best;
+}
+
+// ---------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------
 class ProgressionPlayer : public PlayerScript
@@ -536,9 +555,17 @@ public:
         // The grey-kill grant does not reach this hook at all -- Player::GiveXP
         // never fires it -- which is why GrantUnrewardedKillXp applies
         // LivingGear_LevelingXpMultiplier itself.
+        //
+        // [Bonesaw #107] Party XP: with LivingGear.PartyXp.EqualBonus (default
+        // on) a grouped player earns the highest leveling-XP bonus present in
+        // the party, not just their own. Quest XP never reaches this hook, so
+        // only kill XP is shared.
         if (!player || !amount)
             return;
-        float const mult = LevelingXpMultiplier(player);
+        bool const equalBonus = sConfigMgr->GetOption<bool>("LivingGear.PartyXp.EqualBonus", true);
+        float const mult = (equalBonus && player->GetGroup())
+            ? PartyLevelingXpMultiplier(player)
+            : LevelingXpMultiplier(player);
         if (mult <= 1.0f)
             return;
         amount = uint32(float(amount) * mult);

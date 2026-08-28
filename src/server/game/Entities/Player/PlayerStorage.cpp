@@ -5767,7 +5767,7 @@ bool Player::isAllowedToLoot(Creature const* creature)
     else if (thisGroup != creature->GetLootRecipientGroup())
         return false;
 
-    switch (thisGroup->GetLootMethod())
+    switch (thisGroup->GetEffectiveLootMethod())
     {
         case MASTER_LOOT:
         case FREE_FOR_ALL:

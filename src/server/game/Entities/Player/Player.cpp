@@ -8079,7 +8079,7 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
             {
                 if (Group* group = GetGroup())
                 {
-                    switch (group->GetLootMethod())
+                    switch (group->GetEffectiveLootMethod())
                     {
                         case GROUP_LOOT:
                             // GroupLoot: rolls items over threshold. Items with quality < threshold, round robin
@@ -8263,7 +8263,7 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                 // for creature, loot is filled when creature is killed.
                 if (recipientGroup)
                 {
-                    switch (recipientGroup->GetLootMethod())
+                    switch (recipientGroup->GetEffectiveLootMethod())
                     {
                         case GROUP_LOOT:
                             // GroupLoot: rolls items over threshold. Items with quality < threshold, round robin
@@ -8311,7 +8311,7 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                 {
                     if (GetGroup() == recipientGroup)
                     {
-                        switch (recipientGroup->GetLootMethod())
+                        switch (recipientGroup->GetEffectiveLootMethod())
                         {
                             case MASTER_LOOT:
                                 permission = recipientGroup->GetMasterLooterGuid() == GetGUID() ? MASTER_PERMISSION : RESTRICTED_PERMISSION;
@@ -13874,7 +13874,7 @@ LootItem* Player::StoreLootItem(uint8 lootSlot, Loot* loot, InventoryResult& msg
 
     // Xinef: exploit protection, dont allow to loot normal items if player is not master loot and not below loot threshold
     // Xinef: only quest, ffa and conditioned items
-    if (!item->is_underthreshold && loot->roundRobinPlayer && !GetLootGUID().IsItem() && GetGroup() && GetGroup()->GetLootMethod() == MASTER_LOOT && GetGUID() != GetGroup()->GetMasterLooterGuid())
+    if (!item->is_underthreshold && loot->roundRobinPlayer && !GetLootGUID().IsItem() && GetGroup() && GetGroup()->GetEffectiveLootMethod() == MASTER_LOOT && GetGUID() != GetGroup()->GetMasterLooterGuid())
         if (!qitem && !ffaitem && !conditem)
         {
             SendLootRelease(GetLootGUID());

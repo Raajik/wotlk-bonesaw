@@ -1,0 +1,51 @@
+Haunt (48181) is an instant-cast, no-cooldown button for Affliction warlocks
+holding class perk 910157. The cast time is zeroed per-cast for perk holders
+only; other warlock specs keep the real 1.5 sec cast.
+
+Touches: src/server/game/Spells/Spell.cpp -- Spell::prepare() adds a
+LivingGear_SpellIsInstantCast() consultation immediately after the
+CHEAT_CASTTIME override, plus the forward declaration beside
+LivingGear_SpellIsFreeCast.
+
+Why: the Affliction perk previously had no castable ability at all (reports
+#105/#116 -- the perk read "your DoTs spread..."). The rework makes Haunt the
+spec's button, and a button that eats a 1.5 sec cast on a spec built around
+instant DoT application reads as broken. The instant must be per-player, not a
+spell_dbc edit: zeroing Haunt's CastTimeEntry in the DBC (the Blizzard
+PatchBlizzardServerSide pattern) would make Haunt instant for every warlock on
+the realm, including Destruction/Demonology holders who never took the perk.
+
+Mechanics: the callback runs at exactly the point CHEAT_CASTTIME lands -- after
+CalcCastTime -- so hasted and cheat paths compose the same way and nothing
+re-reads CastTimeEntry afterwards. Module side,
+LivingGear_ClassPerks.cpp's LivingGear_SpellIsInstantCast gates on: caster is a
+player, GetClassPerk == SPELL_WARLOCK_AFFLICTION (910157), and the spell's
+chain head is SPELL_HAUNT (48181), so a future Haunt rank cannot regress.
+
+The matching cooldown clear is module-side (ClearCooldownAfterCast, deferred
+past Spell::finish) and needs no core change.
+
+--- a/src/server/game/Spells/Spell.cpp
++++ b/src/server/game/Spells/Spell.cpp
+@@ -103,6 +103,7 @@ bool LivingGear_BypassStealthRequirement(Unit* caster);
+ // refunded afterwards -- a refund still requires the caster to have the power
+ // to pay up front (LivingGear_ClassPerks.cpp).
+ bool LivingGear_SpellIsFreeCast(Unit* caster, uint32 spellId);
++bool LivingGear_SpellIsInstantCast(Unit* caster, uint32 spellId);
+ // Living Gear core-patch: does the account reagent vault cover this craft's
+ // reagent requirement? Answers in place -- banked reagents count as
+ // "in your backpack" for crafting, and nothing is moved (LivingGear_Vault.cpp).
+@@ -3617,6 +3618,13 @@ SpellCastResult Spell::prepare(SpellCastTargets const* targets, AuraEffect const
+         if (m_caster->ToPlayer()->GetCommandStatus(CHEAT_CASTTIME))
+             m_casttime = 0;
+ 
++    // Living Gear core-patch 0030: an ability a class perk advertises as
++    // instant has its cast time zeroed here, after CalcCastTime, the same
++    // point where the CHEAT_CASTTIME override lands. See
++    // LivingGear_SpellIsInstantCast in mod-living-gear.
++    if (LivingGear_SpellIsInstantCast(m_caster, m_spellInfo->Id))
++        m_casttime = 0;
++
+     sScriptMgr->OnSpellPrepare(this, m_caster, m_spellInfo);
+ 
+     // don't allow channeled spells / spells with cast time to be casted while moving
