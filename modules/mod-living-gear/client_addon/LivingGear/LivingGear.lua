@@ -347,7 +347,7 @@ local WORLD_TRACKS = {
 -- sibling tab -- there was nowhere better for it to be.
 local TABS = {
     { id = "class", label = "Class" },
-    { id = "items", label = "Items" },
+    { id = "items", label = "Armory" },
     { id = "reagents", label = "Reagents" },
     { id = "loot", label = "Autoloot" },
 }
@@ -430,9 +430,23 @@ local ARM_LIST_X = 260
 
 local CLASS_PERKS = {
     MAGE = {
-        { id = 910032, name = "Arcane", how = "Arcane Power is a free toggle with no cooldown. While it is up your Arcane damage is quadrupled. In combat, Mirror Images appear and chain-cast, and linger 60 sec after combat." },
-        { id = 910033, name = "Fire", how = "Fire spells apply Living Bomb, which spreads every 1 sec and deals +300% damage. Fire Blast detonates every Living Bomb within 15 yards at once, and each blast re-applies Living Bomb around it." },
-        { id = 910034, name = "Frost", how = "Blizzard is instant, no cooldown, and lingers like Death and Decay, damaging everything inside it every 1 sec. Frost damage quadrupled. Ice Lance hits nearby enemies every 2 sec." },
+        { id = 910032, name = "Arcane", how = "Arcane Power is a free toggle with no cooldown. While it is up your Arcane damage is quadrupled. In combat, Mirror Images appear and chain-cast, and linger 60 sec after combat.",
+          lines = {
+            { spell = 12042, text = "Learned for free, and a toggle with no cooldown. While it is up all your Arcane damage is quadrupled." },
+            { spell = 55342, text = "In combat these appear and chain-cast, and linger 60 sec after combat." },
+          } },
+        { id = 910033, name = "Fire", how = "Fire spells apply Living Bomb, which spreads every 1 sec and deals +300% damage. Fire Blast detonates every Living Bomb within 15 yards at once, and each blast re-applies Living Bomb around it. Combustion is kept up for free.",
+          lines = {
+            { spell = 55361, text = "Learned for free. Any harmful Fire spell applies it to the target. It spreads to enemies within 15 yards every 1 sec, and all its damage (ticks and blasts) is +300%." },
+            { spell = 42873, text = "Detonates every Living Bomb you own within 15 yards at once, and each detonation re-applies Living Bomb around that enemy." },
+            { spell = 11129, text = "Kept up for free. Any harmful Fire spell applies it." },
+          } },
+        { id = 910034, name = "Frost", how = "Blizzard is instant, no cooldown, and lingers like Death and Decay, damaging everything inside it every 1 sec. Frost damage quadrupled. Ice Lance hits nearby enemies every 2 sec.",
+          lines = {
+            { spell = 42940, text = "Learned for free, instant, no cooldown, and lingers like Death and Decay (8 sec), damaging everything inside it every 1 sec." },
+            { spell = 42914, text = "Learned for free. In combat it automatically hits everything within 15 yards every 2 sec." },
+            { text = "All your Frost damage is quadrupled." },
+          } },
     },
     -- Rogue is the worked example for the `lines` format (see the comment above
     -- CLASS_PERKS). One entry per ABILITY, not per sentence: the old prose said
@@ -442,21 +456,23 @@ local CLASS_PERKS = {
     -- rank a level 80 actually has -- do not guess these, a wrong id shows a
     -- confidently wrong tooltip.
     ROGUE = {
-        { id = 910035, name = "Assassination", how = "Learn Envenom. Poisons deal +300% damage. Envenom detonates every poison and bleed you own on all enemies within 15 yards, dealing their whole remaining duration at once, then puts them back at full.",
+        { id = 910035, name = "Assassination", how = "Learn Envenom. Each melee hit has a 20% chance to apply a random poison. Envenom detonates every poison and bleed you own on all enemies within 15 yards, dealing their whole remaining duration at once, then puts them back at full.",
           lines = {
             { spell = 57993, text = "Learned for free. Detonates every poison and bleed you own on all enemies within 15 yards, dealing their whole remaining duration at once, then puts them back to full." },
-            { text = "All your poisons deal +300% damage." },
+            { text = "Each melee hit has a 20% chance to apply a random poison (Crippling, Wound or Deadly)." },
           } },
-        { id = 910036, name = "Combat", how = "Learn Adrenaline Rush as a free toggle with no cooldown. While it is up your abilities cost no energy, Blade Flurry strikes everything within 15 yards, and Killing Spree has no cooldown. Blade Flurry is always on.",
+        { id = 910036, name = "Combat", how = "Learn Adrenaline Rush as a free toggle with no cooldown. While it is up your abilities cost no energy, and Blade Flurry strikes everything within 15 yards. Blade Flurry is always on. Combo builders have a 30% chance to trigger a free Killing Spree, and your energy regenerates 50% faster.",
           lines = {
             { spell = 13750, text = "Learned for free, and a toggle with no cooldown. While it is up your abilities cost no energy." },
-            { spell = 13877, text = "Always on. While Adrenaline Rush is up it strikes everything within 15 yards." },
-            { spell = 51690, text = "No cooldown while Adrenaline Rush is up." },
+            { spell = 13877, text = "Learned for free, and always on. While Adrenaline Rush is up it strikes everything within 15 yards." },
+            { spell = 51690, text = "Learned for free. Combo point builders have a 30% chance to trigger a free one." },
+            { text = "Your energy regenerates 50% faster." },
           } },
-        { id = 910037, name = "Subtlety", how = "Learn Hemorrhage and Shadowstep. Shadowstep (6 sec cooldown) pickpockets every humanoid within 20 yards where you land. Hemorrhage spreads itself, a boosted Ambush and the Garrote bleed to everything within 15 yards. Eviscerate applies Slice and Dice to you and Rupture to everything within 15 yards. Garrote and Rupture deal +2000% damage and tick faster with haste. Learn Shadow Dance.",
+        { id = 910037, name = "Subtlety", how = "Learn Hemorrhage and Shadowstep. Hemorrhage spreads itself, a boosted Ambush and the Garrote bleed to everything within 15 yards. Eviscerate applies Slice and Dice to you and Rupture to everything within 15 yards. Garrote and Rupture deal +2000% damage and tick faster with haste. Pickpocket hits every humanoid within 10 yards. Learn Shadow Dance.",
           lines = {
-            { spell = 48660, text = "Learned for free. Spreads itself, a boosted Ambush and the Garrote bleed to everything within 15 yards." },
-            { spell = 36554, text = "Learned for free, on a 6 sec cooldown. Pickpockets every humanoid within 20 yards of where you land." },
+            { spell = 48660, text = "Learned for free. Spreads itself, a boosted Ambush and the Garrote bleed to everything within 15 yards (the Ambush and Garrote land only on enemies in melee range in front of you)." },
+            { spell = 36554, text = "Learned for free, on a 2 sec cooldown." },
+            { spell = 921, text = "Pickpockets every humanoid within 10 yards at once." },
             { spell = 48668, text = "Also applies Slice and Dice to you, and Rupture to everything within 15 yards." },
             { spell = 48676, text = "Deals +2000% damage and ticks faster with haste." },
             { spell = 48672, text = "Deals +2000% damage and ticks faster with haste." },
@@ -464,44 +480,141 @@ local CLASS_PERKS = {
           subPerks = { { id = 910102, spell = 51713, name = "Shadow Dance", how = "Permanent. Openers usable without stealth. +10% attack power to your party/raid." } } },
     },
     PALADIN = {
-        { id = 910069, name = "Holy", how = "Consecration follows you and toggles off if recast. Consecration damage +1000%. Holy Shock damage +300% and hits enemies within 10 yards of the target." },
-        { id = 910070, name = "Protection", how = "Avenger's Shield bounces 30 times and can rehit. Range 60 yards. Devotion Aura: 10% damage reduction and +20% run/mount speed for allies. You deal Holy thorns equal to 50% of your armor." },
-        { id = 910071, name = "Retribution", how = "Divine Storm radius doubled and each press hits 4 times. Learn Crusader Strike. While Retribution Aura is up, Crusader Strike also casts Exorcism on nearby enemies." },
+        { id = 910069, name = "Holy", how = "Consecration follows you and toggles off if recast. Consecration damage +1000%. Holy Shock damage +300% and hits enemies within 10 yards of the target.",
+          lines = {
+            { spell = 48819, text = "Consecration: follows you as you move, and toggles off if recast. All its damage is +1000%." },
+            { spell = 48825, text = "Holy Shock: deals +300% damage and hits enemies within 10 yards of the target." },
+          } },
+        { id = 910070, name = "Protection", how = "Avenger's Shield bounces 30 times, can rehit the same target, and deals +300% damage. A Judgement cast has a 15% chance to trigger a full bounce chain. Devotion Aura reduces ally damage taken by 10%. You deal Holy thorns equal to 50% of your armor.",
+          lines = {
+            { spell = 48827, text = "Avenger's Shield: bounces 30 times, can rehit the same target, and deals +300% damage." },
+            { spell = 20271, text = "Judgement: 15% chance to trigger a full Avenger's Shield bounce chain." },
+            { spell = 48942, text = "Devotion Aura: allies within 40 yards take 10% less damage." },
+            { text = "You deal Holy thorns back to attackers equal to 50% of your armor." },
+          } },
+        { id = 910071, name = "Retribution", how = "Each Divine Storm press hits 4 times. Learn Crusader Strike. While Retribution Aura is up, Crusader Strike also casts Exorcism on nearby enemies.",
+          lines = {
+            { spell = 53385, text = "Divine Storm: each press hits 4 times." },
+            { spell = 35395, text = "Crusader Strike: learned for free. While Retribution Aura is up it also casts Exorcism on nearby enemies." },
+          } },
     },
     WARRIOR = {
-        { id = 910083, name = "Arms", how = "Learn Bladestorm. No rage cost, no cooldown, and it does not end. Recast to stop. You can use other abilities while spinning." },
-        { id = 910084, name = "Fury", how = "Titan's Grip. Each melee hit: +5% attack speed (20 stacks) and heal 1% of max health in combat. Attack speed lingers 60 sec after combat. Rend and Deep Wounds deal +300% damage." },
-        { id = 910085, name = "Protection", how = "Learn Shockwave with no cooldown and +300% damage. Thunder Clap radius doubled. Thunder Clap applies your Rend and Deep Wounds if trained." },
+        { id = 910083, name = "Arms", how = "Learn Bladestorm. No rage cost, no cooldown, and it does not end. Recast to stop. You can use other abilities while spinning, and Whirlwind plus Thunder Clap autocast every 6 sec while it spins.",
+          lines = {
+            { spell = 46924, text = "Bladestorm: learned for free. No rage cost, no cooldown, and it does not end. Recast to stop. You can use other abilities while spinning." },
+            { spell = 1680, text = "While Bladestorm spins, Whirlwind and Thunder Clap autocast every 6 sec." },
+          } },
+        { id = 910084, name = "Fury", how = "Titan's Grip. Each melee hit: +5% attack speed (stacks to 20) and heal 1% of max health in combat. Attack speed lingers 60 sec after combat. Rend and Deep Wounds deal +300% damage.",
+          lines = {
+            { text = "Titan's Grip. Each melee hit grants +5% attack speed (stacks to 20) and heals 1% of your max health in combat; the attack speed lingers 60 sec after combat." },
+            { spell = 47465, text = "Rend and Deep Wounds deal +300% damage." },
+          } },
+        { id = 910085, name = "Protection", how = "Learn Shockwave with no cooldown and +300% damage. Thunder Clap radius doubled, and it applies your Rend and Deep Wounds if trained.",
+          lines = {
+            { spell = 46969, text = "Shockwave: learned for free, with no cooldown and +300% damage." },
+            { spell = 47502, text = "Thunder Clap: radius doubled, and it applies your Rend and Deep Wounds if trained." },
+          } },
     },
     HUNTER = {
-        { id = 910150, name = "Marksmanship", how = "Chimera Shot has no cooldown and refreshes Serpent Sting to full duration. Ranged shots have a chance to grant a free, instant Aimed Shot." },
-        { id = 910153, name = "Beast Mastery", how = "Bestial Wrath has no cooldown/focus cost. Call up to 4 more beasts from your stable to fight alongside your pet, each at 50% stats." },
-        { id = 910154, name = "Survival", how = "Explosive Shot deals double damage. Traps lose their cooldown and get a bigger blast radius. You are immune to your own trap damage." },
+        { id = 910150, name = "Marksmanship", how = "Chimera Shot has no cooldown and recasts your highest Serpent Sting on the target. Any ranged damage spell has a 20% chance to grant a free, instant Aimed Shot.",
+          lines = {
+            { spell = 53209, text = "Chimera Shot: no cooldown. Recasts your highest rank of Serpent Sting on the target." },
+            { spell = 49001, text = "Serpent Sting: Chimera Shot reapplies it at full strength." },
+            { spell = 49050, text = "Aimed Shot: 20% chance on any ranged damage spell to grant a free, instant one." },
+          } },
+        { id = 910153, name = "Beast Mastery", how = "Bestial Wrath has no cooldown/focus cost, and each cast summons 4 clones of your current pet at 50% health for 20 sec.",
+          lines = {
+            { spell = 19574, text = "Bestial Wrath: no cooldown, focus cost refunded. Each cast also summons 4 clones of your current pet at 50% health, lasting 20 sec." },
+          } },
+        { id = 910154, name = "Survival", how = "Explosive Shot deals double damage. Traps lose their cooldown and their blast radius is doubled. You are immune to your own trap damage.",
+          lines = {
+            { spell = 60053, text = "Explosive Shot: deals double damage (the direct hit and every tick)." },
+            { spell = 13809, text = "All traps (Immolation, Frost, Freezing, Explosive, Snake): no cooldown and double blast radius." },
+            { text = "You take no damage from your own traps." },
+          } },
     },
     SHAMAN = {
-        { id = 910151, name = "Elemental", how = "Thunderstorm has no cooldown. Lava Burst deals double damage. Chain Lightning has no target cap." },
-        { id = 910155, name = "Enhancement", how = "Feral Spirit is a free toggle: your 2 spirit wolves never expire while it's active and deal double damage. Stormstrike has no cooldown." },
-        { id = 910156, name = "Restoration", how = "Riptide has no cooldown and also jumps to 2 more injured allies within 15 yards. Chain Heal has no bounce cap." },
+        { id = 910151, name = "Elemental", how = "Thunderstorm has no cooldown. Lava Burst deals double damage. Chain Lightning has no target cap.",
+          lines = {
+            { spell = 59159, text = "Thunderstorm: no cooldown." },
+            { spell = 60043, text = "Lava Burst: deals double damage." },
+            { spell = 49271, text = "Chain Lightning: no target cap (jumps up to 99 targets)." },
+          } },
+        { id = 910155, name = "Enhancement", how = "Feral Spirit is effectively permanent: no cooldown/mana cost, and your spirit wolves' melee damage is doubled while the buff lasts. Stormstrike has no cooldown.",
+          lines = {
+            { spell = 51533, text = "Feral Spirit: no cooldown, mana cost refunded. The buff never drops below 10 sec remaining, so your wolves never expire, and their melee damage is doubled." },
+            { spell = 17364, text = "Stormstrike: no cooldown." },
+          } },
+        { id = 910156, name = "Restoration", how = "Riptide has no cooldown and also applies to 2 more injured (below 95% health) allies within 15 yards of your target. Chain Heal has no bounce cap.",
+          lines = {
+            { spell = 61301, text = "Riptide: no cooldown. Also applies to 2 more injured (below 95% health) allies within 15 yards of your target." },
+            { spell = 55459, text = "Chain Heal: no bounce cap (heals up to 99 targets)." },
+          } },
     },
     DEATHKNIGHT = {
-        { id = 910152, name = "Unholy", how = "Summon Gargoyle has no cooldown. Army of the Dead has no cooldown and also summons a 5-ghoul group: 1 tank, 1 healer, 3 dps." },
-        { id = 910166, name = "Blood", how = "Dancing Rune Weapon has no cooldown/runic cost. While active, melee hits heal you for 5% of the damage dealt." },
-        { id = 910167, name = "Frost", how = "Hungering Cold has no cooldown/runic cost. Frost Strike and Obliterate deal double damage." },
+        { id = 910152, name = "Unholy", how = "Summon Gargoyle has no cooldown. Army of the Dead has no cooldown and also summons a 5-ghoul group: 1 tank (3x health), 1 healer (heals your lowest ally every 2 sec), 3 dps. The group lasts 60 sec.",
+          lines = {
+            { spell = 49206, text = "Summon Gargoyle: no cooldown." },
+            { spell = 42650, text = "Army of the Dead: no cooldown, and also summons a 5-ghoul group: 1 tank (3x health), 1 healer (heals your lowest ally every 2 sec), 3 dps. The group lasts 60 sec." },
+          } },
+        { id = 910166, name = "Blood", how = "Dancing Rune Weapon has no cooldown/runic cost. While it is up, your melee hits heal you for 5% of the damage dealt.",
+          lines = {
+            { spell = 49028, text = "Dancing Rune Weapon: no cooldown/runic cost. While it is up, your melee hits heal you for 5% of the damage dealt." },
+          } },
+        { id = 910167, name = "Frost", how = "Hungering Cold has no cooldown/runic cost. Frost Strike and Obliterate deal double damage.",
+          lines = {
+            { spell = 49203, text = "Hungering Cold: no cooldown/runic cost." },
+            { spell = 49143, text = "Frost Strike and Obliterate deal double damage." },
+          } },
     },
     WARLOCK = {
-        { id = 910157, name = "Affliction", how = "Your DoTs spread every 1 sec from every infected enemy to others within 15 yards, creeping outward for as long as there are enemies to reach. DoT tick damage is increased by your haste." },
-        { id = 910158, name = "Demonology", how = "Metamorphosis has no cooldown or shard cost. Your demon pet's damage is doubled." },
-        { id = 910159, name = "Destruction", how = "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt." },
+        { id = 910157, name = "Affliction", how = "In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you. DoT tick damage is increased by your haste.",
+          lines = {
+            { text = "In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you." },
+            { text = "DoT tick damage is increased by your haste." },
+          } },
+        { id = 910158, name = "Demonology", how = "Metamorphosis has no cooldown or mana cost. Your demon pet's damage is doubled.",
+          lines = {
+            { spell = 47241, text = "Metamorphosis: no cooldown or mana cost. While it is up, your demon pet's damage is doubled." },
+          } },
+        { id = 910159, name = "Destruction", how = "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt at the same target.",
+          lines = {
+            { spell = 50796, text = "Chaos Bolt: no cooldown." },
+            { spell = 17962, text = "Conflagrate: also casts a free, instant Chaos Bolt at the same target." },
+          } },
     },
     DRUID = {
-        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once." },
-        { id = 910161, name = "Feral", how = "Berserk is a free toggle. While active, Cat/Bear abilities cost no energy/rage and lose their cooldowns." },
-        { id = 910162, name = "Restoration", how = "Wild Growth has no cooldown and heals up to 10 allies within 30 yards. Rejuvenation spreads to injured allies within 15 yards every 3 sec." },
+        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once. Insect Swarm spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you. Thorns is maintained on you and your party.",
+          lines = {
+            { spell = 53201, text = "Starfall: a free toggle. Cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled." },
+            { text = "You are permanently in both Solar and Lunar Eclipse at once." },
+            { spell = 48468, text = "Insect Swarm: spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you." },
+            { spell = 53307, text = "Thorns: maintained on you and your party." },
+          } },
+        { id = 910161, name = "Feral", how = "Berserk has no cooldown. While Berserk is active, your druid abilities cost no energy/rage/mana and lose their cooldowns.",
+          lines = {
+            { spell = 50334, text = "Berserk: no cooldown. While it is active, your druid abilities cost no energy/rage/mana and lose their cooldowns." },
+          } },
+        { id = 910162, name = "Restoration", how = "Wild Growth has no cooldown and heals up to 10 allies within 30 yards. Rejuvenation spreads from every rejuvenated ally to injured allies within 15 yards every 3 sec.",
+          lines = {
+            { spell = 53251, text = "Wild Growth: no cooldown, and heals up to 10 allies within 30 yards." },
+            { spell = 48441, text = "Rejuvenation: spreads from every rejuvenated ally to injured allies within 15 yards every 3 sec." },
+          } },
     },
     PRIEST = {
-        { id = 910163, name = "Discipline", how = "Penance has no cooldown, also applies Power Word: Shield to the target, and ricochets to up to 5 nearby enemies." },
-        { id = 910164, name = "Holy", how = "Guardian Spirit has no cooldown and also applies to 2 more injured allies within 20 yards." },
-        { id = 910165, name = "Shadow", how = "Shadowfiend has no cooldown. Mind Flay deals quadruple damage." },
+        { id = 910163, name = "Discipline", how = "Penance has no cooldown and also applies Power Word: Shield to the target. When cast on an enemy, it ricochets to up to 5 more enemies within 15 yards of the last target.",
+          lines = {
+            { spell = 53007, text = "Penance: no cooldown, and also applies Power Word: Shield to the target. When cast on an enemy, it ricochets to up to 5 more enemies within 15 yards of the last target." },
+          } },
+        { id = 910164, name = "Holy", how = "Guardian Spirit has no cooldown and also applies to 2 more injured allies within 20 yards.",
+          lines = {
+            { spell = 47788, text = "Guardian Spirit: no cooldown, and also applies to 2 more injured allies within 20 yards." },
+          } },
+        { id = 910165, name = "Shadow", how = "Shadowfiend has no cooldown. Mind Flay deals quadruple damage.",
+          lines = {
+            { spell = 34433, text = "Shadowfiend: no cooldown." },
+            { spell = 48156, text = "Mind Flay: deals quadruple damage." },
+          } },
     },
 }
 
@@ -1777,9 +1890,11 @@ local function ReagentCat(entry)
     if hasBit(32) then
         return "Ore"
     end
-    if hasBit(128) then
-        return "Leather"
-    end
+    -- No family-bit shortcut for Leather: the 0x80 bag-family bit this used to
+    -- read is ENGINEERING_SUPP, not a leather marker (BAG_FAMILY_MASK in
+    -- ItemTemplate.h), so raw hides landed in the same bucket as engineering
+    -- parts and clicking "Leather" showed a wall of engineering items. The
+    -- subclass check below ("Leather") is the correct classifier.
     if hasBit(4) then
         return "Enchanting"
     end
@@ -1954,7 +2069,11 @@ local function LayoutVault(kind, rows, empty, hint, cat)
     end
     if hint then
         local base = VaultHint(kind)
-        if #list > #rows then
+        -- Reagents: no "1-14 / 109" readout. Every row is one item TYPE with a
+        -- stack count, so that number counted types, not items -- useless at a
+        -- glance and the user asked it gone. Quest vault keeps the range since
+        -- its list is short enough to eyeball but scrolled.
+        if kind ~= VAULT_REAGENT and #list > #rows then
             hint:SetText(string.format("%s  %s-%s / %s",
                 base, off + 1, math.min(off + #rows, #list), #list))
         else
@@ -2103,6 +2222,27 @@ local function LayoutClass()
             end
             btn.label:SetText(name or ("Perk " .. tostring(id)))
             btn.icon:SetTexture(icon or "Interface\\Icons\\INV_Misc_QuestionMark")
+            -- Icon + title sit as one centred group, not icon-far-left and
+            -- title-centred-on-its-own: measure the rendered title and place
+            -- the icon just left of where the text actually starts.
+            local iconSize = 22
+            local textW = btn.label:GetStringWidth() or 0
+            local groupW = iconSize + 4 + textW
+            -- NOTE: CLASS_CARD_W is a BuildUI local, not in scope here; the
+            -- literal must stay in sync with it.
+            local cardW = btn:GetWidth() or 196
+            local ix = math.floor((cardW - groupW) / 2)
+            if ix < 4 then
+                ix = 4
+            end
+            btn.icon:ClearAllPoints()
+            btn.icon:SetPoint("TOPLEFT", ix, -6)
+            btn.label:ClearAllPoints()
+            btn.label:SetPoint("TOPLEFT", ix + iconSize + 4, -6)
+            btn.label:SetPoint("TOPRIGHT", -6, -6)
+            btn.label:SetHeight(22)
+            btn.label:SetJustifyH("LEFT")
+            btn.label:SetJustifyV("MIDDLE")
             local picked = ownClass and db.classPerk == id
             if picked then
                 btn._ir, btn._ig, btn._ib = 0.12, 0.32, 0.14
@@ -2709,7 +2849,17 @@ local ITEM_FILTERS = {
     { key = "all", label = "All" },
     { key = "armor", label = "Armor" },
     { key = "weapon", label = "Weapons" },
-    { key = "attuned", label = "Attuned only" },
+}
+-- Subtype filter, fed by GetItemInfo's 13th return (equip/subtype "InventoryType-
+-- adjacent" wording: for weapons it is the weapon skill subtype name, for armor
+-- the armor class). Populated lazily from the rows actually present so the list
+-- never shows an empty pick.
+local ARMORY_SUBTYPES = {
+    weapon = { "All", "Dagger", "Fist Weapon", "Axe", "Sword", "Mace", "Polearm",
+        "Staff", "Sword (Two-Handed)", "Axe (Two-Handed)", "Mace (Two-Handed)",
+        "Bow", "Crossbow", "Gun", "Thrown", "Wand", "Fishing Pole" },
+    armor  = { "All", "Cloth", "Leather", "Mail", "Plate", "Shield", "Miscellaneous" },
+    all    = { "All" },
 }
 
 function LG2.ItemSlotGroup(inv)
@@ -2801,12 +2951,23 @@ end
 
 function LG2.ItemRowMatches(row)
     local filter = db.itemFilter or "all"
-    if filter == "attuned" and row.state ~= "attuned" then
-        return false
-    end
+    -- "Attuned only" filter removed: every armory row is an attuned account
+    -- entitlement (or a real copy of one), so the filter told the user nothing
+    -- the tab itself did not already imply.
     if filter == "armor" or filter == "weapon" then
         local _, _, _, _, _, _, _, _, inv = GetItemInfo(row.entry)
         if LG2.ItemSlotGroup(inv) ~= filter then
+            return false
+        end
+    end
+    -- Equipment-type drill-down (weapon subtype / armor class). GetItemInfo's
+    -- 13th return is the localized subtype name ("Dagger", "Leather", ...) --
+    -- exactly what "show me daggers" means. A row the client has not cached
+    -- cannot be classified, so it only survives the "All" subtype pick.
+    local sub = db.itemSubtype or "All"
+    if sub ~= "All" then
+        local _, _, _, _, _, _, _, _, _, _, _, _, rowSub = GetItemInfo(row.entry)
+        if rowSub ~= sub then
             return false
         end
     end
@@ -2842,11 +3003,47 @@ function LG2.BuildItemsPanel(parent)
         btn.key = f.key
         btn:SetScript("OnClick", function(self)
             db.itemFilter = self.key
+            db.itemSubtype = "All"
             db.itemOff = 0
             LG2.RefreshItems()
         end)
         p.filters[i] = btn
     end
+
+    -- Equipment-type dropdown (weapon subtype / armor class), sitting right of
+    -- the All/Armor/Weapons pills. Cycling button rather than a UIDropDown so
+    -- it matches the rest of this panel's controls and needs no template.
+    local subBtn = CreateFrame("Button", nil, p)
+    subBtn:SetSize(130, 18)
+    subBtn:SetPoint("TOPLEFT", 10 + #ITEM_FILTERS * 88, -4)
+    StyleBtn(subBtn, 0.10, 0.10, 0.10)
+    subBtn.label = Font(subBtn, 10, 0.75, 0.75, 0.75)
+    subBtn.label:SetPoint("CENTER", 0, 0)
+    subBtn.label:SetJustifyH("CENTER")
+    subBtn:SetScript("OnClick", function(self)
+        local opts = ARMORY_SUBTYPES[db.itemFilter or "all"] or ARMORY_SUBTYPES.all
+        local cur = db.itemSubtype or "All"
+        local nextIdx = 1
+        for i = 1, #opts do
+            if opts[i] == cur then
+                nextIdx = i % #opts + 1
+                break
+            end
+        end
+        db.itemSubtype = opts[nextIdx]
+        db.itemOff = 0
+        LG2.RefreshItems()
+    end)
+    subBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("Equipment type")
+        GameTooltip:AddLine("Click to cycle. Pick Armor or Weapons first.", 0.7, 0.7, 0.7, true)
+        GameTooltip:Show()
+    end)
+    subBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    p.subBtn = subBtn
 
     local wrap = CreateFrame("Frame", nil, p)
     wrap:SetSize(150, 18)
@@ -3015,6 +3212,21 @@ function LG2.BuildItemsPanel(parent)
             end
         end)
 
+        -- Attunement bar, drawn under the icon the same way the character
+        -- sheet's gear overlays do (flat textures, not a StatusBar -- same
+        -- reasoning as OverlayFor at the bottom of the file).
+        row.barBg = row:CreateTexture(nil, "ARTWORK")
+        row.barBg:SetHeight(3)
+        row.barBg:SetPoint("BOTTOMLEFT", row.icon, "BOTTOMLEFT", 0, -4)
+        row.barBg:SetPoint("BOTTOMRIGHT", row.icon, "BOTTOMRIGHT", 0, -4)
+        Solid(row.barBg, 0, 0, 0, 0.7)
+        row.barBg:Hide()
+        row.bar = row:CreateTexture(nil, "ARTWORK")
+        row.bar:SetHeight(3)
+        row.bar:SetPoint("BOTTOMLEFT", row.icon, "BOTTOMLEFT", 0, -4)
+        row.bar:SetPoint("BOTTOMRIGHT", row.icon, "BOTTOMRIGHT", 0, -4)
+        row.bar:Hide()
+
         -- SetHyperlink draws nothing at all for an item this client has never
         -- cached, which is most of the attuned list -- an entitlement does not
         -- have to have passed through this character's bags. That read as "half
@@ -3029,9 +3241,24 @@ function LG2.BuildItemsPanel(parent)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             if GetItemInfo(r.entry) then
                 GameTooltip:SetHyperlink("item:" .. tostring(r.entry))
+                -- Bonus stats (the growth line that used to be printed on
+                -- every row) live on the tooltip now, appended after the
+                -- real item tooltip content.
+                local growth = r.growth
+                if growth and growth ~= "" then
+                    GameTooltip:AddLine(" ")
+                    GameTooltip:AddLine("Living Gear growth:", 0.55, 0.75, 0.95, true)
+                    GameTooltip:AddLine(growth, 0.75, 0.85, 0.75, true)
+                end
+                if r.state == "worn" then
+                    GameTooltip:AddLine("Worn", 0.5, 0.86, 0.5, true)
+                elseif r.state == "bag" then
+                    GameTooltip:AddLine("In bags", 0.62, 0.62, 0.62, true)
+                end
                 GameTooltip:Show()
                 return
             end
+            -- No local cache: draw the tooltip from the server record.
             GameTooltip:SetText(r.name or "Item")
             if r.ilvl and r.ilvl > 0 then
                 GameTooltip:AddLine("Item Level " .. tostring(r.ilvl), 0.7, 0.7, 0.7)
@@ -3045,6 +3272,12 @@ function LG2.BuildItemsPanel(parent)
                 if v > 0 then
                     GameTooltip:AddLine(string.format("+%d %s", v, stats[i][1]), 1, 1, 1)
                 end
+            end
+            local growth = r.growth
+            if growth and growth ~= "" then
+                GameTooltip:AddLine(" ")
+                GameTooltip:AddLine("Living Gear growth:", 0.55, 0.75, 0.95, true)
+                GameTooltip:AddLine(growth, 0.75, 0.85, 0.75, true)
             end
             GameTooltip:AddLine("Attuned to this account.", 0.55, 0.75, 0.95, true)
             GameTooltip:AddLine("Your client has no local copy of this item, so this is the account record rather than the full item tooltip.", 0.5, 0.5, 0.5, true)
@@ -3109,6 +3342,13 @@ function LG2.RefreshItems()
             btn.label:SetTextColor(0.72, 0.72, 0.72, 1)
         end
     end
+    if p.subBtn then
+        local sub = db.itemSubtype or "All"
+        p.subBtn.label:SetText("Type: " .. sub)
+        local subOn = sub ~= "All"
+        StyleBtn(p.subBtn, subOn and 0.14 or 0.10, subOn and 0.22 or 0.10, subOn and 0.28 or 0.10)
+        p.subBtn.label:SetTextColor(subOn and 0.85 or 0.72, subOn and 0.95 or 0.72, subOn and 0.95 or 0.72, 1)
+    end
 
     local all = LG2.ItemsRowData()
     local shown = {}
@@ -3170,25 +3410,54 @@ function LG2.RefreshItems()
             row.name:SetText(row.link)
 
             local textW = row:GetWidth() - 34
+            -- Attunement bar under the icon, exactly like the character-sheet
+            -- gear rows draw (OverlayFor). "Half-completed at max" fixed by
+            -- clamping: anything at or past the attunement cap shows a FULL
+            -- bar, not the level-25 fraction of the level-50 track.
+            local bar = row.bar
             if r.state == "attuned" then
                 row.icon:SetVertexColor(0.55, 0.55, 0.62)
                 row.detail:SetText("|cff5a6a8aattuned - not created|r")
                 row.create:Show()
                 textW = textW - 60
+                bar:Hide()
+                row.barBg:Hide()
             else
                 row.icon:SetVertexColor(1, 1, 1)
                 row.create:Hide()
-                local growth = r.growth
-                if growth == "" then
-                    growth = "|cff707070no growth|r"
+                local lv = tonumber(r.lv) or 1
+                local xp = tonumber(r.xp) or 0
+                local need = tonumber(r.need) or 0
+                local frac = 0
+                if need > 0 then
+                    frac = xp / need
+                    if frac < 0 then
+                        frac = 0
+                    end
+                    if frac > 1 then
+                        frac = 1
+                    end
                 end
-                local where = (r.state == "worn") and "|cff7fdc7fWORN|r" or "|cff909090BAG|r"
-                if r.need and r.need > 0 then
-                    row.detail:SetText(string.format("%s |cffffd966Lv %d|r %d/%d xp %s",
-                        where, r.lv, r.xp, r.need, growth))
+                local r2, g2, b2 = GetItemQualityColor(LevelQuality(lv))
+                -- 24px icon width, clamped to the pixel so a 3px bar can take
+                -- any fraction cleanly.
+                row.barBg:Show()
+                if lv >= LG_ATTUNE_CAP_LEVEL then
+                    row.detail:SetText(string.format("|cffffd966Lv %d|r max %s", lv, growth))
+                    row.bar:SetWidth(24)
+                    Solid(row.bar, r2, g2, b2, 0.95)
+                    row.bar:Show()
+                elseif need > 0 then
+                    row.detail:SetText(string.format("|cffffd966Lv %d|r %d/%d xp %s",
+                        lv, xp, need, growth))
+                    row.bar:SetWidth(math.max(1, math.floor(24 * frac + 0.5)))
+                    Solid(row.bar, r2, g2, b2, 0.95)
+                    row.bar:Show()
                 else
-                    row.detail:SetText(string.format("%s |cffffd966Lv %d|r max %s",
-                        where, r.lv, growth))
+                    row.detail:SetText(string.format("|cffffd966Lv %d|r max %s", lv, growth))
+                    row.bar:SetWidth(24)
+                    Solid(row.bar, r2, g2, b2, 0.95)
+                    row.bar:Show()
                 end
             end
             if textW < 40 then
@@ -3203,7 +3472,7 @@ end
 function LG2.MakeVaultPanel(parent, kind, withCats)
     local p = MakePanel(parent)
     local listX = withCats and 96 or 10
-    local rowW = withCats and 424 or 520
+    -- (Two-column list below; rowW retired when the columns took over.)
     local hint = Font(p, 10, 0.55, 0.55, 0.55)
     hint:SetPoint("TOPLEFT", listX, -4)
     if kind == VAULT_REAGENT then
@@ -3314,10 +3583,18 @@ function LG2.MakeVaultPanel(parent, kind, withCats)
         end
     end
     local rows = {}
-    for i = 1, VAULT_ROWS do
+    -- Two columns, filled top-to-bottom then left-to-right (same pattern as
+    -- the Armory list). The single 14-row column wasted the entire right half
+    -- of the panel; doubling visible rows is free space reclaimed.
+    local ROWS_PER_COL = 14
+    local COL_W = withCats and 210 or 300
+    local COL_GAP = 8
+    for i = 1, VAULT_ROWS * 2 do
+        local col = math.floor((i - 1) / ROWS_PER_COL)
+        local slotInCol = (i - 1) % ROWS_PER_COL
         local row = CreateFrame("Button", nil, p)
-        row:SetSize(rowW, 18)
-        row:SetPoint("TOPLEFT", listX, -28 - (i - 1) * 20)
+        row:SetSize(COL_W, 18)
+        row:SetPoint("TOPLEFT", listX + col * (COL_W + COL_GAP), -28 - slotInCol * 20)
         row.bg = row:CreateTexture(nil, "BACKGROUND")
         row.bg:SetAllPoints(row)
         Solid(row.bg, 0.10, 0.10, 0.10, 0)
@@ -3367,9 +3644,12 @@ function LG2.MakeVaultPanel(parent, kind, withCats)
     end
     p:EnableMouse(true)
     p:EnableMouseWheel(true)
+    -- One notch = one column of rows (14), matching the two-column layout:
+    -- scrolling by a single row reflows both columns and makes the list
+    -- appear to shuffle.
     p:SetScript("OnMouseWheel", function(_, delta)
         local off = db.vaultOff[kind] or 0
-        off = off - delta
+        off = off - delta * 14
         if off < 0 then
             off = 0
         end
