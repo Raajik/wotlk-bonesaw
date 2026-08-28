@@ -585,13 +585,13 @@ local CLASS_PERKS = {
           } },
     },
     DRUID = {
-        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once. Insect Swarm spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you. Thorns is maintained on you and your party. Moonfire also casts a free Hurricane centered on the target, and Wrath and Starfire each fire the other free and instant at the same target.",
+        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once. Insect Swarm spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you. Thorns is maintained on you and your party. Moonfire automatically applies a standalone Hurricane to the target, and Wrath and Starfire each fire the other free and instant at the same target.",
           lines = {
             { spell = 53201, text = "Starfall: a free toggle. Cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled." },
             { text = "You are permanently in both Solar and Lunar Eclipse at once." },
             { spell = 48468, text = "Insect Swarm: spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you." },
             { spell = 53307, text = "Thorns: maintained on you and your party." },
-            { spell = 8921, text = "Moonfire: also casts a free Hurricane centered on the target." },
+            { spell = 8921, text = "Moonfire: automatically applies a standalone Hurricane to the target." },
             { spell = 2912, text = "Wrath and Starfire: casting one also fires the other free and instant at the same target." },
           } },
         { id = 910161, name = "Feral", how = "Berserk has no cooldown. While Berserk is active, your druid abilities cost no energy/rage/mana and lose their cooldowns.",

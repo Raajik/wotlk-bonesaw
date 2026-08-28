@@ -154,6 +154,12 @@ uint32 const SPELL_LIVING_BOMB_BLASTS[] = { 44461, 55359, 55360, 55361, 55362 };
 uint32 const MAGE_DAMAGE_MULT = 4;
 uint32 const MAGE_BLIZZARD_TICK_MS = 1000;
 uint32 const SPELL_BLADESTORM = 46924;
+// Report #120: Hurricane ranks, rank-1 first (16914,17401,17402,27012,48467).
+// De-channeled server-side so the free Hurricane from Moonfire behaves like
+// Blizzard: the circle is placed and keeps damaging until it expires, with no
+// channel holding the druid in place.
+uint32 const SPELL_HURRICANE_RANKS[] = { 16914, 17401, 17402, 27012, 48467 };
+uint32 const DRUID_HURRICANE_TICK_MS = 1000;
 uint32 const SPELL_SHOCKWAVE = 46968;
 uint32 const SPELL_THUNDER_CLAP = 6343;
 uint32 const SPELL_WHIRLWIND = 1680;
@@ -3036,13 +3042,21 @@ void TryDruidBalanceInsectOnStruck(Unit* attacker, Unit* victim)
 // -------------------------------------------------------------------------
 // Report #120: Moonfire auto-applies Hurricane, and Wrath/Starfire pair up.
 //
-// Moonfire (any rank the player owns) cast on an enemy also casts a free
-// Hurricane centered ON that enemy. Hurricane is a caster-centered channel --
-// its area reference is the cast's SOURCE location, and
-// Spell::InitExplicitTargets only fills the source with the caster's position
-// when the caller left it unset (Spell.cpp:853). Supplying an explicit source
-// at the enemy's position (plus dst and the unit target, so both SRC- and
-// DEST-referenced variants land the same way) moves the circle onto the enemy.
+// Moonfire (any rank the player owns) cast on an enemy also places a free
+// Hurricane centered ON that enemy. Hurricane's ranks are DE-CHANNELED
+// server-side (PatchHurricaneServerSide, same treatment as Blizzard), so the
+// circle is placed at the enemy and ticks damage on its own until it expires --
+// the druid is NOT held in place and can keep casting. The cast carries an
+// explicit source position at the enemy because Hurricane's area reference is
+// the cast's SOURCE location, and Spell::InitExplicitTargets only fills the
+// source with the caster's position when the caller left it unset
+// (Spell.cpp:853); dst and the unit target are set too so both SRC- and
+// DEST-referenced variants land the same way.
+//
+// The damage is driven by TickDruidBalanceHurricane (below) rather than by the
+// spell's own channel machinery -- exactly the Blizzard pattern. Without the
+// channel flag the engine never syncs the persistent area aura's lifetime to
+// anything, so a spell-driven tick is the only reliable damage source.
 //
 // RECURSION GUARD: every free cast here goes out with `true`
 // (TRIGGERED_FULL_MASK), and OnPlayerSpellCast bails out on any triggered
@@ -3055,6 +3069,14 @@ void TryDruidBalanceInsectOnStruck(Unit* attacker, Unit* victim)
 // LEARNED, same helper the hunter sting perks use. A Balance druid trains all
 // four lines natively, so nothing is granted here.
 // -------------------------------------------------------------------------
+bool IsHurricaneRank(uint32 spellId)
+{
+    for (uint32 id : SPELL_HURRICANE_RANKS)
+        if (id == spellId)
+            return true;
+    return false;
+}
+
 void TryDruidBalanceMoonfireHurricane(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_DRUID_BALANCE)
@@ -3095,6 +3117,51 @@ void TryDruidBalanceStarPair(Player* player, Spell* spell)
     // Triggered -> TRIGGERED_FULL_MASK: free, instant, no cooldown, and the
     // IsTriggered() dispatch guard keeps it from firing its own twin back.
     player->CastSpell(target, twin, true);
+}
+
+// Hurricane's damage, driven by us exactly like Blizzard's. The ranks are
+// de-channeled server-side, so the persistent area aura inside the dynamic
+// object never ticks on its own -- this walks every Hurricane object the
+// druid has on the ground and every second deals the rank's own damage to
+// everything inside it. The damage spell is the rank's PERIODIC_TRIGGER_SPELL
+// effect (the same path Blizzard's tick spell is read from), so every rank
+// hits for its correct amount with no hardcoded table.
+void TickDruidBalanceHurricane(Player* player, TickState& st, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_DRUID_BALANCE || !player->IsAlive())
+        return;
+    st.acc += diff;
+    if (st.acc < DRUID_HURRICANE_TICK_MS)
+        return;
+    st.acc = 0;
+
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+
+    for (uint32 id : SPELL_HURRICANE_RANKS)
+    {
+        DynamicObject* dyn = player->GetDynObject(id);
+        if (!dyn)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+        if (!info)
+            continue;
+        uint32 tick = 0;
+        for (uint8 i = EFFECT_0; i < MAX_SPELL_EFFECTS && !tick; ++i)
+            tick = info->Effects[i].TriggerSpell;
+        if (!tick)
+            continue;
+        float radius = dyn->GetRadius();
+        if (radius <= 0.0f)
+            radius = CLASS_PERK_RANGE;
+        ForEachHostileNear(player, dyn, radius, [player, tick](Unit* target)
+        {
+            player->CastSpell(target, tick, true);
+        });
+    }
+
+    g_reentryGuard.erase(guid);
 }
 
 // Thorns on the party. Same observe-only shape as the Eclipse tick --
@@ -3729,6 +3796,7 @@ public:
             TickDruidBalanceEclipse(player, g_eclipseTick[player->GetGUID().GetCounter()], diff);
             TickDruidBalanceStarfall(player);
             TickDruidBalanceThorns(player, g_thornsTick[player->GetGUID().GetCounter()], diff);
+            TickDruidBalanceHurricane(player, g_eclipseTick[player->GetGUID().GetCounter()], diff);
         }
         else if (selected == SPELL_DRUID_RESTORATION)
         {
@@ -3918,6 +3986,7 @@ public:
     {
         DetectSchema();
         PatchBlizzardServerSide();
+        PatchHurricaneServerSide();
         LOG_INFO("server.loading",
             "Living Gear class perks module loaded (all 10 classes, 3 specs each except "
             "Paladin Holy/Retribution and Rogue Assassination/Subtlety, which live in other files)");
@@ -3949,6 +4018,32 @@ private:
             ++n;
         }
         LOG_INFO("server.loading", "Living Gear: patched {} Blizzard ranks server-side (instant, uncancellable, lingers like Death and Decay)", n);
+    }
+
+    // Report #120: same treatment for Hurricane so the free Hurricane from
+    // Moonfire places-and-damages like Blizzard instead of channeling the
+    // druid in place. Only the channel flags are cleared here -- the cast
+    // time stays native because the free cast goes out with
+    // TRIGGERED_FULL_MASK (instant and free regardless), and a hand-cast
+    // Hurricane by a non-perk druid is unaffected because this runs in the
+    // module's world-load path for the Balance perk file regardless of who
+    // holds the perk; a non-Balance druid's hand Hurricane simply casts
+    // instantly too, which is consistent with how Blizzard was already
+    // shipped server-wide.
+    void PatchHurricaneServerSide()
+    {
+        uint32 n = 0;
+        for (uint32 id : SPELL_HURRICANE_RANKS)
+        {
+            SpellInfo* info = const_cast<SpellInfo*>(sSpellMgr->GetSpellInfo(id));
+            if (!info)
+                continue;
+            info->AttributesEx &= ~(SPELL_ATTR1_IS_CHANNELED | SPELL_ATTR1_IS_SELF_CHANNELED);
+            info->InterruptFlags = 0;
+            info->ChannelInterruptFlags = 0;
+            ++n;
+        }
+        LOG_INFO("server.loading", "Living Gear: patched {} Hurricane ranks server-side (de-channeled, places and damages like Death and Decay)", n);
     }
 };
 
