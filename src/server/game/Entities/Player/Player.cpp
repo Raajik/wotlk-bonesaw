@@ -8104,7 +8104,10 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
         {
             if (Group* group = GetGroup())
             {
-                switch (group->GetLootMethod())
+                // Personal loot (#114/#126): consult the effective (override)
+                // method here too - reopening an activated chest must not fall
+                // back to the group's stored Round Robin / Master Loot method.
+                switch (group->GetEffectiveLootMethod())
                 {
                     case MASTER_LOOT:
                         permission = group->GetMasterLooterGuid() == GetGUID() ? MASTER_PERMISSION : RESTRICTED_PERMISSION;
@@ -8337,6 +8340,17 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                     permission = OWNER_PERMISSION;
                 else
                     permission = NONE_PERMISSION;
+
+                // True personal loot (#126): make sure this viewer has their
+                // own per-member FFA view even when they were not within loot
+                // reward distance when the loot was generated (late join, ran
+                // in late). FillNotNormalLootFor is a no-op for a viewer who
+                // already has their views; without this a freeforall-flagged
+                // corpse would show nothing to anyone not filled at kill time.
+                if (loot_type == LOOT_CORPSE && sWorld->getBoolConfig(CONFIG_PERSONAL_LOOT_DUPLICATE))
+                {
+                    loot->FillNotNormalLootFor(this);
+                }
             }
         }
     }

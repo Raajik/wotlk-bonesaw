@@ -502,6 +502,13 @@ void CheckLevelingPerks(Player* player)
 // highest member's XP bonus, not just their own. Currently that is the
 // leveling-perk multiplier (account max-level alt tiers); if more
 // personal XP bonuses appear, fold them in here.
+//
+// Report #136: playerbots were counted in the max. Bot accounts (RNDBOT*)
+// accrue leveling perks like anyone else -- RNDBOT1 already carries three
+// max-level characters, i.e. a x2.5 multiplier -- so grouping with a bot
+// silently raised every human's kill XP to the bot's rate. Only human
+// members set the party bar now; a bot's own XP still uses its own
+// multiplier via the solo path below.
 // ---------------------------------------------------------------------
 float PartyLevelingXpMultiplier(Player* player)
 {
@@ -509,7 +516,7 @@ float PartyLevelingXpMultiplier(Player* player)
     if (Group* group = player->GetGroup())
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
             if (Player* member = itr->GetSource())
-                if (member != player)
+                if (member != player && member->GetSession() && !member->GetSession()->IsBot())
                     best = std::max(best, LevelingXpMultiplier(member));
     return best;
 }
@@ -571,6 +578,11 @@ public:
         amount = uint32(float(amount) * mult);
         if (!amount)
             amount = 1;
+        // Report #136: tuning evidence. One line per hooked kill reward at
+        // debug level -- enable the module.livinggear.xp logger to see what
+        // the parity feature actually paid.
+        LOG_DEBUG("module.livinggear.xp", "party xp parity: {} amount {} mult {:.2f}",
+            player->GetName(), amount, mult);
     }
 
     void OnPlayerLevelChanged(Player* player, uint8 /*oldLevel*/) override

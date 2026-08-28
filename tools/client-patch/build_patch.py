@@ -277,6 +277,15 @@ CHANNELED_ATTR = 0x4 | 0x40
 # Rank 1-9 Blizzard. Instant lingering AoE like Death and Decay.
 BLIZZARD_RANKS = {10, 6141, 8427, 10185, 10186, 10187, 27085, 42939, 42940}
 BLADESTORM_ID = 46924
+# Haunt ranks (spell_ranks chain 48181). Report #125: the server makes Haunt
+# instant for Affliction perk holders (core-patch 0032 zeroes m_casttime in
+# Spell::prepare), but the CLIENT keeps its own DBC copy where Haunt is a
+# 1.5s spell with the movement interrupt bit, and the client's own
+# Spell::CanCast refuses to even send CMSG_CAST_SPELL while moving. Mirror the
+# shipped mount-spell treatment: CastingTimeIndex 1 (instant) and InterruptFlags
+# minus the movement bit, so the client sends the cast and the server (which
+# already instant-casts it for perk holders) accepts it mid-move.
+HAUNT_IDS = {48181, 59161, 59163, 59164}
 # SPELL_ATTR5_ALLOW_ACTION_DURING_CHANNEL
 ATTR5_ACTION_DURING_CHANNEL = 0x1
 
@@ -395,10 +404,16 @@ def patch_spell_dbc():
     blizzard_n = 0
     bladestorm_n = 0
     mount_n = 0
+    haunt_n = 0
     for i in keep_indices:
         rec = read_rec(i)
         is_mount = SPELL_AURA_MOUNTED in (rec[95], rec[96], rec[97])
-        if rec[0] in BLIZZARD_RANKS:
+        if rec[0] in HAUNT_IDS:
+            rec[28] = 1
+            rec[31] &= ~INTERRUPT_FLAG_MOVEMENT
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            haunt_n += 1
+        elif rec[0] in BLIZZARD_RANKS:
             rec[5] &= ~CHANNELED_ATTR
             rec[28] = 1
             rec[29] = 0
@@ -436,6 +451,7 @@ def patch_spell_dbc():
     print(f"Blizzard ranks made instant: {blizzard_n}")
     print(f"Bladestorm action-during-channel, no rage: {bladestorm_n}")
     print(f"Mount spells instant while moving: {mount_n}")
+    print(f"Haunt ranks instant while moving: {haunt_n}")
 
     def make_custom(spell_id: int, name: str, desc: str, icon: int) -> bytes:
         rec = list(template)

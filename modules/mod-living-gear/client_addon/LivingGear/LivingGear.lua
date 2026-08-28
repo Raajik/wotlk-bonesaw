@@ -568,7 +568,7 @@ local CLASS_PERKS = {
           } },
     },
     WARLOCK = {
-        { id = 910157, name = "Affliction", how = "Haunt is instant with no cooldown and seeds your whole DoT set on the target. In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you. DoT ticks deal quadruple damage, increased further by your haste.",
+        { id = 910157, name = "Affliction", how = "Haunt is instant, castable while moving, and has no cooldown. Casting it seeds your whole DoT set on the target: Unstable Affliction (learned with the perk), Corruption, and both Curse of Agony and Curse of the Elements. In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you. DoT ticks deal 2000% damage, increased further by your haste.",
           lines = {
             { spell = 48181, text = "Haunt: instant, no cooldown, and applies Unstable Affliction, Corruption, Curse of Agony and Curse of the Elements to the target." },
             { text = "In combat, your DoTs spread every 1 sec from every infected enemy to others within 15 yards, hopping out as far as 60 yards from you." },
@@ -585,11 +585,11 @@ local CLASS_PERKS = {
           } },
     },
     DRUID = {
-        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once. Insect Swarm spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you. Thorns is maintained on you and your party. Moonfire automatically applies a standalone Hurricane to the target, and Wrath and Starfire each fire the other free and instant at the same target.",
+        { id = 910160, name = "Balance", how = "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled, and each star hit has a 30% chance to cast a free Moonfire on the target, which also drops its standalone Hurricane. You are permanently in both Solar and Lunar Eclipse at once. Insect Swarm spreads to all other enemies within 25 yards of your target when cast, spreads itself from every infected enemy every 1 sec, and refreshes on existing targets. Thorns is maintained on you and your party. Moonfire automatically applies a standalone Hurricane to the target, and Wrath and Starfire each fire the other free and instant at the same target.",
           lines = {
-            { spell = 53201, text = "Starfall: a free toggle. Cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled." },
+            { spell = 53201, text = "Starfall: a free toggle. Cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled, and each star hit has a 30% chance to cast a free Moonfire on the target, which also drops its standalone Hurricane." },
             { text = "You are permanently in both Solar and Lunar Eclipse at once." },
-            { spell = 48468, text = "Insect Swarm: spreads to all other enemies within 25 yards of your target when cast, and auto-casts on enemies that strike you." },
+            { spell = 48468, text = "Insect Swarm: spreads to all other enemies within 25 yards of your target when cast, spreads itself from every infected enemy every 1 sec, auto-casts on enemies that strike you, and refreshes on existing targets." },
             { spell = 53307, text = "Thorns: maintained on you and your party." },
             { spell = 8921, text = "Moonfire: automatically applies a standalone Hurricane to the target." },
             { spell = 2912, text = "Wrath and Starfire: casting one also fires the other free and instant at the same target." },

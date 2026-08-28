@@ -160,6 +160,11 @@ uint32 const SPELL_BLADESTORM = 46924;
 // channel holding the druid in place.
 uint32 const SPELL_HURRICANE_RANKS[] = { 16914, 17401, 17402, 27012, 48467 };
 uint32 const DRUID_HURRICANE_TICK_MS = 1000;
+// Report #130: while Starfall is up, each Starfall damage hit on a target has
+// a 30% chance to fire a free Moonfire at that target. Declared here because
+// TickDruidBalanceStarfall's hook (~:3018) reads it and function bodies are
+// ordered before the druid constants block.
+uint32 const DRUID_STARFALL_MOONFIRE_CHANCE = 30;
 uint32 const SPELL_SHOCKWAVE = 46968;
 uint32 const SPELL_THUNDER_CLAP = 6343;
 uint32 const SPELL_WHIRLWIND = 1680;
@@ -372,11 +377,15 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     // Was empty. The entire perk is Chaos Bolt + Conflagrate, both talents, so
     // an untalented Destruction warlock had a perk that did literally nothing.
     { SPELL_WARLOCK_DESTRUCTION, { SPELL_CHAOS_BOLT_R1, SPELL_CONFLAGRATE_R1, 0 } },
-    // Was the only spec with no entry. Reports #105/#116 gave Affliction a
-    // named ability: Haunt is the perk's button (instant, no cooldown, seeds
-    // the whole DoT set on the target), so it is granted here and auto-applies
-    // the rest from the best rank the warlock owns.
-    { SPELL_WARLOCK_AFFLICTION,  { SPELL_HAUNT, 0, 0 } },
+    // Was the only spec with no entry until reports #105/#116 gave Affliction
+    // a named ability: Haunt is the perk's button (instant, no cooldown, seeds
+    // the whole DoT set on the target). Report #123: Unstable Affliction is
+    // granted here too -- it is a TALENT (30108 chain, trainable via the
+    // Affliction tree, not a trainer spell), so BestOwned() returned 0 for an
+    // untalented warlock and Haunt silently skipped it. Anything a perk grants
+    // has to come through this table or it can never be taken back on spec
+    // switch (see the Frost/Blizzard note above).
+    { SPELL_WARLOCK_AFFLICTION,  { SPELL_HAUNT, SPELL_UNSTABLE_AFFLICTION_R1, 0 } },
     // Fury multiplies Rend and Deep Wounds. Deep Wounds is a pure talent with
     // no castable spell to learn, so only Rend can be handed over.
     { SPELL_WARRIOR_FURY,        { SPELL_REND, 0, 0 } },
@@ -388,16 +397,17 @@ ClassPerkGrant const CLASS_PERK_GRANTS[] =
     { SPELL_PRIEST_HOLY,         { SPELL_GUARDIAN_SPIRIT, 0, 0 } },
     // "Mind Flay deals quadruple damage."
     { SPELL_PRIEST_SHADOW,       { SPELL_SHADOWFIEND, SPELL_MIND_FLAY_R1, 0 } },
-    // Warlock Affliction is the ONLY spec with no entry, and that is correct
-    // under the rule above: it names no ability at all ("your DoTs spread...",
-    // "DoT tick damage is increased by your haste") and amplifies whatever the
-    // warlock already has. Corruption is baseline and arrives early, so there
-    // is nothing to hand over. Do not add an entry just to make 30/30.
 };
 
 float const CLASS_PERK_RANGE = 15.0f;
 uint32 const MAGE_ARCANE_LINGER_MS = 60000;
 uint32 const MAGE_FIRE_TICK_MS = 1000;
+// How far from the mage we look for enemies already carrying Living Bomb to
+// spread FROM (#128). The hop itself is MAGE_FIRE_SPREAD_RANGE; this only
+// bounds the search, so the chain can creep past the mage's own range one hop
+// at a time -- same shape as the warlock affliction contagion constants.
+float const MAGE_FIRE_CONTAGION_RANGE = 60.0f;
+float const MAGE_FIRE_SPREAD_RANGE = CLASS_PERK_RANGE;
 uint32 const MAGE_FROST_ICE_TICK_MS = 2000;
 uint32 const FURY_HASTE_CAP = 20;
 uint32 const FURY_HASTE_PCT_PER_STACK = 5;
@@ -437,8 +447,10 @@ float const WARLOCK_AFFLICTION_CONTAGION_RANGE = 60.0f;
 // That is what makes it read as a spreading plague rather than an instant
 // map-wide application, and it is also what bounds the cost.
 uint32 const WARLOCK_AFFLICTION_MAX_SPREADS_PER_TICK = 60;
-// Report #106: every Affliction DoT periodic tick deals x4 damage.
-float const WARLOCK_AFFLICTION_DOT_MULT = 4.0f;
+// Report #106: every Affliction DoT periodic tick deals increased damage.
+// Report #122: bumped from x4 to 2000% (x21) -- "bump affliction dot damage
+// up to 2000%", verbatim.
+float const WARLOCK_AFFLICTION_DOT_MULT = 21.0f;
 uint32 const DRUID_ECLIPSE_TICK_MS = 3000;
 int32 const DRUID_ECLIPSE_REFRESH_DURATION = 15000;
 uint32 const DRUID_REJUV_SPREAD_TICK_MS = 3000;
@@ -504,6 +516,7 @@ std::unordered_map<uint32, uint32> g_bladestormTick;
 std::unordered_map<uint32, TickState> g_eclipseTick;
 std::unordered_map<uint32, TickState> g_rejuvTick;
 std::unordered_map<uint32, TickState> g_thornsTick;
+std::unordered_map<uint32, TickState> g_insectTick;
 
 std::unordered_set<uint32> g_perkLoaded;              // account ids already loaded
 std::unordered_map<uint32, std::unordered_set<uint32>> g_perks; // account id -> unlocked spell ids
@@ -1339,34 +1352,50 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
     if (st.fireTickAcc < MAGE_FIRE_TICK_MS)
         return;
     st.fireTickAcc = 0;
-    bool anyBombed = false;
-    uint32 inRange = 0;
-    ForEachHostileInRange(player, CLASS_PERK_RANGE, [player, &anyBombed, &inRange](Unit* target)
-    {
-        ++inRange;
-        if (target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
-            anyBombed = true;
-    });
-    if (!anyBombed)
-        return;
+    // Report #128: "Living Bomb only spreads from me directly to things within
+    // range, not from the bomb itself." The old loop searched around the PLAYER
+    // and cast on every clean enemy in that radius, so the bomb never hopped
+    // enemy-to-enemy beyond the mage's own reach. Mirror TickWarlockAffliction's
+    // carrier-based contagion: collect every enemy carrying MY Living Bomb
+    // (carriers, searched out to MAGE_FIRE_CONTAGION_RANGE so the chain can
+    // creep well past casting range one hop at a time), then apply Living Bomb
+    // to every clean enemy within MAGE_FIRE_SPREAD_RANGE of any carrier. The
+    // mage is only the cast source, never the search center. Detonation (the
+    // Fire Blast hook above) is untouched, and carriers are snapshotted before
+    // anything is applied so one tick is one hop.
     uint32 const guid = player->GetGUID().GetCounter();
     if (!g_reentryGuard.insert(guid).second)
         return;
-    uint32 spread = 0, failed = 0, alreadyBombed = 0;
-    SpellCastResult lastResult = SPELL_CAST_OK;
-    ForEachHostileInRange(player, CLASS_PERK_RANGE, [player, &spread, &failed, &alreadyBombed, &lastResult](Unit* target)
+
+    std::vector<Unit*> carriers;
+    std::vector<Unit*> clean;
+    ForEachHostileInRange(player, MAGE_FIRE_CONTAGION_RANGE, [player, &carriers, &clean](Unit* target)
     {
         if (target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
-        {
-            ++alreadyBombed;
-            return;
-        }
-        // Bug report #52: "Living Bomb not auto spreading in combat." The tick
-        // read correct on inspection -- same shape as the affliction fix that
-        // DID work -- so count what actually happens per tick instead of
-        // trusting that it does. BestOwnedOrFirst guarantees a spell ID, so a
-        // failure here is a Spell::cast rejection (range, facing, weapon,
-        // target invalid) that the silent CastSpell used to swallow.
+            carriers.push_back(target);
+        else
+            clean.push_back(target);
+    });
+
+    uint32 spread = 0, failed = 0;
+    SpellCastResult lastResult = SPELL_CAST_OK;
+    for (Unit* target : clean)
+    {
+        bool nearCarrier = false;
+        for (Unit* carrier : carriers)
+            if (target->IsWithinDist(carrier, MAGE_FIRE_SPREAD_RANGE))
+            {
+                nearCarrier = true;
+                break;
+            }
+
+        if (!nearCarrier)
+            continue;
+
+        // Report #52 instrumentation kept: count cast results per tick instead
+        // of trusting the silent CastSpell. BestOwnedOrFirst guarantees a spell
+        // ID, so a failure is a Spell::cast rejection (range, facing, target
+        // invalid) that would otherwise be swallowed.
         SpellCastResult const res =
             player->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true);
         if (res == SPELL_CAST_OK)
@@ -1376,11 +1405,12 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
             ++failed;
             lastResult = res;
         }
-    });
-    if (spread || failed || inRange)
+    }
+
+    if (spread || failed)
         LOG_DEBUG("module.livinggear",
-            "mage fire spread: {} in range, {} already bombed, {} cast, {} failed (last result {})",
-            inRange, alreadyBombed, spread, failed, uint32(lastResult));
+            "living bomb spread: {} carrier(s), {} clean, {} cast, {} failed (last result {})",
+            carriers.size(), clean.size(), spread, failed, uint32(lastResult));
     g_reentryGuard.erase(guid);
 }
 
@@ -2782,10 +2812,20 @@ void TryWarlockAfflictionOnCast(Player* player, Spell* spell)
     Unit* target = spell->m_targets.GetUnitTarget();
     if (!target)
         return;
+    // Report #123: UA comes off CLASS_PERK_GRANTS now (it is a talent, not a
+    // trainer spell), so BestOwnedOrFirst hands over rank 1 -- the perk grant
+    // then records it in lg_char_class_grant and BestOwned finds the best rank
+    // from the next cast on. Same shape as the hunter stings and the druid
+    // Insect Swarm, which also cast granted/baseline spells by chain head.
     for (uint32 const firstId : { SPELL_UNSTABLE_AFFLICTION_R1, SPELL_CORRUPTION_R1,
                                   SPELL_CURSE_OF_AGONY_R1, SPELL_CURSE_OF_ELEMENTS_R1 })
-        if (uint32 const best = BestOwned(player, firstId))
+    {
+        uint32 const best = firstId == SPELL_UNSTABLE_AFFLICTION_R1
+            ? BestOwnedOrFirst(player, firstId)
+            : BestOwned(player, firstId);
+        if (best)
             player->CastSpell(target, best, true);
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -2922,6 +2962,95 @@ void TickDruidBalanceStarfall(Player* player)
             }
 }
 
+// Report #130: "Starfall to have a 30% chance of casting a free Moonfire on
+// any hit target (which would then automatically apply Hurricane as well)".
+//
+// Detection is rank-correct by construction instead of a hardcoded spell-id
+// list (the exact trap the Balance multiplier comment below warns about):
+// whatever rank of Starfall the druid is running, its toggle aura's
+// SPELL_AURA_PERIODIC_TRIGGER_SPELL effect names that rank's dummy spell, and
+// the dummy's EFFECT_0 value IS the AoE damage spell that actually hits
+// (verified against the shipped spell_dru_starfall_dummy script: HandleDummy
+// casts GetEffectValue() at the hit unit, and 50286's dummy value is 50288).
+// So: read the aura -> read the dummy -> compare against the spell that just
+// dealt damage.
+bool IsStarfallDamageSpell(Player* player, SpellInfo const* info)
+{
+    if (!player || !info)
+        return false;
+    for (uint32 id = SPELL_STARFALL; id; id = sSpellMgr->GetNextSpellInChain(id))
+    {
+        SpellInfo const* toggle = sSpellMgr->GetSpellInfo(id);
+        if (!toggle || !player->HasAura(id))
+            continue;
+        for (uint8 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+        {
+            if (toggle->Effects[eff].ApplyAuraName != SPELL_AURA_PERIODIC_TRIGGER_SPELL)
+                continue;
+            SpellInfo const* dummy = sSpellMgr->GetSpellInfo(toggle->Effects[eff].TriggerSpell);
+            if (!dummy)
+                continue;
+            for (uint8 deff = 0; deff < MAX_SPELL_EFFECTS; ++deff)
+                // DBC value semantics: an effect's calculated value is
+                // BasePoints + 1 for a DieSides=1 dummy, which is how the
+                // dummy carries the AoE spell id.
+                if (dummy->Effects[deff].Effect && dummy->Effects[deff].BasePoints + 1 == int32(info->Id))
+                    return true;
+        }
+    }
+    return false;
+}
+
+// The proc half. Runs from ModifySpellDamageTaken (direct spell damage -- the
+// Starfall AoE hits land there) so the target is the unit the star actually
+// hit, not "every nearby enemy" like a tick-loop proc would be.
+//
+// CASCADE, fired explicitly: the report wants Moonfire to drag its Hurricane
+// along. The Moonfire->Hurricane hook (TryDruidBalanceMoonfireHurricane) is
+// dispatched from OnPlayerSpellCast, which early-returns on triggered casts --
+// so a free triggered Moonfire can never cascade on its own. We therefore cast
+// the Hurricane directly here, with the same explicit source/target positions
+// that hook uses. Recursion is safe both ways: both casts are TRIGGERED_FULL_MASK
+// (the IsTriggered() dispatch guard ignores them), and Moonfire/Hurricane
+// damage can never match IsStarfallDamageSpell.
+void TryDruidBalanceStarfallMoonfire(Unit* attacker, Unit* target, SpellInfo const* info)
+{
+    Player* player = attacker ? attacker->ToPlayer() : nullptr;
+    if (!player || !target || !info || GetClassPerk(player) != SPELL_DRUID_BALANCE)
+        return;
+    if (!HasAuraRankOf(player, SPELL_STARFALL) || !IsStarfallDamageSpell(player, info))
+        return;
+    if (!player->IsValidAttackTarget(target) || !roll_chance_i(DRUID_STARFALL_MOONFIRE_CHANCE))
+        return;
+
+    uint32 const moonfire = BestOwnedOrFirst(player, SPELL_MOONFIRE_R1);
+    uint32 const hurricane = BestOwned(player, SPELL_HURRICANE_R1);
+    ObjectGuid const playerGuid = player->GetGUID();
+    ObjectGuid const targetGuid = target->GetGUID();
+    // Deferred one tick like ClearCooldownAfterCast: this runs mid-way through
+    // the Starfall damage event, and casting synchronously from inside another
+    // spell's damage pipeline is the reentrancy shape the _AddAura crash
+    // history forbids.
+    player->m_Events.AddEventAtOffset([playerGuid, targetGuid, moonfire, hurricane]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !p->IsInWorld())
+            return;
+        Unit* t = ObjectAccessor::GetUnit(*p, targetGuid);
+        if (!t || !t->IsInWorld() || !t->IsAlive() || !p->IsValidAttackTarget(t))
+            return;
+        p->CastSpell(t, moonfire, true);
+        if (hurricane)
+        {
+            SpellCastTargets targets;
+            targets.SetUnitTarget(t);
+            targets.SetSrc(t->GetPosition());
+            targets.SetDst(t->GetPosition());
+            p->CastSpell(targets, sSpellMgr->GetSpellInfo(hurricane), nullptr, TRIGGERED_FULL_MASK);
+        }
+    }, std::chrono::milliseconds(1));
+}
+
 // The off-switch. Runs in CheckCast's strict pass -- see the ordering note above.
 void TryDruidBalanceStarfallToggleOff(Spell* spell, bool strict, SpellCastResult& res)
 {
@@ -3000,6 +3129,16 @@ void TickDruidBalanceEclipse(Player* player, TickState& st, uint32 diff)
 // -------------------------------------------------------------------------
 uint32 const DRUID_BALANCE_INSECT_RANGE = 25;
 uint32 const DRUID_BALANCE_THORNS_TICK_MS = 5000;
+// Report #119: Insect Swarm is contagious on its own, like the warlock DoT
+// plague -- carriers spread it onward, not just the cast target. Same shape
+// and bounds as the warlock spread tick: one grid search per second, hop
+// range 25 yards, search bounded at 60 yards from the druid.
+uint32 const DRUID_INSECT_CONTAGION_TICK_MS = 1000;
+float const DRUID_INSECT_CONTAGION_SEARCH_RANGE = 60.0f;
+uint32 const DRUID_INSECT_MAX_SPREADS_PER_TICK = 60;
+// A carrier this low on duration gets topped up by a fresh cast (report #119:
+// "refreshing duration on existing targets") instead of ticking out.
+uint32 const DRUID_INSECT_REFRESH_THRESHOLD_MS = 2000;
 
 // Cast-side spread. "On cast" is the OnPlayerSpellCast hook (fired from
 // Spell::_cast), which is also where every other perk's free-cast /
@@ -3018,8 +3157,11 @@ void TryDruidBalanceInsectSpread(Player* player, Spell* spell)
     ForEachHostileNear(player, victim ? victim : player,
         float(DRUID_BALANCE_INSECT_RANGE), [player, victim](Unit* target)
     {
-        if (target == victim || target->HasAura(SPELL_INSECT_SWARM_R1, player->GetGUID()))
+        if (target == victim)
             return;
+        // Report #119: a target already carrying my swarm gets a fresh cast
+        // (refresh) instead of being skipped. Was HasAura(SPELL_INSECT_SWARM_R1)
+        // which also missed every rank above rank 1.
         player->CastSpell(target, BestOwnedOrFirst(player, SPELL_INSECT_SWARM_R1), true);
     });
     g_reentryGuard.erase(guid);
@@ -3037,6 +3179,73 @@ void TryDruidBalanceInsectOnStruck(Unit* attacker, Unit* victim)
     if (attacker->HasAura(SPELL_INSECT_SWARM_R1, player->GetGUID()))
         return;
     player->CastSpell(attacker, BestOwnedOrFirst(player, SPELL_INSECT_SWARM_R1), true);
+}
+
+// Report #119: the contagious half. Every second, enemies carrying MY Insect
+// Swarm (any rank -- the old HasAura(SPELL_INSECT_SWARM_R1, ...) checks only
+// ever matched rank 1) pass it on to clean enemies within 25 yards of the
+// carrier, and carriers about to tick out get refreshed. Same carrier split
+// as TickWarlockAffliction: one grid search per tick, carriers snapshotted
+// before anything is cast, casts capped as a backstop.
+void TickDruidBalanceInsectContagion(Player* player, TickState& st, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_DRUID_BALANCE || !player->IsAlive() || !player->IsInCombat())
+        return;
+    st.acc += diff;
+    if (st.acc < DRUID_INSECT_CONTAGION_TICK_MS)
+        return;
+    st.acc = 0;
+
+    uint32 const guid = player->GetGUID().GetCounter();
+    if (!g_reentryGuard.insert(guid).second)
+        return;
+
+    auto swarmOn = [player](Unit* unit) -> Aura*
+    {
+        for (uint32 id = SPELL_INSECT_SWARM_R1; id; id = sSpellMgr->GetNextSpellInChain(id))
+            if (Aura* aura = unit->GetAura(id, player->GetGUID()))
+                return aura;
+        return nullptr;
+    };
+
+    std::vector<Unit*> carriers;
+    std::vector<Unit*> clean;
+    ForEachHostileInRange(player, DRUID_INSECT_CONTAGION_SEARCH_RANGE, [&](Unit* unit)
+    {
+        if (swarmOn(unit))
+            carriers.push_back(unit);
+        else
+            clean.push_back(unit);
+    });
+
+    uint32 const swarm = BestOwnedOrFirst(player, SPELL_INSECT_SWARM_R1);
+    uint32 spread = 0;
+    for (Unit* carrier : carriers)
+    {
+        if (Aura* aura = swarmOn(carrier))
+            if (aura->GetDuration() >= 0 && uint32(aura->GetDuration()) < DRUID_INSECT_REFRESH_THRESHOLD_MS)
+            {
+                ++spread;
+                player->CastSpell(carrier, swarm, true);
+            }
+    }
+    for (Unit* target : clean)
+    {
+        if (spread >= DRUID_INSECT_MAX_SPREADS_PER_TICK)
+            break;
+        for (Unit* carrier : carriers)
+        {
+            if (!target->IsWithinDist(carrier, float(DRUID_BALANCE_INSECT_RANGE)))
+                continue;
+            ++spread;
+            player->CastSpell(target, swarm, true);
+            break; // one fresh application per clean target is enough
+        }
+    }
+
+    LOG_DEBUG("module.livinggear", "insect contagion: {} carrier(s), {} clean, {} cast(s) this tick",
+        carriers.size(), clean.size(), spread);
+    g_reentryGuard.erase(guid);
 }
 
 // -------------------------------------------------------------------------
@@ -3728,6 +3937,7 @@ public:
         g_afflictionTick.erase(guid);
         g_bladestormTick.erase(guid);
         g_eclipseTick.erase(guid);
+        g_insectTick.erase(guid);
         g_rejuvTick.erase(guid);
         auto army = g_armyGroup.find(guid);
         if (army != g_armyGroup.end())
@@ -3797,6 +4007,7 @@ public:
             TickDruidBalanceStarfall(player);
             TickDruidBalanceThorns(player, g_thornsTick[player->GetGUID().GetCounter()], diff);
             TickDruidBalanceHurricane(player, g_eclipseTick[player->GetGUID().GetCounter()], diff);
+            TickDruidBalanceInsectContagion(player, g_insectTick[player->GetGUID().GetCounter()], diff);
         }
         else if (selected == SPELL_DRUID_RESTORATION)
         {
@@ -3948,6 +4159,7 @@ public:
         ApplyMageFrostDamage(attacker, damage, spellInfo);
         ApplyMageArcaneDamage(attacker, damage, spellInfo);
         ApplyDruidBalanceDamage(attacker, damage, spellInfo);
+        TryDruidBalanceStarfallMoonfire(target, attacker, spellInfo);
         ApplyWarlockDemoPetSpellDamage(attacker, damage);
         if (target)
             ApplyHunterSurvivalTrapImmunity(attacker, target, damage, spellInfo);

@@ -219,6 +219,19 @@ struct LgStats
         return str + agi + sta + intel + spi + armor;
     }
 
+    // Sum of the secondary block, damage pair excluded (weapon damage stays a
+    // property of the held weapon). Report #127: a suffix-only item such as
+    // Tumultuous Necklace "of the Bandit" carries nothing but secondaries, so
+    // eligibility checks that only looked at Total() rejected it outright.
+    float SecondaryTotal() const
+    {
+        float sum = 0.0f;
+        for (int i = 0; i < LG_SEC_COUNT; ++i)
+            if (i != LG_SEC_DMG_MIN && i != LG_SEC_DMG_MAX)
+                sum += sec[i];
+        return sum;
+    }
+
     LgStats& operator+=(LgStats const& o)
     {
         str += o.str;
@@ -955,7 +968,14 @@ uint32 AttuneRateFor(uint32 accountId)
 // Attune one item entry for an account. Returns false if the account already
 // has it -- each unique item credits exactly once, which is the whole point:
 // nothing is ever unfinishable and there is no farming treadmill.
-bool AttuneItemEntry(Player* player, uint32 itemEntry)
+//
+// Report #127: the item's own copy is read too (ReadSuffixStats), because
+// items whose ENTIRE stat line is a random suffix -- Tumultuous Necklace
+// "of the Bandit"/"of the Champion" (entry 51996) -- have zero template
+// stats and zero armor, so the old primaries-only eligibility check
+// declined every one of them. Their secondaries now bank alongside the
+// primaries, same as report #111 did for template stat rows.
+bool AttuneItemEntry(Player* player, uint32 itemEntry, Item const* item = nullptr)
 {
     if (!player || !player->GetSession())
         return false;
@@ -975,7 +995,8 @@ bool AttuneItemEntry(Player* player, uint32 itemEntry)
     // secondary columns bank alongside the primaries (the dmg pair excepted --
     // weapon damage stays a property of the held weapon).
     LgStats full = ReadBaseStats(proto);
-    if (full.Total() <= 0.0f)
+    full += ReadSuffixStats(item);
+    if (full.Total() <= 0.0f && full.SecondaryTotal() <= 0.0f)
         return false;
 
     CharacterDatabase.DirectExecute(
@@ -1799,7 +1820,7 @@ static bool SacrificeItem(Player* player, Item* item, ChatHandler* handler)
     // auto-attune on it would otherwise be destroyed the instant it was
     // materialized -- a recreate-then-instantly-lose loop.
     LgStats const banked = ReadBaseStats(proto);
-    if (!AttuneItemEntry(player, st.itemEntry))
+    if (!AttuneItemEntry(player, st.itemEntry, item))
     {
         handler->PSendSysMessage(
             "|cffffcc00[Living Gear]|r This item is already attuned to the account. "
@@ -1868,8 +1889,11 @@ static void BankCollection(Player* player, uint32 pct)
         if (!proto || !IsEligible(proto))
             continue;
 
+        // Report #127: the suffix's own stats ride along, so a bagged copy of
+        // "of the Bandit" banks something under Curator coverage too.
         LgStats slice = ReadBaseStats(proto);
-        if (slice.Total() <= 0.0f)
+        slice += ReadSuffixStats(it);
+        if (slice.Total() <= 0.0f && slice.SecondaryTotal() <= 0.0f)
             continue;
         slice.str *= share;
         slice.agi *= share;
@@ -1883,18 +1907,28 @@ static void BankCollection(Player* player, uint32 pct)
             if (i != LG_SEC_DMG_MIN && i != LG_SEC_DMG_MAX)
                 slice.sec[i] *= share;
 
+        // Report #127: the ratchet previously compared primaries only, so a
+        // suffix-only item (slice.Total() == 0) was skipped forever even after
+        // its secondaries became worth banking. Compare primaries + secondaries
+        // on both sides instead.
         float existingTotal = 0.0f;
         bool firstTime = true;
         if (QueryResult prev = CharacterDatabase.Query(
-            "SELECT `str`, `agi`, `sta`, `intel`, `spi`, `armor` FROM `lg_absorb` "
+            "SELECT `str`, `agi`, `sta`, `intel`, `spi`, `armor`, "
+            "`sec_crit`, `sec_hit`, `sec_haste`, `sec_expertise`, `sec_armor_pen`, `sec_resilience`, "
+            "`sec_attack_power`, `sec_spell_power`, `sec_defense`, `sec_dodge`, `sec_parry`, "
+            "`sec_block`, `sec_mp5`, `sec_health_regen`, `sec_spell_pen`, `sec_block_value` "
+            "FROM `lg_absorb` "
             "WHERE `account_id` = {} AND `item_entry` = {}", accountId, proto->ItemId))
         {
             firstTime = false;
             Field* f = prev->Fetch();
             existingTotal = f[0].Get<float>() + f[1].Get<float>() + f[2].Get<float>()
                 + f[3].Get<float>() + f[4].Get<float>() + f[5].Get<float>();
+            for (uint32 i = 6; i < 22; ++i)
+                existingTotal += f[i].Get<float>();
         }
-        if (slice.Total() <= existingTotal + 0.01f)
+        if (slice.Total() + slice.SecondaryTotal() <= existingTotal + 0.01f)
             continue;
 
         CharacterDatabase.DirectExecute(
@@ -1960,7 +1994,7 @@ static bool HandleAttuneMessage(Player* player, std::string const& raw)
             ItemTemplate const* proto = it->GetTemplate();
             if (!proto || !IsEligible(proto))
                 continue;
-            if (AttuneItemEntry(player, proto->ItemId))
+            if (AttuneItemEntry(player, proto->ItemId, it))
             {
                 player->DestroyItem(it->GetBagSlot(), it->GetSlot(), true);
                 ++attuned;

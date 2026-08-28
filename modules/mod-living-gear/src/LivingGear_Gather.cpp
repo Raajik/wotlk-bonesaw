@@ -51,6 +51,7 @@ void LivingGear_SendAddonLine(Player* player, std::string const& line); // Livin
 bool LivingGear_SafeToCastOn(Player* player); // LivingGear_Support.cpp
 void LivingGear_DiagBump(Player* player, char const* key); // LivingGear_Support.cpp
 bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
+namespace LivingGearVault { bool InstantPickLock(Player* player, Item* item); } // LivingGear_Vault.cpp
 
 namespace LivingGearGather
 {
@@ -905,19 +906,36 @@ void TryAutoCatchFish(Player* player)
 // CanOpenLock (account-wide skill, core-patch 0005) -> unlock ->
 // OnPlayerUseGameObject -> TryAutolootChest -> autoloot.
 //
-// Runs at the START of ScanGather, before the reach-perk early return -- a
-// Rogue with no Gather reach perks would otherwise be skipped entirely and
-// never even look at chests.
+// Report #135: "i don't have access to my rogue's lockpicking skill (which was
+// something we'd previously requested) to auto-unlock chests and lockboxes".
+// The auto-unlock scan used to run for Rogues only, but the skill itself is
+// account-wide (core-patch 0005): any character can open what the account's
+// best lockpicker could. The scan now runs for everyone and reads that same
+// account-wide skill, and also sweeps the player's own BAGS for locked
+// lockboxes -- a lockbox sitting in an alt's bags could only ever be opened by
+// casting the Rogue-only Pick Lock spell at it, which the alt cannot do.
+//
+// Runs at the START of ScanGather, before the reach-perk early return -- so it
+// still fires for players with no Gather reach perks at all.
 void ScanLockpick(Player* player)
 {
     if (!player || !player->IsAlive())
         return;
     if (!sSpellMgr->GetSpellInfo(SPELL_LOCKPICK))
         return;
-    // Only Rogues get Lockpicking at all; skip the scan for everyone else.
-    if (player->getClass() != CLASS_ROGUE)
-        return;
-    uint32 const skill = LivingGear_AccountLockpickSkill(player);
+    // The account-wide skill read hits the character DB; cache it briefly so
+    // every player on the realm can run this scan every tick without turning
+    // that into a query per player per 400ms.
+    static std::unordered_map<uint32, std::pair<uint32, uint32>> s_accountSkillCache;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    uint32 const now = getMSTime();
+    auto cached = s_accountSkillCache.find(accountId);
+    if (cached == s_accountSkillCache.end() || getMSTimeDiff(cached->second.second, now) > 10000)
+    {
+        uint32 const skill = LivingGear_AccountLockpickSkill(player);
+        cached = s_accountSkillCache.insert_or_assign(accountId, std::make_pair(skill, now)).first;
+    }
+    uint32 const skill = cached->second.first;
     if (!skill)
         return;
 
@@ -962,6 +980,22 @@ void ScanLockpick(Player* player)
         // range/facing of the player's own cast.
         player->CastSpell(go, SPELL_LOCKPICK, true);
     }
+
+    // Locked lockboxes in the player's own bags. InstantPickLock (the same
+    // path vault withdrawals use) validates the lock type and the account
+    // skill itself and marks the item unlocked in place.
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    {
+        Bag* const container = player->GetBagByPos(bag);
+        if (!container)
+            continue;
+        for (uint8 slot = 0; slot < container->GetBagSize(); ++slot)
+            if (Item* item = container->GetItemByPos(slot))
+                LivingGearVault::InstantPickLock(player, item);
+    }
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            LivingGearVault::InstantPickLock(player, item);
 }
 
 void ScanGather(Player* player)

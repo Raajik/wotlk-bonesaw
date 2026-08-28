@@ -362,6 +362,8 @@ void WorldConfig::BuildConfigCache()
 
     SetConfigValue<bool>(CONFIG_PERSONAL_LOOT_ALL, "Loot.PersonalLootAll", true);
 
+    SetConfigValue<bool>(CONFIG_PERSONAL_LOOT_DUPLICATE, "Loot.PersonalLootDuplicate", true);
+
     SetConfigValue<bool>(CONFIG_CAIS_ENABLED, "CAIS.Enable", false);
 
     SetConfigValue<uint32>(CONFIG_EVENT_ANNOUNCE, "Event.Announce", 0);
