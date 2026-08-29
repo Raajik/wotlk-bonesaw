@@ -188,7 +188,13 @@ def main() -> None:
     notes = write_patch_notes(version)
     run(f"python tools/post_patch_notes.py \"{notes}\" --dry-run")
     run(f'python tools/post_patch_notes.py "{notes}"')
-    run(f"gh release edit v{version} --repo {REPO} --notes-file \"{notes}\"")
+    if client:
+        run(f"gh release edit v{version} --repo {REPO} --notes-file \"{notes}\"")
+    else:
+        # No client ship -> no GitHub release exists (created only in step 4).
+        # Create a server-only release so the notes still live on the tag page.
+        run(f'gh release create v{version} --repo {REPO} --latest '
+            f'--title "Bonesaw {version}" --notes-file "{notes}"')
     run(f'git add "{notes.relative_to(ROOT)}" && '
         f'git commit -m "Patch notes {version}"')
 
