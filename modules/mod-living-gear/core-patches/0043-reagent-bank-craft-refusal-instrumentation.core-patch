@@ -1,0 +1,23 @@
+Report #137/#138 (recurring "missing reagent" from the reagent bank): the
+craft refusal path in Spell::CheckItems shipped with ZERO instrumentation,
+which is why four "fixes" could not be diagnosed -- a silent early-return
+leaves nothing in Server.log to read. Per the 0.1.104/0.1.105 sweep lesson,
+this module's diagnostic counters are LOG_INFO so they reach Server.log at
+the live Logger.module level.
+
+When a craft is refused with SPELL_FAILED_REAGENTS and the vault was
+consulted, the log now names the spell id, the reagent id and count, the
+bags+bank stock, and the vault stock. A genuine shortfall vs a stale client
+is then distinguishable from the log alone.
+
+Additions:
+- LivingGearVault::VaultCount exposed as LivingGear_VaultCountForDiag()
+  (read-only) and forward-declared in Spell.cpp next to the existing
+  LivingGear vault prototypes.
+- Refusal site in Spell::CheckItems (the SPELL_FAILED_REAGENTS return in
+  the Reagent[] loop, ~line 7474) logs
+  "reagent bank craft refused: spell N wants ITEM xN, bags+bank N, vault N"
+  before returning.
+
+No behavior change: the gate, the answer, and the return value are identical;
+only the log line is new.

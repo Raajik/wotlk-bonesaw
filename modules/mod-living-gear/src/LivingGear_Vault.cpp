@@ -1816,6 +1816,16 @@ bool LivingGear_VaultCoversReagent(Player* player, uint32 itemId, uint32 needed)
     return LivingGearVault::VaultCoversReagent(player, itemId, needed);
 }
 
+// Report #137/#138 instrumentation: vault stock for one reagent, for the
+// refusal log line in Spell::CheckItems. Read-only.
+uint32 LivingGear_VaultCountForDiag(Player* player, uint32 itemId)
+{
+    if (!player || !player->GetSession())
+        return 0;
+    return LivingGearVault::VaultCount(player->GetSession()->GetAccountId(), 0,
+        VAULT_REAGENT, itemId);
+}
+
 void LivingGear_ConsumeReagent(Player* player, uint32 itemId, uint32 count)
 {
     LivingGearVault::ConsumeReagentBagThenVault(player, itemId, count);

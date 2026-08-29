@@ -108,6 +108,8 @@ bool LivingGear_SpellIsInstantCast(Unit* caster, uint32 spellId);
 // reagent requirement? Answers in place -- banked reagents count as
 // "in your backpack" for crafting, and nothing is moved (LivingGear_Vault.cpp).
 bool LivingGear_VaultCoversReagent(Player* player, uint32 itemId, uint32 needed);
+// Report #137/#138 instrumentation: vault stock of one reagent for log lines.
+uint32 LivingGear_VaultCountForDiag(Player* player, uint32 itemId);
 // Living Gear core-patch: consumes spell reagents from the bags/bank first,
 // then the account reagent vault, so crafting pays for banked materials
 // without them ever passing through a bag (LivingGear_Vault.cpp).
@@ -7471,9 +7473,21 @@ SpellCastResult Spell::CheckItems(uint32* param1, uint32* param2)
                 // as carried. Answered in place -- nothing is withdrawn into
                 // the bags (core-patch 0029); TakeReagents pays the shortfall
                 // straight out of the vault.
+                // Report #137/#138 instrumentation: this module's diagnostic
+                // counters are LOG_INFO so they survive the live Logger.module
+                // level and reach Server.log -- a refusal here names the spell,
+                // the reagent, bag stock and vault stock, so a recurrence is
+                // diagnosable from the log alone instead of another blind fix.
                 if (!player->HasItemCount(itemid, itemcount, true)
                     && !LivingGear_VaultCoversReagent(player, itemid, itemcount))
+                {
+                    LOG_INFO("module.livinggear",
+                        "reagent bank craft refused: spell {} wants {} x{}, bags+bank {}, vault {}",
+                        m_spellInfo->Id, itemid, itemcount,
+                        player->GetItemCount(itemid, true),
+                        LivingGear_VaultCountForDiag(player, itemid));
                     return SPELL_FAILED_REAGENTS;
+                }
             }
         }
 
