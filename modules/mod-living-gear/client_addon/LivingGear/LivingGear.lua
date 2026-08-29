@@ -5253,6 +5253,7 @@ function LG2.UpsertVault(kind, entry, count, name)
                 db.vault[i].count = count
                 db.vault[i].name = name
             end
+            LG2._vaultGen = (LG2._vaultGen or 0) + 1
             return
         end
     end
@@ -6523,6 +6524,35 @@ if LG2._origCraftInfo then
         return name, subName, craftType, numAvailable, isExpanded, cost, level
     end
 end
+
+-- Report #137/#138 (recurring): batch-crafting from the reagent bank reads as
+-- "missing reagent" partway through. The server is right when it says no --
+-- a spam-clicked batch can outrun the vault -- but the client made the
+-- promise. Two holes, both closed now:
+--   1. UpsertVault updated an existing row's count WITHOUT bumping
+--      _vaultGen, so a live VLT| line during a craft left VaultMap and
+--      CraftableWithVault showing the pre-craft count. The update path bumps
+--      now, same as the insert path always did.
+--   2. A refusal that was true a moment ago says nothing about now: between
+--      the click and the error the vault may have changed under us. The
+--      UI_ERROR_MESSAGE handler below drops the craftable cache on any
+--      reagent error so the next frame's counts are recomputed from the
+--      vault as it actually stands -- the window heals itself instead of
+--      staying stale until the next BAG_UPDATE.
+-- Own frame for this handler: the main event frame is declared further down
+-- the file, and at this load point it does not exist yet. Registering
+-- UI_ERROR_MESSAGE here keeps the cache-heal independent of load order.
+local evCraftErr = CreateFrame("Frame")
+evCraftErr:RegisterEvent("UI_ERROR_MESSAGE")
+evCraftErr:SetScript("OnEvent", function(_, _, a1, a2)
+    -- a1 is the message id, a2 the text (3.3.5 fires both shapes)
+    local text = a2 or (GetGameMessageText and GetGameMessageText(a1)) or a1
+    if type(text) == "string" and (string.find(text, SPELL_FAILED_REAGENTS or "Missing reagent", 1, true)
+        or string.find(text, ERR_SPELL_FAILED_REAGENTS_GENERIC or "Missing reagent", 1, true)) then
+        LG2._craftAvail, LG2._craftAvailGen = {}, nil
+        LG2._bagGen = (LG2._bagGen or 0) + 1
+    end
+end)
 
 local origCraftReagent = GetCraftReagentInfo
 if origCraftReagent and GetCraftReagentItemLink then
