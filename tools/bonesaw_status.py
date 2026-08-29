@@ -232,10 +232,20 @@ def main():
         if served == version:
             out.append("  live manifest     %s  OK -- this is what launchers pull" % served)
         else:
-            out.append("  live manifest     %s  STALE -- players stay on %s until the updater release asset is refreshed"
-                       % (served, served))
-            problems.append("manifest asset serves %s, not %s -- the client ship has reached nobody"
-                            % (served, version))
+            # The manifest only needs to match the version when the CLIENT
+            # changed. A server-only ship (no client_addon / client-patch /
+            # launcher commits since the served version's ship) correctly
+            # leaves players on the old client -- nothing new to download.
+            since = run(["git", "log", "--oneline", "v%s..HEAD" % served, "--",
+                         "modules/mod-living-gear/client_addon",
+                         "tools/client-patch", "tools/launcher"])
+            if since:
+                out.append("  live manifest     %s  STALE -- players stay on %s until the updater release asset is refreshed"
+                           % (served, served))
+                problems.append("manifest asset serves %s, not %s -- the client ship has reached nobody"
+                                % (served, version))
+            else:
+                out.append("  live manifest     %s  OK -- server-only ship, client unchanged" % served)
 
     # --- 6. can a remote player actually reach the world server? ----------
     # Two addresses have to agree. The manifest tells the client where to send
