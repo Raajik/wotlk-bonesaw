@@ -376,13 +376,14 @@ void ApplySpeedCap(Player* player)
 {
     if (!player || !player->IsInWorld())
         return;
+    // Report #180: the cap is a foot-travel guard; flying stays uncapped
+    // ("i'm fine with this on foot, but i'd like there to be no cap whilst
+    // flying"). Flight speed is left to the client-side flying mount rules.
     float const cap = float(SpeedCapPct(player)) / 100.0f;
     if (player->GetSpeedRate(MOVE_RUN) > cap)
         player->SetSpeed(MOVE_RUN, cap, true);
     if (player->GetSpeedRate(MOVE_SWIM) > cap)
         player->SetSpeed(MOVE_SWIM, cap, true);
-    if (player->GetSpeedRate(MOVE_FLIGHT) > cap)
-        player->SetSpeed(MOVE_FLIGHT, cap, true);
 }
 
 void LoadClassBuffUnlock(uint32 accountId)
