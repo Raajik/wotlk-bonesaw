@@ -3332,13 +3332,20 @@ public:
             return;
         }
         int32 const before = spell->GetCastTime();
-        spell->SetCastTime(int32(float(before) * std::pow(0.80f, float(ranks))));
+        // Report #181: the 0.8^ranks multiplier did nothing players could feel
+        // -- every trade skill crafts at CastingTimeIndex 1 (~500ms) with no
+        // GCD, so "20% faster" was 100ms and BS/LW recipes that already had a
+        // 0 cast time had nothing to multiply ("craft speed: cast time 0 -> 0"
+        // in the log). Make the perk do the obvious thing: with any Craft
+        // rank, crafting is instant. Reagents still paid; craft count rules
+        // unchanged.
+        spell->SetCastTime(0);
         {
             static std::unordered_set<uint32> seen;
             if (seen.insert(info->Id).second)
                 LOG_INFO("module.livinggear",
-                    "craft speed: spell {} cast time {} -> {} with {} rank(s)",
-                    info->Id, before, spell->GetCastTime(), ranks);
+                    "craft speed: spell {} cast time {} -> 0 (instant) with {} rank(s)",
+                    info->Id, before, ranks);
         }
     }
 };
