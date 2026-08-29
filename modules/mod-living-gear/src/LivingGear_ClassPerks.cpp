@@ -1453,6 +1453,24 @@ void ApplyMageCombustion(Player* player)
         player->CastSpell(player, SPELL_MAGE_COMBUSTION, true);
 }
 
+// Chain-aware "carries MY Living Bomb" check. The perk casts the player's
+// best owned rank (BestOwnedOrFirst -> 55360 for a rank-3 mage), but the old
+// checks tested HasAura(SPELL_LIVING_BOMB) -- the rank-1 chain head id only.
+// AzerothCore auras are keyed by exact spell id, so every rank-3 mage read as
+// "0 carriers" and the spread/detonate pipeline silently no-op'd (report #183:
+// "living bomb still does not spread for swayss"; the log showed applies
+// succeeding with result 255 = SPELL_CAST_OK while the spread tick counted
+// zero carriers). Walk the rank chain and match the caster guid.
+bool HasLivingBombFrom(Unit* target, Player* caster)
+{
+    if (!target || !caster)
+        return false;
+    for (uint32 id = SPELL_LIVING_BOMB; id; id = sSpellMgr->GetNextSpellInChain(id))
+        if (target->HasAura(id, caster->GetGUID()))
+            return true;
+    return false;
+}
+
 void TryMageFireOnCast(Player* player, Spell* spell)
 {
     if (!player || !spell || GetClassPerk(player) != SPELL_MAGE_FIRE)
@@ -1463,7 +1481,7 @@ void TryMageFireOnCast(Player* player, Spell* spell)
     Unit* target = spell->m_targets.GetUnitTarget();
     if (!target || target == player || !player->IsValidAttackTarget(target))
         return;
-    if (!target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
+    if (!HasLivingBombFrom(target, player))
     {
         // Input-side counterpart of the spread counter: if carriers are always
         // 0 in the spread tick, this is the half of the pipeline that failed.
@@ -1543,7 +1561,7 @@ void TryMageFireDetonate(Player* player, Spell* spell)
     std::vector<ObjectGuid> bombed;
     ForEachHostileInRange(player, CLASS_PERK_RANGE, [player, &bombed](Unit* target)
     {
-        if (target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
+        if (HasLivingBombFrom(target, player))
             bombed.push_back(target->GetGUID());
     });
 
@@ -1552,11 +1570,17 @@ void TryMageFireDetonate(Player* player, Spell* spell)
         Unit* target = ObjectAccessor::GetUnit(*player, targetGuid);
         if (!target || !target->IsAlive())
             continue;
-        target->RemoveAura(SPELL_LIVING_BOMB, player->GetGUID(), 0, AURA_REMOVE_BY_EXPIRE);
+        // RemoveAura by exact id can miss a rank-3 bomb; walk the chain.
+        for (uint32 id = SPELL_LIVING_BOMB; id; id = sSpellMgr->GetNextSpellInChain(id))
+            if (target->HasAura(id, player->GetGUID()))
+            {
+                target->RemoveAura(id, player->GetGUID(), 0, AURA_REMOVE_BY_EXPIRE);
+                break;
+            }
         // Re-seed around the corpse-to-be so the reaction travels.
         ForEachHostileNear(player, target, CLASS_PERK_RANGE, [player](Unit* next)
         {
-            if (!next->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
+            if (!HasLivingBombFrom(next, player))
                 player->CastSpell(next, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true);
         });
     }
@@ -1591,7 +1615,7 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
     std::vector<Unit*> clean;
     ForEachHostileInRange(player, MAGE_FIRE_CONTAGION_RANGE, [player, &carriers, &clean](Unit* target)
     {
-        if (target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
+        if (HasLivingBombFrom(target, player))
             carriers.push_back(target);
         else
             clean.push_back(target);
