@@ -1456,7 +1456,15 @@ void TryMageFireOnCast(Player* player, Spell* spell)
     if (!target || target == player || !player->IsValidAttackTarget(target))
         return;
     if (!target->HasAura(SPELL_LIVING_BOMB, player->GetGUID()))
-        player->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true);
+    {
+        // Input-side counterpart of the spread counter: if carriers are always
+        // 0 in the spread tick, this is the half of the pipeline that failed.
+        uint32 const lb = BestOwnedOrFirst(player, SPELL_LIVING_BOMB);
+        SpellCastResult const res = player->CastSpell(target, lb, true);
+        LOG_INFO("module.livinggear",
+            "living bomb apply: spell {} on target {} result {}",
+            lb, target->GetName(), uint32(res));
+    }
     ApplyMageCombustion(player);
 }
 
@@ -1611,10 +1619,14 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
         }
     }
 
-    if (spread || failed)
-        LOG_DEBUG("module.livinggear",
-            "living bomb spread: {} carrier(s), {} clean, {} cast, {} failed (last result {})",
-            carriers.size(), clean.size(), spread, failed, uint32(lastResult));
+    // Reports #145/#146 (Bonesaw #147/#148): this counter was LOG_DEBUG on
+    // module.livinggear and live Logger.module=4 never surfaced it, so both
+    // retests were debugged blind. Log at INFO on EVERY ticked cycle, not just
+    // cycles that cast -- a zero-carrier tick is the input-side signature
+    // (auto-apply never landed) and must be visible, not folded into silence.
+    LOG_INFO("module.livinggear",
+        "living bomb spread: {} carrier(s), {} clean, {} cast, {} failed (last result {})",
+        carriers.size(), clean.size(), spread, failed, uint32(lastResult));
     g_reentryGuard.erase(guid);
 }
 

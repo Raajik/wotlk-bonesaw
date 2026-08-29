@@ -1282,7 +1282,14 @@ void AutolootCreatureKill(Player* player, Creature* creature)
         // Under any method that rolls, the engine hands the item out after the
         // roll resolves; taking it here is what steals it. Free-for-all is the
         // one method with nothing to wait for, so autoloot stays on there.
-        if (group->GetLootMethod() != FREE_FOR_ALL)
+        //
+        // #139/#150: this must ask the EFFECTIVE method, not the stored one --
+        // personal loot (#114) leaves the stored method at GROUP_LOOT/etc while
+        // the engine actually loots every corpse FFA (GetEffectiveLootMethod).
+        // Comparing against the stored method refused corpse autoloot for
+        // every grouped player with autoloot on. Same fix the personal-loot
+        // core patch (0029) applied to LootHandler's permission switch.
+        if (group->GetEffectiveLootMethod() != FREE_FOR_ALL)
             return;
     }
     else if (creature->GetLootRecipient() != player)
@@ -1291,16 +1298,27 @@ void AutolootCreatureKill(Player* player, Creature* creature)
     Loot* loot = &creature->loot;
     loot->FillNotNormalLootFor(player);
     uint32 const maxSlot = loot->GetMaxSlotInLootFor(player);
+    uint32 granted = 0, refused = 0;
     for (uint32 slot = 0; slot < maxSlot; ++slot)
     {
         InventoryResult msg = EQUIP_ERR_OK;
-        player->StoreLootItem(uint8(slot), loot, msg);
+        if (player->StoreLootItem(uint8(slot), loot, msg))
+            ++granted;
+        else
+            ++refused;
     }
+    uint32 const gold = loot->gold;
     if (loot->gold)
     {
         player->ModifyMoney(int32(loot->gold));
         loot->gold = 0;
     }
+    // Same counters the chest and pickpocket paths print -- "did it fire" and
+    // "did anything land" are different questions (#139/#150 had no line here
+    // at all, so a silent early return was indistinguishable from a grant).
+    LOG_INFO("module.livinggear",
+        "corpse autoloot: '{}' -- {} slot(s), granted {}, refused {}, {} copper",
+        creature->GetName(), maxSlot, granted, refused, gold);
     if (loot->isLooted())
     {
         creature->RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
