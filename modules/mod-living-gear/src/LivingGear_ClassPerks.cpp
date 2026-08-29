@@ -5101,7 +5101,10 @@ void TryPaladinProtOnCast(Player* player, Spell* spell)
     {
         if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
             if (p->HasSpell(spellId))
-                p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS);
+                // needSendToClient=true: without the SMSG_SPELL_COOLDOWN the
+                // client still displayed whatever the engine's 30s packet said
+                // (AddSpellCooldown defaults to false and sends nothing).
+                p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS, true);
     }, std::chrono::milliseconds(1));
     ScheduleAvengerBounces(player, spell);
 }
@@ -5245,6 +5248,12 @@ public:
         g_voidTick.erase(guid);
         g_trapZones.erase(guid);
         g_shrapnel.erase(guid);
+        // Avenger's Shield bounce chains hold g_reentryGuard for the whole
+        // staggered sequence; the pending hop callbacks live in the player's
+        // own m_Events, so logging out mid-chain strands the guard forever and
+        // silently kills the 6s cooldown conversion AND the Judgement/HotR
+        // procs for that character (reported as "AS cooldown still 30s").
+        g_reentryGuard.erase(guid);
         auto bears = g_wildsBears.find(guid);
         if (bears != g_wildsBears.end())
         {
