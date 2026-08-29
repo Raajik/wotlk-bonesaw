@@ -5534,8 +5534,10 @@ public:
     // (+1000%). Fires for melee, spells, and periodic damage alike because the
     // hook sits at the bottom of ThreatManager::AddThreat, after the engine's
     // own modifiers -- so taunts, dps-threat and heal-threat all hold.
-    // The other tank specs carry the same x11: Protection paladin always,
-    // Feral druid only in Bear/Dire Bear Form, Blood DK always.
+    // Report #177: x11 was not enough -- tanks were still losing aggro, and
+    // the ask went to +10000%, so the multiplier is now x100 for the tank
+    // specs. The other tank specs carry the same x100: Protection paladin
+    // always, Feral druid only in Bear/Dire Bear Form, Blood DK always.
     void OnCalculateThreat(Unit* attacker, Unit* victim, float& threat, SpellInfo const* /*spell*/) override
     {
         if (!attacker || threat <= 0.0f)
@@ -5566,7 +5568,7 @@ public:
 
         if (!isTankSpec)
             return;
-        threat *= 11.0f;
+        threat *= 100.0f;
     }
 
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
