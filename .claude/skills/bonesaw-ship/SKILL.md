@@ -126,7 +126,33 @@ Re-run `python tools/bonesaw_status.py` - `pending SQL` must now read
 `all imported`. If it does not, the db-import image did not pick the file up;
 go back to Phase 1.
 
-## Phase 4 - client, if client files changed
+## Phases 4-6, automated
+
+The bookkeeping after the container replace (client publish, manifest, patch
+notes, Discord, release notes, tag, push) is mechanical and was the recurring
+source of forgotten steps - 0.1.79/0.1.80 shipped with no Discord post, and the
+live manifest went stale twice in the 0.1.105/0.1.106 era. One command runs
+the whole tail in the right order, refuses to continue on any failed step, and
+tags LAST so `git log ship/<latest>..HEAD` is empty when it exits:
+
+```
+python tools/ship_bookkeeping.py --version X.Y.Z            # client changed
+python tools/ship_bookkeeping.py --version X.Y.Z --no-client  # server-only
+```
+
+Run it **after Phase 3's `bonesaw_status` says `pending SQL: all imported`**.
+It expects the working tree clean and `Bonesaw.version` still at the previous
+number (it bumps by exactly one patch). Review the generated
+`tools/patch-notes/X.Y.Z.md` before step 10 if the commit list needs
+hand-editing for player-facing tone - the script's bullets are commit
+subjects, and only a human pass makes them read as notes. The phases below
+document what the script does; use them as the manual fallback when the
+script cannot run.
+
+Push **only** to origin `Raajik/wotlk-bonesaw`, never to the `playerbots`
+remote. Never force-push `main`.
+
+## Phase 4 - client, if client files changed (manual fallback)
 
 Needed when anything under `modules/mod-living-gear/client_addon/`,
 `tools/client-patch/` or `tools/launcher/` changed since the last ship:
@@ -147,7 +173,7 @@ rebuilding between hashing and uploading strands every player.
 Push **only** to origin `Raajik/wotlk-bonesaw`, never to the `playerbots`
 remote. Never force-push `main`.
 
-## Phase 5 - record the ship
+## Phase 5 - record the ship (tag LAST)
 
 ```
 git commit -am "Ship Bonesaw X.Y.Z: <one line>"
@@ -155,7 +181,10 @@ git tag ship/X.Y.Z
 ```
 
 The tag is what makes the next `/bonesaw-status` able to say what players have.
-Without it the whole thing goes blind again.
+Without it the whole thing goes blind again. **Tag after the notes commit, not
+before** - a tag chased by manifest/notes commits leaves `ship/<latest>..HEAD`
+non-empty forever and every later status reads "N commits not shipped"
+(0.1.104/0.1.105/0.1.106 all needed a tag re-point for exactly this).
 
 ## Phase 6 - tell people
 
