@@ -1695,12 +1695,18 @@ void Spell::DoCreateItem(uint8 /*effIndex*/, uint32 itemId)
             SelfCast = true;
             break;
         case SPELL_WG_MARK_WINNER:
+            // Feature #145 (report id 145): Wintergrasp marks are a match-end
+            // reward, not a quest/loot item, so the only lever is this code --
+            // the DBC base points are ignored for WG marks. Baseline payouts
+            // are 1 mark for showing up, 2 at Corporal rank, 3 at Lieutenant;
+            // multiply all three by 10. 43589 stacks to ~2 billion, so no
+            // clamp concern below.
             if (player->HasAura(55629 /*SPELL_LIEUTENANT*/))
-                addNumber = 3;
+                addNumber = 30;
             else if (player->HasAura(33280 /*SPELL_CORPORAL*/))
-                addNumber = 2;
+                addNumber = 20;
             else
-                addNumber = 1;
+                addNumber = 10;
             SelfCast = true;
             break;
     }

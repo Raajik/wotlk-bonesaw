@@ -12,10 +12,12 @@
 --       2. Dungeon/raid boss and object loot (107 creature_loot_template +
 --          8 gameobject_loot_template rows). Those tables are owned by the
 --          loot workstream and are deliberately NOT touched here.
---   * Wintergrasp Mark of Honor (43589): zero sources. Nothing in quests,
---      loot, vendors or mail grants it and no core code references the item,
---      so there is no gain to multiply. The WG reward path hands out shards
---      (43228), which this file does boost on the quest side.
+--   * Wintergrasp Mark of Honor (43589): match-end reward only. Cast as
+--      SPELL_VICTORY_REWARD (56902) / SPELL_DEFEAT_REWARD (58494) by
+--      BattlefieldWG::OnBattleEnd; the payout comes from the code rank
+--      ladder in Spell::DoCreateItem (1/2/3 by rank), so it is handled by
+--      core-patch 0042-wg-mark-of-honor-10x.core-patch, not this file.
+--      The shard quest rewards below are the data-side half.
 --
 -- Fixed values, not arithmetic, so re-importing the file is a no-op.
 

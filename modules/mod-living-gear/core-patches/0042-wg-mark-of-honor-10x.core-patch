@@ -1,0 +1,39 @@
+Feature #145 (report id 145 / GitHub issue #143): 10x Wintergrasp Mark of
+Honor from match results.
+
+The mark (item 43589) is not granted by any quest, loot table, vendor or
+mail template -- it is created by the match-end reward spell. Wintergrasp
+end-of-battle casts SPELL_VICTORY_REWARD (56902, "Wintergrasp Victory")
+or SPELL_DEFEAT_REWARD = 58494 ("Wintergrasp Defeat"), both of which are
+SPELL_EFFECT_CREATE_ITEM for item 43589. For the winner spell the core
+overrides the DBC base points with a rank ladder in Spell::DoCreateItem
+(SpellEffects.cpp): 1 mark for participation, 2 at Corporal (aura 33280),
+3 at Lieutenant (aura 55629). The defeat spell has no special case and
+pays the DBC base amount of 1.
+
+This patch multiplies the three baseline payouts by 10 (30 / 20 / 10).
+The mark item stacks to ~2 billion, so the MaxStackSize clamp is a no-op.
+The Stone Keeper's Shard half of the feature is data-side (quest rewards,
+rev_wg_currency_10x.sql) and does not need a code change.
+
+--- a/src/server/game/Spells/SpellEffects.cpp
++++ b/src/server/game/Spells/SpellEffects.cpp
+@@ Spell::DoCreateItem, the battleground-reward switch
+         case SPELL_WG_MARK_WINNER:
++            // Feature #145 (report id 145): Wintergrasp marks are a match-end
++            // reward, not a quest/loot item, so the only lever is this code --
++            // the DBC base points are ignored for WG marks. Baseline payouts
++            // are 1 mark for showing up, 2 at Corporal rank, 3 at Lieutenant;
++            // multiply all three by 10. 43589 stacks to ~2 billion, so no
++            // clamp concern below.
+             if (player->HasAura(55629 /*SPELL_LIEUTENANT*/))
+-                addNumber = 3;
++                addNumber = 30;
+             else if (player->HasAura(33280 /*SPELL_CORPORAL*/))
+-                addNumber = 2;
++                addNumber = 20;
+             else
+-                addNumber = 1;
++                addNumber = 10;
+             SelfCast = true;
+             break;
