@@ -215,7 +215,7 @@ def main():
     else:
         out.append("  github release    gh unavailable, not checked")
 
-    live = run(["curl", "-sf", "--max-time", "20", MANIFEST_URL])
+    live = run(["curl", "-sfL", "--max-time", "20", MANIFEST_URL])
     if live is None:
         out.append("  live manifest     unreachable, not checked")
     else:
