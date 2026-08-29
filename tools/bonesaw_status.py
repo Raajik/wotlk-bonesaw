@@ -176,6 +176,14 @@ def main():
             out.append("                    BEHIND: %d commit(s) landed after this build" % len(after))
             for l in after[:5]:
                 out.append("                      %s" % l.split(" ", 2)[-1][:80])
+            # Cache-hit trap (hit for real, 0.1.106 ship): a rebuild that
+            # resolves entirely from layer cache re-tags the OLD image, so
+            # "I built it" and "the binary contains it" disagree. If the image
+            # is still behind, say so plainly instead of letting the reader
+            # assume the build was honest.
+            out.append("                    cache-hit suspect: if you just built, "
+                       "the build resolved from cache -- verify with "
+                       "docker compose build --no-cache ac-worldserver")
         else:
             out.append("                    up to date with HEAD")
 
