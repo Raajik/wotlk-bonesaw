@@ -33,6 +33,11 @@ UI_LUA_SRC = (
     ROOT.parent.parent / "modules" / "mod-living-gear" / "client_addon" / "LivingGear" / "LivingGear.lua"
 )
 UI_LUA = STAGING / "Interface" / "FrameXML" / "LivingGear.lua"
+# Feature #149: aura display caps. Static override file, shipped next to
+# LivingGear.lua; must load AFTER TargetFrame.xml/BuffFrame.xml (the module
+# insertion marker in FrameXML.toc is past both).
+AURA_LUA_SRC = ROOT / "BonesawAuras.lua"
+AURA_LUA = STAGING / "Interface" / "FrameXML" / "BonesawAuras.lua"
 STORMLIB = (
     ROOT.parent.parent
     / "archive"
@@ -855,17 +860,21 @@ def patch_framexml():
     raw = FRAME_TOC_BASE.read_bytes()
     newline = b"\r\n" if b"\r\n" in raw else b"\n"
     text = raw.decode("utf-8")
-    if "LivingGear.lua" not in text:
-        needle = "## add new modules above here"
-        if needle not in text:
-            raise SystemExit("FrameXML.toc is missing the module insertion marker")
-        text = text.replace(needle, "LivingGear.lua\n" + needle)
+    modules = ["LivingGear.lua", "BonesawAuras.lua"]
+    for module in modules:
+        if module not in text:
+            needle = "## add new modules above here"
+            if needle not in text:
+                raise SystemExit("FrameXML.toc is missing the module insertion marker")
+            text = text.replace(needle, f"{module}\n" + needle)
     FRAME_TOC.parent.mkdir(parents=True, exist_ok=True)
     body = text.replace("\r\n", "\n").replace("\n", "\r\n" if newline == b"\r\n" else "\n")
     FRAME_TOC.write_bytes(body.encode("utf-8"))
     lua = UI_LUA_SRC.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
     UI_LUA.write_bytes(lua)
-    print(f"Wrote {FRAME_TOC} and {UI_LUA}")
+    aura = AURA_LUA_SRC.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    AURA_LUA.write_bytes(aura)
+    print(f"Wrote {FRAME_TOC}, {UI_LUA} and {AURA_LUA}")
 
 
 def _create_mpq(storm, dest: Path, files: list[tuple[Path, bytes]]):
@@ -919,6 +928,7 @@ def build_mpq():
     locale_files = [
         (FRAME_TOC, b"Interface\\FrameXML\\FrameXML.toc"),
         (UI_LUA, b"Interface\\FrameXML\\LivingGear.lua"),
+        (AURA_LUA, b"Interface\\FrameXML\\BonesawAuras.lua"),
     ]
     for locale in LOCALES:
         _create_mpq(storm, ROOT / "dist" / f"patch-{locale}-4.MPQ", locale_files)
