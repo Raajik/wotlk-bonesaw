@@ -27,8 +27,8 @@ from datetime import datetime, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORLDSERVER_IMAGE = "acore/ac-wotlk-worldserver:master"
-MANIFEST_URL = ("https://raw.githubusercontent.com/Raajik/wotlk-bonesaw/main"
-                "/tools/client-update/Bonesaw.manifest.txt")
+MANIFEST_URL = ("https://github.com/Raajik/wotlk-bonesaw/releases/download"
+                "/updater/Bonesaw.manifest.txt")
 PENDING_DIRS = {
     "acore_world": "data/sql/updates/pending_db_world",
     "acore_characters": "data/sql/updates/pending_db_characters",
@@ -192,13 +192,13 @@ def main():
         out.append("  pending SQL       all imported")
 
     # --- 5. client --------------------------------------------------------
-    # The manifest on main is what actually decides whether a player updates:
-    # the launcher fetches it from raw.githubusercontent.com and compares
+    # The manifest asset on the permanent "updater" release is what actually
+    # decides whether a player updates: the launcher fetches it and compares
     # versions (tools/launcher/src/manifest.rs). The GitHub release only holds
     # the asset the manifest points at.
     #
     # Checking only the release is how 0.1.50 reached nobody -- the release was
-    # created, the manifest on main was never pushed, so every launcher
+    # created, the manifest was never published, so every launcher
     # compared itself against the stale 0.1.49 line, matched, and never
     # downloaded anything. Both are checked now, and the manifest is the one
     # that gates.
@@ -224,9 +224,9 @@ def main():
         if served == version:
             out.append("  live manifest     %s  OK -- this is what launchers pull" % served)
         else:
-            out.append("  live manifest     %s  STALE -- players stay on %s until this is pushed to main"
+            out.append("  live manifest     %s  STALE -- players stay on %s until the updater release asset is refreshed"
                        % (served, served))
-            problems.append("manifest on main serves %s, not %s -- the client ship has reached nobody"
+            problems.append("manifest asset serves %s, not %s -- the client ship has reached nobody"
                             % (served, version))
 
     # --- 6. can a remote player actually reach the world server? ----------

@@ -1,6 +1,10 @@
-//! The update manifest: a tiny line-oriented text file served from
-//! raw.githubusercontent.com. Using raw content rather than the GitHub API
-//! keeps us clear of the 60-request/hour anonymous API rate limit.
+//! The update manifest: a tiny line-oriented text file served as a GitHub
+//! release asset. The manifest lives on a permanent "updater" release so its
+//! URL never changes - the launcher fetches the same address forever, and a
+//! ship only re-uploads the asset. (It used to be committed to the `main`
+//! branch and served over raw.githubusercontent.com, but `main` shares no
+//! history with the working branch, so every ship needed a manual
+//! cherry-pick dance that was routinely forgotten.)
 //!
 //!     BONESAW 1
 //!     version 0.1.50
@@ -13,7 +17,8 @@
 use crate::util::R;
 use std::time::Duration;
 
-const MANIFEST_URL: &str = "https://raw.githubusercontent.com/Raajik/wotlk-bonesaw/main/tools/client-update/Bonesaw.manifest.txt";
+const MANIFEST_URL: &str =
+    "https://github.com/Raajik/wotlk-bonesaw/releases/download/updater/Bonesaw.manifest.txt";
 
 /// The launcher only ever downloads from our own release URLs.
 const URL_PREFIX: &str = "https://github.com/Raajik/wotlk-bonesaw/releases/download/";

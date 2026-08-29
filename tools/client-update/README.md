@@ -8,8 +8,8 @@ file: the client patch MPQs are embedded inside it, so a release is one asset wi
 Each launch it:
 
 1. refuses to run unless it is sitting in a real 3.3.5a folder (`Wow.exe` + `Data\common.MPQ`);
-2. reads `Bonesaw.manifest.txt` from raw.githubusercontent.com and, if a newer version exists,
-   downloads the new exe, verifies size + SHA256, swaps itself out and relaunches;
+2. reads `Bonesaw.manifest.txt` from the permanent `updater` GitHub release and, if a newer
+   version exists, downloads the new exe, verifies size + SHA256, swaps itself out and relaunches;
 3. writes `Data\patch-Y.MPQ` and the locale patch into whichever of `Data\enUS` / `Data\enGB`
    the client actually has, skipping anything already correct;
 4. patches the player's own `Wow.exe` (backup at `Wow.exe.stock`) so custom FrameXML loads;
@@ -25,8 +25,12 @@ binary; we only patch the copy the player already owns.
 
 ## The manifest
 
-`Bonesaw.manifest.txt` is committed to `main` and read over raw.githubusercontent.com, which has
-no API rate limit. `build_launcher.py` regenerates it:
+`Bonesaw.manifest.txt` is published as an asset on the permanent `updater` release
+(https://github.com/Raajik/wotlk-bonesaw/releases/download/updater/Bonesaw.manifest.txt) --
+a stable URL that never changes, so a ship only re-uploads the asset with
+`gh release upload updater --clobber`. It used to be committed to `main`, but `main`
+shares no history with the working branch, which forced a fragile cherry-pick dance
+on every ship. `build_launcher.py` regenerates it:
 
 ```
 BONESAW 1
@@ -55,9 +59,7 @@ Do this on every Bonesaw / Living Gear ship that changes client files (MPQs, add
 Server-only ships still bump the version and get Discord notes.
 
 Push **only** to origin `Raajik/wotlk-bonesaw`. Never push to remote `playerbots` /
-`mod-playerbots/azerothcore-wotlk`. Do not force-push `main`. The `Playerbot` branch does not
-share history with `origin/main`; put updater files on a branch based on `origin/main`, or create
-the GitHub release from the built assets.
+`mod-playerbots/azerothcore-wotlk`.
 
 1. Close Wow (MPQs are locked while it is open).
 2. Bump `Bonesaw.version` (every ship, including server-only; Discord notes use this number).
@@ -78,8 +80,8 @@ gh release create v0.1.50 --repo Raajik/wotlk-bonesaw --latest --title "Bonesaw 
 7. `python tools/launcher/build_launcher.py --verify`  -  confirms the manifest still describes the
    uploaded file. The exe is not byte-reproducible, so a rebuild between hashing and uploading
    would leave every player unable to update.
-8. Commit and push `Bonesaw.version` and `Bonesaw.manifest.txt` to origin. Prefer a branch from
-   `origin/main`. Players see the update on their next launch.
+8. Publish the manifest: `gh release upload updater tools/client-update/Bonesaw.manifest.txt
+   --repo Raajik/wotlk-bonesaw --clobber`. Players see the update on their next launch.
 9. Discord: numbered `Bonesaw X.Y.Z - patch notes`. Tell players to close Wow and run
    `Bonesaw.exe`.
 
