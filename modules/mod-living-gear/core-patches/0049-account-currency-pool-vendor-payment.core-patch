@@ -1,0 +1,58 @@
+# Core-patch 0049 -- shared account currency pool pays vendor purchases
+# (report #182, user-approved 2026-08-29)
+#
+# Currency tokens (Stone Keeper's Shard, emblems, marks) pool to the account
+# instead of the character (module side: ACT_ACCOUNT_CURRENCY loot action +
+# lg_account_currency table, pending migration rev_living_gear_account_currency.sql).
+# This patch teaches the vendor extended-cost path about the pool:
+#
+#   1. BuyItemFromVendorSlot's extended-cost validation accepts a requirement
+#      when bags + pool together cover it.
+#   2. _StoreOrEquipNewItem's payment drains bags first, then the pool for
+#      the remainder (LivingGear_AccountCurrencyPay in LivingGear_Vault.cpp).
+#
+# The two externs match the established LivingGear_* callback pattern
+# (see Spell.cpp 0032/0029).
+#
+# --- a/src/server/game/Entities/Player/Player.cpp
+--- a/src/server/game/Entities/Player/Player.cpp
++++ b/src/server/game/Entities/Player/Player.cpp
+@@ -103,6 +103,13 @@
+ //  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
+ #include "GridNotifiersImpl.h"
+ 
++// Living Gear core-patch 0049 (report #182): the shared account currency
++// pool. Currency tokens live in the account pool, not bags -- vendor
++// purchases that cost those tokens validate against AND pay from the pool
++// after the bags are drained (LivingGear_Vault.cpp).
++bool LivingGear_AccountCurrencyCovers(Player* player, uint32 itemId, uint32 count);
++void LivingGear_AccountCurrencyPay(Player* player, uint32 itemId, uint32 count);
++
+ enum CharacterFlags
+ {
+     CHARACTER_FLAG_NONE                 = 0x00000000,
+@@ -10881,7 +10888,9 @@ inline bool Player::_StoreOrEquipNewItem(uint32 vendorslot, uint32 item, uint8 c
+         for (uint8 i = 0; i < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++i)
+         {
+             if (iece->reqitem[i])
+-                DestroyItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count), true);
++                // Living Gear core-patch 0049 (report #182): drain bags first,
++                // then the shared account currency pool for the remainder.
++                LivingGear_AccountCurrencyPay(this, iece->reqitem[i], (iece->reqitemcount[i] * count));
+         }
+     }
+ 
+@@ -11035,7 +11044,12 @@ bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uin
+         // item base price
+         for (uint8 i = 0; i < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++i)
+         {
+-            if (iece->reqitem[i] && !HasItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count)))
++            // Living Gear core-patch 0049 (report #182): currency tokens pool
++            // to the account, so the requirement is met when bags + pool
++            // together cover it (validated again at pay time below).
++            if (iece->reqitem[i] && !HasItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count))
++                && !LivingGear_AccountCurrencyCovers(this, iece->reqitem[i],
++                    (iece->reqitemcount[i] * count) - std::min<uint32>(GetItemCount(iece->reqitem[i], true), iece->reqitemcount[i] * count)))
+             {
+                 SendEquipError(EQUIP_ERR_VENDOR_MISSING_TURNINS, nullptr, nullptr);
+                 return false;

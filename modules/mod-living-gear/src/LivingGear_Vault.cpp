@@ -94,7 +94,11 @@ enum LgMatch : uint8
 enum LgAction : uint8
 {
     ACT_BAG = 0, ACT_VENDOR = 1, ACT_HOLD = 2, ACT_REAGENT_VAULT = 3,
-    ACT_SKIP = 4, ACT_DISENCHANT = 5, ACT_LEARN = 6, ACT_DESTROY = 7
+    ACT_SKIP = 4, ACT_DISENCHANT = 5, ACT_LEARN = 6, ACT_DESTROY = 7,
+    // Report #182: currency tokens pool to the ACCOUNT, not the character.
+    // The action value rides the autoloot wire format, so it gets the next
+    // free slot rather than renumbering anything the addon knows.
+    ACT_ACCOUNT_CURRENCY = 8
 };
 
 struct LgRule
@@ -282,6 +286,117 @@ uint32 VaultRemove(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEn
 // ApplyLootRule, which routes further items, and any of those paths may
 // already be holding the flag.
 uint32 g_vaultGrantDepth = 0;
+
+// -------------------------------------------------------------------------
+// Shared account currency pool (report #182). One balance per
+// (account, currency item) across every character -- the honor-style model
+// the user asked for. Currency tokens route here on loot; vendor purchases
+// that cost those tokens pay from the pool first (core-patch 0049 hooks in
+// Player.cpp via the two LivingGear_AccountCurrency* callbacks below).
+// -------------------------------------------------------------------------
+
+struct AccountCurrencyState
+{
+    std::unordered_map<uint32, int64> balances; // item id -> pooled count
+};
+std::unordered_map<uint32, AccountCurrencyState> g_accountCurrency;
+
+void LoadAccountCurrency(uint32 accountId)
+{
+    if (g_accountCurrency.find(accountId) != g_accountCurrency.end())
+        return;
+    AccountCurrencyState& st = g_accountCurrency[accountId];
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT `item_id`, `count` FROM `lg_account_currency` WHERE `account_id` = {}", accountId);
+    if (result)
+    {
+        do
+            st.balances[(*result)[0].Get<uint32>()] += (*result)[1].Get<int64>();
+        while (result->NextRow());
+    }
+}
+
+int64 AccountCurrencyBalance(uint32 accountId, uint32 itemId)
+{
+    LoadAccountCurrency(accountId);
+    auto it = g_accountCurrency[accountId].balances.find(itemId);
+    return it == g_accountCurrency[accountId].balances.end() ? 0 : it->second;
+}
+
+void AccountCurrencyAdd(uint32 accountId, uint32 itemId, int64 count)
+{
+    if (!accountId || !itemId || !count)
+        return;
+    LoadAccountCurrency(accountId);
+    g_accountCurrency[accountId].balances[itemId] += count;
+    CharacterDatabase.DirectExecute(
+        "INSERT INTO `lg_account_currency` (`account_id`, `item_id`, `count`) VALUES ({}, {}, {}) "
+        "ON DUPLICATE KEY UPDATE `count` = `count` + ({})",
+        accountId, itemId, count, count);
+}
+
+void AccountCurrencyAddChat(Player* player, uint32 itemId, int64 count);
+
+// Remove up to `count` from the pool (bags must have been drained first by
+// the caller). Returns how much was actually removed.
+int64 AccountCurrencyRemove(Player* player, uint32 accountId, uint32 itemId, int64 count)
+{
+    if (!accountId || !itemId || count <= 0)
+        return 0;
+    LoadAccountCurrency(accountId);
+    auto& st = g_accountCurrency[accountId];
+    auto it = st.balances.find(itemId);
+    if (it == st.balances.end() || it->second <= 0)
+        return 0;
+    int64 const take = std::min<int64>(count, it->second);
+    it->second -= take;
+    CharacterDatabase.DirectExecute(
+        "UPDATE `lg_account_currency` SET `count` = `count` - {} WHERE `account_id` = {} AND `item_id` = {}",
+        take, accountId, itemId);
+    if (player)
+        AccountCurrencyAddChat(player, itemId, -take);
+    return take;
+}
+
+// Tell the addon the pool balance changed: CUR|itemId|balanceDelta|poolTotal
+void AccountCurrencyAddChat(Player* player, uint32 itemId, int64 count)
+{
+    if (!player || !player->GetSession() || !itemId)
+        return;
+    uint32 const acc = player->GetSession()->GetAccountId();
+    SendLine(player, Acore::StringFormat("CUR|{}|{}|{}",
+        itemId, count, AccountCurrencyBalance(acc, itemId)));
+}
+
+// Core callbacks (core-patch 0049, Player.cpp extended-cost path).
+bool LivingGear_AccountCurrencyCovers(Player* player, uint32 itemId, uint32 count)
+{
+    if (!player || !player->GetSession() || !itemId)
+        return false;
+    return AccountCurrencyBalance(player->GetSession()->GetAccountId(), itemId) >= int64(count);
+}
+
+void LivingGear_AccountCurrencyPay(Player* player, uint32 itemId, uint32 count)
+{
+    if (!player || !player->GetSession() || !itemId || !count)
+        return;
+    uint32 const acc = player->GetSession()->GetAccountId();
+    // Bags first (DestroyItemCount), pool for the remainder.
+    uint32 const inBags = player->GetItemCount(itemId, true);
+    uint32 const fromBags = std::min(count, inBags);
+    if (fromBags)
+        player->DestroyItemCount(itemId, fromBags, true);
+    if (int64 const rest = int64(count) - int64(fromBags))
+    {
+        int64 const removed = AccountCurrencyRemove(player, acc, itemId, rest);
+        if (removed < rest)
+            LOG_WARN("module.livinggear",
+                "account currency: account {} paid {} of {} x{} -- pool short by {} (validation missed?)",
+                acc, removed, itemId, count, rest - removed);
+    }
+    else
+        AccountCurrencyAddChat(player, itemId, 0); // balance changed only if pool used; bags-only pays silently
+}
 
 struct VaultGrantScope
 {
@@ -990,6 +1105,15 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
     // that accompanies this guard, so nothing is lost.
     if (proto->Class == ITEM_CLASS_MONEY)
         return ACT_BAG;
+    // Report #182: currency TOKENS (shards, emblems, marks -- BagFamily
+    // currency tokens) pool to the account. This supersedes the 0044
+    // "currency stays in bags" guard: the user asked for shared account
+    // currency storage, and pooled tokens are spent straight from the pool
+    // on vendor purchases, so the currency-tab visibility problem 0044 solved
+    // no longer applies (the balance follows the player account-wide via the
+    // CUR| sync line). Gold is ITEM_CLASS_MONEY above and stays in bags.
+    if (proto->IsCurrencyToken())
+        return ACT_ACCOUNT_CURRENCY;
     if (IsReagentItem(proto, player))
         return ACT_REAGENT_VAULT;
     if (proto->Quality == ITEM_QUALITY_POOR)
@@ -1067,6 +1191,17 @@ static void ApplyLootRuleAction(ObjectGuid playerGuid, ObjectGuid itemGuid, uint
         player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
         if (gold)
             player->ModifyMoney(int32(gold));
+        return;
+    }
+    if (action == ACT_ACCOUNT_CURRENCY)
+    {
+        // Report #182: token currencies pool to the account instead of the
+        // character's currency tab. The CUR| sync line tells the addon the
+        // new balance so the UI can display it anywhere in the account.
+        AccountCurrencyAdd(accountId, itemId, int64(count));
+        player->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
+        SendLine(player, Acore::StringFormat("CUR|{}|{}|{}",
+            itemId, int64(count), AccountCurrencyBalance(accountId, itemId)));
         return;
     }
     if (action == ACT_REAGENT_VAULT)
@@ -1647,6 +1782,12 @@ public:
         if (!player || !player->GetSession())
             return;
         uint32 const accountId = player->GetSession()->GetAccountId();
+        // Report #182: sync the shared account currency pool to the client so
+        // every character sees the same pooled balances on arrival.
+        LoadAccountCurrency(accountId);
+        for (auto const& [itemId, balance] : g_accountCurrency[accountId].balances)
+            if (balance > 0)
+                SendLine(player, Acore::StringFormat("CUR|{}|0|{}", itemId, balance));
         // The missing-spell_dbc check used to guard this whole function, so
         // one absent row took the account key ring and the quest-vault
         // drain down with it too. Scope it to the thing it is actually
@@ -1752,6 +1893,19 @@ public:
 };
 
 } // namespace LivingGearVault
+
+// Global-scope bindings for the core callbacks (core-patch 0049, report
+// #182). Player.cpp links these by unqualified name; the implementations
+// live inside LivingGearVault above.
+bool LivingGear_AccountCurrencyCovers(Player* player, uint32 itemId, uint32 count)
+{
+    return LivingGearVault::LivingGear_AccountCurrencyCovers(player, itemId, count);
+}
+
+void LivingGear_AccountCurrencyPay(Player* player, uint32 itemId, uint32 count)
+{
+    LivingGearVault::LivingGear_AccountCurrencyPay(player, itemId, count);
+}
 
 void SendVaultAndRuleSync(Player* player)
 {

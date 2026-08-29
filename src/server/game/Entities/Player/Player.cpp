@@ -103,6 +103,13 @@
 //  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
 #include "GridNotifiersImpl.h"
 
+// Living Gear core-patch 0049 (report #182): the shared account currency
+// pool. Currency tokens live in the account pool, not bags -- vendor
+// purchases that cost those tokens validate against AND pay from the pool
+// after the bags are drained (LivingGear_Vault.cpp).
+bool LivingGear_AccountCurrencyCovers(Player* player, uint32 itemId, uint32 count);
+void LivingGear_AccountCurrencyPay(Player* player, uint32 itemId, uint32 count);
+
 enum CharacterFlags
 {
     CHARACTER_FLAG_NONE                 = 0x00000000,
@@ -10881,7 +10888,9 @@ inline bool Player::_StoreOrEquipNewItem(uint32 vendorslot, uint32 item, uint8 c
         for (uint8 i = 0; i < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++i)
         {
             if (iece->reqitem[i])
-                DestroyItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count), true);
+                // Living Gear core-patch 0049 (report #182): drain bags first,
+                // then the shared account currency pool for the remainder.
+                LivingGear_AccountCurrencyPay(this, iece->reqitem[i], (iece->reqitemcount[i] * count));
         }
     }
 
@@ -11035,7 +11044,12 @@ bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uin
         // item base price
         for (uint8 i = 0; i < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++i)
         {
-            if (iece->reqitem[i] && !HasItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count)))
+            // Living Gear core-patch 0049 (report #182): currency tokens pool
+            // to the account, so the requirement is met when bags + pool
+            // together cover it (validated again at pay time below).
+            if (iece->reqitem[i] && !HasItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count))
+                && !LivingGear_AccountCurrencyCovers(this, iece->reqitem[i],
+                    (iece->reqitemcount[i] * count) - std::min<uint32>(GetItemCount(iece->reqitem[i], true), iece->reqitemcount[i] * count)))
             {
                 SendEquipError(EQUIP_ERR_VENDOR_MISSING_TURNINS, nullptr, nullptr);
                 return false;
