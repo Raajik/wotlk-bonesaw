@@ -531,6 +531,12 @@ float const PALADIN_AS_HOP_RANGE = 10.0f;
 float const PALADIN_DEVO_ALLY_RANGE = 40.0f;
 float const PALADIN_DEVO_DR = 0.90f; // 10% incoming damage reduction
 float const PALADIN_THORNS_PCT = 0.5f;
+// Report (Thorns +2000%): the Prot paladin's Thorns aura deals 20x the base
+// spell damage, and the aura is re-cast on every party/raid member on a tick
+// (same shape as the Druid Balance party tick -- observe only, never touch an
+// aura from inside its own application hook).
+float const PALADIN_THORNS_DMG_MULT = 20.0f;
+uint32 const PALADIN_THORNS_PARTY_TICK_MS = 5000;
 int32 const RADIUS_MOD_DOUBLE = 20000; // SetSpellValue(SPELLVALUE_RADIUS_MOD, x) -> RadiusMod = x/10000
 uint32 const HUNTER_MM_AIMED_PROC_CHANCE = 20;
 int32 const CHAIN_LIGHTNING_MAX_TARGETS = 99; // SetSpellValue(SPELLVALUE_MAX_TARGETS, x) removes the normal 3-target cap
@@ -5159,10 +5165,71 @@ void TryProtThorns(Unit* attacker, Unit* victim, uint32 damage)
     uint32 const guid = paladin->GetGUID().GetCounter();
     if (!g_reentryGuard.insert(guid).second)
         return;
-    uint32 const thorns = uint32(float(paladin->GetArmor()) * PALADIN_THORNS_PCT);
+    uint32 const thorns = uint32(float(paladin->GetArmor()) * PALADIN_THORNS_PCT * PALADIN_THORNS_DMG_MULT);
     if (thorns)
         Unit::DealDamage(paladin, attacker, thorns, nullptr, SPELL_DIRECT_DAMAGE, SPELL_SCHOOL_MASK_HOLY, nullptr, false);
     g_reentryGuard.erase(guid);
+}
+
+// Thorns x20 on the whole party/raid. Same observe-only shape as the Druid
+// Balance party tick: re-cast anyone who is missing the aura (or is carrying a
+// weaker rank) with the paladin's own best rank, so a raid keeps the buff
+// through deaths and relogs without ever touching a fresh application.
+// The x20 is perk-gated via CastCustomSpell basepoints -- the DAMAGE_SHIELD
+// aura's amount is computed from the basepoints at apply time, so every aura
+// this tick applies hits for 20x the base spell damage. Perk-less paladins
+// (and druids' own casts) keep the stock numbers.
+
+// Which effect of a Thorns rank carries the DAMAGE_SHIELD aura, and its
+// x20 basepoint. All ranks share the shape (effect 0), but walking the list
+// keeps this honest against future data changes.
+int32 ThornsBasePointsX20(SpellInfo const* info)
+{
+    if (!info)
+        return 0;
+    for (uint8 i = EFFECT_0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (info->Effects[i].Effect && info->Effects[i].ApplyAuraName == SPELL_AURA_DAMAGE_SHIELD)
+        {
+            int32 const bp = info->Effects[i].CalcValue();
+            return bp * int32(PALADIN_THORNS_DMG_MULT);
+        }
+    }
+    return 0;
+}
+
+void TickPaladinProtThorns(Player* player, TickState& st, uint32 diff)
+{
+    if (!player || GetClassPerk(player) != SPELL_PALADIN_PROTECTION || !player->IsAlive())
+        return;
+    if (!player->HasAura(SPELL_THORNS_R1))
+    {
+        if (SpellInfo const* rank = sSpellMgr->GetSpellInfo(BestOwnedOrFirst(player, SPELL_THORNS_R1)))
+            if (int32 const bp = ThornsBasePointsX20(rank))
+                player->CastCustomSpell(player, rank->Id, &bp, nullptr, nullptr, true);
+    }
+    Group* group = player->GetGroup();
+    if (!group)
+        return;
+    st.acc += diff;
+    if (st.acc < PALADIN_THORNS_PARTY_TICK_MS)
+        return;
+    st.acc = 0;
+    uint32 const paladinRank = BestOwnedOrFirst(player, SPELL_THORNS_R1);
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || member == player || !member->IsAlive() || !member->IsInWorld())
+            continue;
+        if (!player->IsInMap(member))
+            continue;
+        if (!member->HasAura(SPELL_THORNS_R1))
+        {
+            if (SpellInfo const* rank = sSpellMgr->GetSpellInfo(paladinRank))
+                if (int32 const bp = ThornsBasePointsX20(rank))
+                    member->CastCustomSpell(member, paladinRank, &bp, nullptr, nullptr, true);
+        }
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -5308,6 +5375,11 @@ public:
         else if (selected == SPELL_HUNTER_SURVIVAL)
         {
             TickHunterSurvivalTrapZones(player, diff);
+        }
+        else if (selected == SPELL_PALADIN_PROTECTION)
+        {
+            // Thorns x20 kept on the paladin and every party/raid member.
+            TickPaladinProtThorns(player, g_thornsTick[player->GetGUID().GetCounter()], diff);
         }
         else if (selected == SPELL_WARLOCK_AFFLICTION)
         {
