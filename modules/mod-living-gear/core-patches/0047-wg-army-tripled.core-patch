@@ -1,0 +1,19 @@
+Report #169, clarified by the user: triple the FACTION-ALIGNED BATTLE NPCs
+of Wintergrasp (the keep/outside armies that fight the battle), NOT the
+PvE wildlife -- the earlier rev_wg_npc_respawn_30s.sql migration targets
+wildlife and was the wrong interpretation; that fix stands for what it
+covers, and this core change covers the armies.
+
+The armies are spawned in code, not the DB: OnBattleStart walks the
+WGKeepNPC (45 rows) and WGOutsideNPC (14 rows) tables and calls
+SpawnCreature once per row per faction. Army size is therefore a code
+constant, not a spawn count -- no DB migration can triple it.
+
+Change: each table row now spawns WG_ARMY_COPIES_PER_ROW (3) copies in a
+small ring (offsets {0,0}, {3,2}, {-3,-2} yards) instead of one, tripling
+both armies: 135 keep guards + 42 outside guards per side, all still
+tracked in KeepCreature/OutsideCreature so the existing hide/show,
+faction-swap and cleanup logic works unchanged. New constants in
+BattlefieldWG.h next to the other WG counts.
+
+Touches: src/server/game/Battlefield/Zones/BattlefieldWG.{h,cpp}
