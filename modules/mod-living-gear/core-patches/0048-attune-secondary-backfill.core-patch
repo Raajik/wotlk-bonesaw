@@ -1,0 +1,23 @@
+Report #127, part 2 (user: "fix existing items that are broken too"):
+
+Backfill secondary stats onto attunement rows banked BEFORE the #111
+secondary columns existed. Those rows have correct primaries but all-zero
+secondaries, and the login repair skipped them because its only trigger
+was a primary deficit -- 664 of Fup's 670 rows, 11,009 templates affected
+realm-wide.
+
+The login repair (RepairUnderbankedAbsorb) now has a second trigger: the
+template carries secondaries (ReadBaseStats.SecondaryTotal() > 0) but the
+row's secondary columns are all zero. It rewrites the row with
+ReadBaseStats' current numbers -- exactly what AttuneItemEntry banks
+today -- so no drift vs a fresh attune.
+
+Deliberately NOT touched: suffix-only rows (e.g. Vigorous Belt 51959,
+Tumultuous Necklace). Their secondaries were suffix rolls whose amounts
+live on the item instance (AllocationPct x suffixFactor); with the item
+spent, the instance is gone and the honest value is unknowable from the
+template, which has zero stats. Those keep zero and can be re-earned by
+attuning another copy -- same policy as the original #111 migration note.
+
+Touches: modules/mod-living-gear/src/LivingGear.cpp only (repair trigger).
+No schema change, no wire change.

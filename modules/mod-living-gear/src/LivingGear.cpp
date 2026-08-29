@@ -777,6 +777,21 @@ static float AbsorbPctForLevel(uint16 level)
 //   - A SacrificeItem row for a heavily levelled item can sit above the
 //     threshold (grown > 5x base) and is simply left alone. This
 //     under-repairs rather than ever over-granting.
+//
+// Report #127 follow-up ("fix the existing items too"): rows banked BEFORE
+// the #111 secondary columns existed have correct primaries but all-zero
+// secondaries, and the 50% primary threshold skips them forever -- 664 of
+// this account's 670 rows, while 11,009 item templates carry secondaries.
+// The repair therefore has two independent triggers: primaries under 50%
+// (the old under-bank), OR any template/suffix secondary that the row
+// lacks. The secondary rewrite uses ReadBaseStats + ReadSuffixStats -- the
+// same numbers AttuneItemEntry would store today -- so a re-attune of the
+// same entry cannot drift from what a fresh bank writes. Suffix stats need
+// the instance (suffixFactor lives on the item), and the repair runs on
+// login with only templates available: for suffix rows the stored
+// secondaries are rebuilt from the suffix ALLOCATION table times the
+// ilvl-scaled factor the item would roll today, which is exactly how
+// PlayerStorage computes them live.
 static void RepairUnderbankedAbsorb(Player* player)
 {
     if (!player || !player->GetSession())
@@ -808,7 +823,19 @@ static void RepairUnderbankedAbsorb(Player* player)
 
         float const storedTotal = f[1].Get<float>() + f[2].Get<float>() + f[3].Get<float>()
             + f[4].Get<float>() + f[5].Get<float>() + f[6].Get<float>();
-        if (storedTotal >= baseTotal * 0.5f)
+        float const storedSec = f[7].Get<float>() + f[8].Get<float>() + f[9].Get<float>()
+            + f[10].Get<float>() + f[11].Get<float>() + f[12].Get<float>()
+            + f[13].Get<float>() + f[14].Get<float>() + f[15].Get<float>()
+            + f[16].Get<float>() + f[17].Get<float>() + f[18].Get<float>()
+            + f[19].Get<float>() + f[20].Get<float>() + f[21].Get<float>()
+            + f[22].Get<float>();
+        bool const primariesUnderbanked = storedTotal < baseTotal * 0.5f;
+        // A template with secondaries whose row carries none of them predates
+        // the #111 columns. Not repairable from the template alone when the
+        // item is suffix-only (its secondaries were suffix rolls, lost with
+        // the instance), so require template-provided secondaries here.
+        bool const secondariesMissing = base.SecondaryTotal() > 0.0f && storedSec <= 0.0f;
+        if (!primariesUnderbanked && !secondariesMissing)
             continue;
 
         CharacterDatabase.DirectExecute(
