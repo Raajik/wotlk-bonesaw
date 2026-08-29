@@ -293,6 +293,7 @@ BLADESTORM_ID = 46924
 # shipped mount-spell treatment: CastingTimeIndex 1 (instant) and InterruptFlags
 # minus the movement bit, so the client sends the cast and the server (which
 # already instant-casts it for perk holders) accepts it mid-move.
+RESEARCH_NO_COOLDOWN_IDS = {60893, 61177, 61288}
 HAUNT_IDS = {48181, 59161, 59163, 59164}
 # SPELL_ATTR5_ALLOW_ACTION_DURING_CHANNEL
 ATTR5_ACTION_DURING_CHANNEL = 0x1
@@ -411,6 +412,7 @@ def patch_spell_dbc():
     combat_open = 0
     blizzard_n = 0
     bladestorm_n = 0
+    research_n = 0
     mount_n = 0
     haunt_n = 0
     for i in keep_indices:
@@ -429,6 +431,15 @@ def patch_spell_dbc():
             rec[33] = 0
             new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
             blizzard_n += 1
+        elif rec[0] in RESEARCH_NO_COOLDOWN_IDS:
+            # Reports #108-#110/#139/#140/#154: the server zeroes these via
+            # spell_cooldown_overrides, but the CLIENT's own DBC still carries
+            # the 20h/3d RecoveryTime and predicts the cooldown on every cast
+            # (relogging clears it). Zero it client-side too.
+            rec[29] = 0
+            rec[30] = 0
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            research_n += 1
         elif rec[0] == BLADESTORM_ID:
             rec[9] |= ATTR5_ACTION_DURING_CHANNEL
             rec[29] = 0
@@ -458,6 +469,7 @@ def patch_spell_dbc():
     print(f"Chest-open spells usable in combat: {combat_open}")
     print(f"Blizzard ranks made instant: {blizzard_n}")
     print(f"Bladestorm action-during-channel, no rage: {bladestorm_n}")
+    print(f"Research spells cooldown-free client-side: {research_n}")
     print(f"Mount spells instant while moving: {mount_n}")
     print(f"Haunt ranks instant while moving: {haunt_n}")
 
