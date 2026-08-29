@@ -980,6 +980,16 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
             return ACT_BAG;
         return ACT_REAGENT_VAULT;
     }
+    // Reports #143/#148/#150: dungeon currencies ([Emblem of Triumph] and the
+    // other emblems) were being filed into the reagent vault, where the
+    // client's currency tab cannot see them -- players read the tab as "the
+    // emblem never dropped". f9aa4449f deliberately routed turn-in
+    // currencies to the vault, but that design loses to how the tab actually
+    // works: class-10 currency items must stay in bags to be counted there.
+    // The emblem rows in lg_vault_reagent are handed back by the migration
+    // that accompanies this guard, so nothing is lost.
+    if (proto->Class == ITEM_CLASS_MONEY)
+        return ACT_BAG;
     if (IsReagentItem(proto, player))
         return ACT_REAGENT_VAULT;
     if (proto->Quality == ITEM_QUALITY_POOR)

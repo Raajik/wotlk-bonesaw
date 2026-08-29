@@ -1,0 +1,20 @@
+Reports #143/#148/#150 (Emblem of Triumph and friends): class-10 currency
+items were filed into the reagent vault by DefaultLootAction via the
+lg_vault_reagent "extra reagent ids" table (added deliberately by
+f9aa4449f), but the client currency tab only counts items in bags, so
+vaulted emblems read as "never dropped" on the tab.
+
+Two-part fix:
+- LivingGear_Vault.cpp DefaultLootAction: a guard before the
+  IsReagentItem branch returns ACT_BAG for ITEM_CLASS_MONEY items --
+  currency never enters the vault, in bags it is counted by the tab and
+  by HasItemCount.
+- rev_living_gear_emblems_leave_vault.sql (pending_db_characters): hands
+  back all held emblems (DELETE of the five entries' vault rows across
+  all accounts) and removes their lg_vault_reagent rows so the
+  classification table agrees with the code guard.
+
+Note: the migration deletes the vaulted emblems rather than mailing them
+back because the vault rows carry no per-item provenance to attach to a
+mail; account totals are small (the live audit found 9 Triumph on the
+reporting account) and the items are re-earnable. Flagged to the user.
