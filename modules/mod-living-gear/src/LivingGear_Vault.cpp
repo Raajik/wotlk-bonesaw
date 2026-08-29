@@ -1823,7 +1823,7 @@ uint32 LivingGear_VaultCountForDiag(Player* player, uint32 itemId)
     if (!player || !player->GetSession())
         return 0;
     return LivingGearVault::VaultCount(player->GetSession()->GetAccountId(), 0,
-        VAULT_REAGENT, itemId);
+        LivingGearVault::VAULT_REAGENT, itemId);
 }
 
 void LivingGear_ConsumeReagent(Player* player, uint32 itemId, uint32 count)
