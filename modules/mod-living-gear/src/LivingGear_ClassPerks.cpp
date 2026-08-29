@@ -513,11 +513,18 @@ int32 const ROGUE_ENERGY_TICK_BONUS = 10; // +50% of the ~20-per-2s baseline ene
 uint32 const ROGUE_KS_CHANCE = 30;
 uint32 const PALADIN_AS_BOUNCES = 30;
 // Report #81: "Avenger's Shield needs a much shorter cooldown or a chance to
-// proc off other abilities like Judgement." Proc wins over a CD change --
-// it keeps the hand-cast Avenger's Shield meaningful while letting the
-// bounce chain (which is the fun part) come out for free off a Judgement.
-uint32 const PALADIN_AS_PROC_CHANCE = 15;
+// proc off other abilities like Judgement." Report #132 raises the ask:
+// Judgement AND Hammer of the Righteous at 50%, AS's own cooldown at 6s.
+uint32 const PALADIN_AS_PROC_CHANCE = 50;
 uint32 const SPELL_JUDGEMENT_R1 = 20271;
+// Report #132: the prot rework ask -- AS bounces "a bunch of times" with a
+// 6s cooldown, and Judgement/Hammer of the Righteous each roll a 50% chance
+// to fire the shield. The bounce count and the Judgement proc already exist
+// (#81); this pass raises the proc to 50% (overriding the #81 value), adds
+// HotR as a second proc source, and cuts the shield's own cooldown to 6s
+// via the existing deferred clear (PALADIN_AS_COOLDOWN_MS).
+uint32 const PALADIN_AS_COOLDOWN_MS = 6000;
+uint32 const SPELL_HAMMER_OF_THE_RIGHTEOUS_R1 = 53595;
 float const PALADIN_AS_HOP_RANGE = 10.0f;
 float const PALADIN_DEVO_ALLY_RANGE = 40.0f;
 float const PALADIN_DEVO_DR = 0.90f; // 10% incoming damage reduction
@@ -5043,7 +5050,11 @@ void TryPaladinProtJudgementProc(Player* player, Spell* spell)
     if (!player || !spell || spell->IsTriggered() || GetClassPerk(player) != SPELL_PALADIN_PROTECTION)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
-    if (!info || !RankOf(info, SPELL_JUDGEMENT_R1))
+    if (!info)
+        return;
+    // Report #132: both Judgement and Hammer of the Righteous roll the same
+    // PALADIN_AS_PROC_CHANCE for a free shield; every other spell is ignored.
+    if (!RankOf(info, SPELL_JUDGEMENT_R1) && !RankOf(info, SPELL_HAMMER_OF_THE_RIGHTEOUS_R1))
         return;
     if (!roll_chance_i(PALADIN_AS_PROC_CHANCE))
         return;
@@ -5065,6 +5076,19 @@ void TryPaladinProtOnCast(Player* player, Spell* spell)
     SpellInfo const* info = spell->GetSpellInfo();
     if (!info || !RankOf(info, SPELL_AVENGERS_SHIELD))
         return;
+    // Report #132: the 30s category cooldown is out; the button comes back
+    // on a flat 6s. Cleared deferred (after the engine writes its own 30s
+    // entry), then a 6s cooldown is applied in the same deferred tick so the
+    // pacing the report asks for is real and not just a free button.
+    ClearCooldownAfterCast(player, info->Id, info->GetCategory());
+    ObjectGuid const playerGuid = player->GetGUID();
+    uint32 const spellId = info->Id;
+    player->m_Events.AddEventAtOffset([playerGuid, spellId]()
+    {
+        if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+            if (p->HasSpell(spellId))
+                p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS);
+    }, std::chrono::milliseconds(1));
     ScheduleAvengerBounces(player, spell);
 }
 

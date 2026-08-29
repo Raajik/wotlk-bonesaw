@@ -1,0 +1,21 @@
+Prot pally rework: AS on a 6s cooldown, Judgement/HotR both roll a free shield.
+Touches: modules/mod-living-gear/src/LivingGear_ClassPerks.cpp
+         (PALADIN_AS_PROC_CHANCE, TryPaladinProtJudgementProc,
+          TryPaladinProtOnCast)
+
+Why: report #132 -- "rework prot pally, need to do 1 [Avenger's Shield] that
+bounces a bunch of times and has a 6s cooldown and judgements and [Hammer of
+the Righteous] 50% chance to cast aveng shield".
+
+Three pieces, all building on the #81 bounce machinery that already exists:
+- PALADIN_AS_PROC_CHANCE 15 -> 50.
+- TryPaladinProtJudgementProc (the #81 proc site) now also matches Hammer of
+  the Righteous (53595 chain), so both buttons roll the same 50%.
+- The hand-cast shield's own 30s category cooldown is cleared after the cast
+  (same deferred-clear pattern as every no-cooldown perk) and a flat 6s is
+  applied in the same deferred tick via AddSpellCooldown -- the engine's 30s
+  entry lands first, so the replacement actually sticks. The bounce chain
+  (30 hops, 10y) is untouched: "bounces a bunch of times" already shipped.
+
+Procs stay on the cast hook (real button pressed, reentry-guarded), so a
+chained shield cannot recursively proc another chain.
