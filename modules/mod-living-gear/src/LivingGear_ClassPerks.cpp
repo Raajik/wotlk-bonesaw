@@ -171,7 +171,9 @@ uint32 const SPELL_THUNDER_CLAP = 6343;
 uint32 const SPELL_WHIRLWIND = 1680;
 // Bug report #19: while Bladestorm is spinning, Whirlwind and Thunder Clap fire
 // on their own on this cadence, shortened by haste.
-uint32 const BLADESTORM_AUTOCAST_MS = 6000;
+// Report #146: cadence tightened from 6s to 1s (the 1s floor in the tick keeps
+// haste from pushing it below that).
+uint32 const BLADESTORM_AUTOCAST_MS = 1000;
 uint32 const SPELL_REND = 772;
 uint32 const SPELL_DEEP_WOUNDS_DOT = 12721;
 uint32 const SPELL_DEEP_WOUNDS_TALENT[] = { 12834, 12849, 12867 };
