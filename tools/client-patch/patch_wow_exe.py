@@ -4,6 +4,11 @@ Patch stock 3.3.5a 12340 Wow.exe (7,704,216 bytes) so modified FrameXML can load
 Applies only:
   - Allow interface edits
   - Signature bypass
+  - Large Address Aware (0x20 in PE Characteristics): lets the 32-bit client
+    address 4GB on a 64-bit OS instead of 2GB. Without it, Dalaran and other
+    heavy zones exhaust the 2GB space and crash in M2Shared.cpp ("Not enough
+    memory resources are available") even on machines with tens of GB free --
+    the allocation that fails is a few MB; the address space is what ran out.
 
 Byte patterns from pathetic-lynx/WoW_335a_Patcher (WoWFix335 lineage).
 """
@@ -38,6 +43,15 @@ def apply(src: Path, dest: Path) -> None:
     data = bytearray(src.read_bytes())
     if len(data) != EXPECTED_SIZE:
         raise SystemExit(f"Unexpected size {len(data)} (want {EXPECTED_SIZE})")
+    # Large Address Aware: set 0x0020 in PE Characteristics. Applied before the
+    # byte patterns so a stock exe comes out fully patched in one pass.
+    pe_off = int.from_bytes(data[0x3C:0x40], "little")
+    chars_off = pe_off + 0x16
+    chars = int.from_bytes(data[chars_off:chars_off + 2], "little")
+    if not chars & 0x20:
+        data[chars_off:chars_off + 2] = (chars | 0x20).to_bytes(2, "little")
+        print("LAA flag set (PE Characteristics 0x%04X -> 0x%04X)"
+              % (chars, chars | 0x20))
     for off, orig, repl in PATCHES:
         got = bytes(data[off : off + len(orig)])
         if got == repl:

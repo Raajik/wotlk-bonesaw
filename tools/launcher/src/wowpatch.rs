@@ -13,6 +13,17 @@ pub const EXPECTED_SIZE: u64 = 7_704_216;
 
 /// (file offset, original bytes, replacement bytes)
 const PATCHES: &[(u64, &[u8], &[u8])] = &[
+    // Large Address Aware: set 0x0020 in PE Characteristics (file offset 0x126
+    // in a 12340 exe, PE header at 0x110). The stock flag word is 0x0103; the
+    // replacement is 0x0123. Without this the 32-bit client is capped at 2GB
+    // of address space and Dalaran and other heavy zones crash in
+    // M2Shared.cpp ("Not enough memory resources are available") even on
+    // machines with tens of GB free.
+    (
+        0x126,
+        &[0x03, 0x01], // 0x0103 little-endian
+        &[0x23, 0x01], // 0x0123 little-endian
+    ),
     // Allow interface edits
     (0x1F41BF, &[0x74], &[0xEB]),
     (0x415A25, &[0x75], &[0xEB]),

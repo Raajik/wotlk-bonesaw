@@ -99,11 +99,16 @@ fn run(ui: &Ui) -> R<()> {
         log(&format!("wrote {w}"));
     }
 
-    // New client data means the cached copy is stale, so drop it.
-    if !written.is_empty() {
-        for f in clear_wdb_cache(&client) {
-            log(&format!("cleared cache {f}"));
-        }
+    // Cache/WDB holds the client's copy of SERVER-sent data (items, creatures,
+    // gameobjects, quests) as well as DBC-derived caches, and WoW trusts its
+    // cached copy over the server. Most cache-relevant changes ship as
+    // server-side SQL that never touches the launcher payload, so keying the
+    // clear off "payload wrote something" left the cache stale across almost
+    // every update -- the bug behind recurring "client still shows the old
+    // name/icon" reports. The client re-queries what it needs the moment it
+    // needs it, so clearing every launch costs a few packets.
+    for f in clear_wdb_cache(&client) {
+        log(&format!("cleared cache {f}"));
     }
 
     match wowpatch::ensure(&client)? {
