@@ -1935,7 +1935,17 @@ void Spell::SelectImplicitTargetObjectTargets(SpellEffIndex effIndex, SpellImpli
 void Spell::SelectImplicitChainTargets(SpellEffIndex effIndex, SpellImplicitTargetInfo const& targetType, WorldObject* target, uint32 effMask)
 {
     uint32 maxTargets = m_spellInfo->Effects[effIndex].ChainTarget;
-    if (Player* modOwner = m_caster->GetSpellModOwner())
+    // SPELLVALUE_MAX_TARGETS must apply to chain spells too. It only reached
+    // SelectImplicitAreaTargets, so every SetSpellValue(SPELLVALUE_MAX_TARGETS, N)
+    // on a chain spell was silently ignored -- Bonesaw bug report #166: the
+    // shaman Elemental perk raised Chain Lightning to 99 targets via the spell
+    // value while the engine still used the DBC ChainTarget count (0 on ranks
+    // whose DBC data is itself broken -- see the pending spell_dbc migration
+    // restoring ChainTarget on 49238-49240). Area and chain selection now
+    // agree: an explicit spell value wins over the DBC.
+    if (m_spellValue->MaxAffectedTargets)
+        maxTargets = m_spellValue->MaxAffectedTargets;
+    else if (Player* modOwner = m_caster->GetSpellModOwner())
         modOwner->ApplySpellMod(m_spellInfo->Id, SPELLMOD_JUMP_TARGETS, maxTargets, this);
 
     if (maxTargets > 1)
