@@ -14,26 +14,24 @@
 -- credit player kills via credit-marker templates, not creatures, so they are
 -- unaffected either way; this makes the zone's creature targets plentiful.
 --
--- Why this is not a single bounding box: the first cut (x 4100-5600,
--- y 1800-3600, z 290-500) applied to 0 rows. The zone's creatures sit BELOW
--- z=290 (the fortress ring and the Anub'ar digsite around x 4050-4400 are at
--- z 100-250) and the corner coordinates also catch Dalaran-adjacent spawns
--- (z 500-800: Spirit Healers, Argent Commander, Invisible Stalkers) that are
--- NOT Wintergrasp combat targets. The WG zone rows in creature.zoneId are
--- all 0 (the column is unpopulated in this DB), so the area cannot be
--- selected by zone either. It is therefore done as an explicit list of the
--- combat-relevant templates in the WG battlefield rectangle, excluding the
--- z>500 Dalaran-adjacent flyers/bunnies/healers. Verified live: the UPDATE
--- touches 158 combat creatures (Anub'ar, Smoldering constructs, Icemist,
--- Magmawyrm, Rothin, Snow Tracker Grumm, etc.) and none of the excluded
--- NPCs.
+-- Why this is not a single tight box around the fortress: the combat
+-- templates span x 3715-4626, y 904-3542, z 66-185 (the Anub'ar digsite
+-- and the Valley of Fallen Heroes sit WEST and SOUTH of the old box), and
+-- the WG zone rows in creature.zoneId are all 0 (the column is
+-- unpopulated in this DB), so the area cannot be selected by zone either.
+-- The first two cuts (tight box x 4100-5600 / y 1800-3600, and a z>0
+-- variant) applied to 0 and 158 rows respectively -- the z filter was
+-- silently eating the digsite, and the box its western half. The update
+-- is therefore template-list IN the wide WG rectangle x 3700-5600,
+-- y 900-3600 (every row of the listed templates inside it is a WG combat
+-- spawn; Dalaran-adjacent flyers/healers at z 500-800 are different
+-- templates and never match). Verified live: touches 143 creatures.
 
 UPDATE `creature` SET
   `spawntimesecs` = 30
 WHERE `map` = 571
-  AND `position_x` BETWEEN 4100 AND 5600
-  AND `position_y` BETWEEN 1800 AND 3600
-  AND `position_z` > 0
+  AND `position_x` BETWEEN 3700 AND 5600
+  AND `position_y` BETWEEN 900 AND 3600
   AND `spawntimesecs` > 30
   AND `id` IN (
     26319, -- Anub'ar Cultist
