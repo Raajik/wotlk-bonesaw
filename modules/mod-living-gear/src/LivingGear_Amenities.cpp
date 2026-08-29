@@ -166,6 +166,74 @@ void UnlockPerk(Player* player, uint32 spellId, char const* msg = nullptr)
         Say(player, msg);
 }
 
+// -------------------------------------------------------------------------
+// Report #179: account-wide flight points via exploration. With the Flight
+// amenity owned, the first time any character on the account enters a map,
+// every taxi node on that map unlocks for the whole account. Explored maps
+// are stored in lg_account_taxi_maps (pending migration); on login the
+// stored maps re-apply their nodes so alts inherit the network. The
+// per-character taximask then persists the bits as usual.
+// -------------------------------------------------------------------------
+
+struct AccountTaxiState
+{
+    std::unordered_set<uint32> maps; // map ids already unlocked for this account
+};
+std::unordered_map<uint32, AccountTaxiState> g_accountTaxi;
+
+bool LoadAccountTaxiMaps(uint32 accountId)
+{
+    if (g_accountTaxi.find(accountId) != g_accountTaxi.end())
+        return true;
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT `map_id` FROM `lg_account_taxi_maps` WHERE `account_id` = {}", accountId);
+    AccountTaxiState& st = g_accountTaxi[accountId];
+    if (result)
+    {
+        do
+            st.maps.insert((*result)[0].Get<uint32>());
+        while (result->NextRow());
+    }
+    return false; // first load this session
+}
+
+// Apply every taxi node on the map to this character. Returns how many new
+// nodes the character itself gained.
+uint32 ApplyTaxiNodesForMap(Player* player, uint32 mapId)
+{
+    uint32 granted = 0;
+    for (uint32 i = 0; i < sTaxiNodesStore.GetNumRows(); ++i)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(i);
+        if (!node || node->map_id != mapId)
+            continue;
+        if (player->m_taxi.SetTaximaskNode(node->ID))
+            ++granted;
+    }
+    return granted;
+}
+
+void UnlockTaxiMapForAccount(Player* player, uint32 mapId)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const acc = player->GetSession()->GetAccountId();
+    LoadAccountTaxiMaps(acc);
+    AccountTaxiState& st = g_accountTaxi[acc];
+    if (st.maps.count(mapId))
+        return;
+    st.maps.insert(mapId);
+    CharacterDatabase.DirectExecute(
+        "INSERT IGNORE INTO `lg_account_taxi_maps` (`account_id`, `map_id`, `unlocked_at`) VALUES ({}, {}, {})",
+        acc, mapId, uint32(GameTime::GetGameTime().count()));
+    uint32 const granted = ApplyTaxiNodesForMap(player, mapId);
+    Say(player, Acore::StringFormat(
+        "|cff66ccff[Living Gear]|r Explored a new zone -- every flight path on this map is now unlocked for all your characters ({} new for this one).",
+        granted).c_str());
+    LOG_INFO("module.livinggear", "account taxi unlock: account {} map {} (+{} node(s))",
+        acc, mapId, granted);
+}
+
 TempSummon* SummonInvisibleHelper(Player* player, uint32 entry, bool hideModel = true)
 {
     if (!player)
@@ -661,12 +729,24 @@ public:
         PLAYERHOOK_ON_LEVEL_CHANGED,
         PLAYERHOOK_ON_SPELL_CAST,
         PLAYERHOOK_ON_ACHI_COMPLETE,
-        PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST
+        PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST,
+        PLAYERHOOK_ON_UPDATE_ZONE
     }) { }
 
     void OnPlayerLogin(Player* player) override
     {
         GrantAmenityPerks(player);
+        // Report #179: re-apply every account-unlocked map's taxi nodes so
+        // alts inherit the explored network. Only when the Flight amenity is
+        // owned -- the unlock trigger is owning that amenity and exploring.
+        if (HasPerk(player, SPELL_FLIGHT))
+        {
+            uint32 const acc = player->GetSession()->GetAccountId();
+            bool const firstLoad = !LoadAccountTaxiMaps(acc);
+            for (uint32 mapId : g_accountTaxi[acc].maps)
+                ApplyTaxiNodesForMap(player, mapId);
+            (void)firstLoad;
+        }
         LoadWayfarer(player);
         CheckWayfarerPerks(player);
         ApplyWayfarer(player);
@@ -693,6 +773,17 @@ public:
     void OnPlayerLevelChanged(Player* player, uint8 /*oldLevel*/) override
     {
         AutoTrainClassSpells(player);
+    }
+
+    // Report #179: first visit to a map (with the Flight amenity owned)
+    // unlocks every flight path on that map for the whole account.
+    void OnPlayerUpdateZone(Player* player, uint32 /*newZone*/, uint32 /*newArea*/) override
+    {
+        if (!player || !player->GetSession())
+            return;
+        if (!HasPerk(player, SPELL_FLIGHT))
+            return;
+        UnlockTaxiMapForAccount(player, player->GetMapId());
     }
 
     void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override
