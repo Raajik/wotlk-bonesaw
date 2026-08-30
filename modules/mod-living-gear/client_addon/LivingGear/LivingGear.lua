@@ -7703,7 +7703,7 @@ LG2.ReportUI = ReportUI
 -- 200-local main-chunk ceiling (see LG2 at the top and the matching
 -- Bonesaw.md entry), so new low-call-count helpers go on tables.
 ReportUI.KINDS = { { label = "Bug" }, { label = "Feature" }, { label = "Other" } }
-ReportUI.W, ReportUI.H = 460, 300
+ReportUI.W, ReportUI.H = 560, 430
 
 -- A pasted item link keeps its full |Hitem...|h payload in the edit box text
 -- and travels over the addon channel intact, so what files into the report is
@@ -7865,7 +7865,7 @@ function ReportUI.Build()
     bodyLabel:SetText("What happened? Paste item links straight in.")
 
     local bodyWrap = CreateFrame("Frame", nil, f)
-    bodyWrap:SetSize(ReportUI.W - 20, 132)
+    bodyWrap:SetSize(ReportUI.W - 20, 260)
     bodyWrap:SetPoint("TOPLEFT", 10, -112)
     bodyWrap:SetBackdrop({
         bgFile = WHITE,
