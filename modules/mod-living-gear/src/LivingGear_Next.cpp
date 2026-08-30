@@ -1258,6 +1258,10 @@ void KeepHofOneTarget(Player* caster, Unit* target)
     {
         aura->SetMaxDuration(-1);
         aura->SetDuration(-1);
+        // Report #195 follow-up: the permanent blessing also moves the
+        // paladin another 20% (50% total over the base 30%).
+        if (AuraEffect* eff = aura->GetEffect(EFFECT_0))
+            eff->ChangeAmount(eff->GetAmount() + 2000);
     }
     caster->RemoveSpellCooldown(SPELL_HAND_OF_FREEDOM, true);
 }
@@ -1605,6 +1609,25 @@ public:
         if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && info->Id == SPELL_HAND_OF_FREEDOM
             && res == SPELL_FAILED_NOT_READY)
             res = SPELL_CAST_OK;
+        // Report #195: Blessing of Freedom is a self-only toggle for the
+        // Retribution perk. Recasting while it is up removes it (the toggle
+        // turning OFF, reported as DONT_REPORT so no cast starts); casting on
+        // anyone else is rejected outright.
+        if (strict && info->Id == SPELL_HAND_OF_FREEDOM
+            && HasClassPerk(player, SPELL_PALADIN_RETRIBUTION))
+        {
+            if (player->HasAura(SPELL_HAND_OF_FREEDOM))
+            {
+                player->RemoveAurasDueToSpell(SPELL_HAND_OF_FREEDOM);
+                res = SPELL_FAILED_DONT_REPORT;
+            }
+            else
+            {
+                Unit* target = spell->m_targets.GetUnitTarget();
+                if (target && target != player)
+                    res = SPELL_FAILED_BAD_TARGETS;
+            }
+        }
         // "Sanctified Whirlwind" free-toggle off-switch, same ordering
         // discipline as TryWarriorArmsBladestormToggleOff: in the strict pass,
         // recasting while the aura is up removes it and the cast never starts

@@ -566,7 +566,7 @@ uint32 const TRAP_ZONE_MAX_REARMS = 3;
 uint32 const TRAP_ZONE_MAX_LIVE = 6;   // live re-arm zones per hunter
 float const HUNTER_TRAP_RADIUS_MULT = 2.0f; // matches HUNTER_TRAP_RADIUS_MOD
 uint32 const WARLOCK_AFFLICTION_SPREAD_TICK_MS = 1000;
-float const WARLOCK_AFFLICTION_SPREAD_RANGE = 15.0f;
+float const WARLOCK_AFFLICTION_SPREAD_RANGE = 40.0f; // Feature #194: was 15.0f -- "affliction dots jump up to 40 yards" (the Haunt-carried DoTs)
 // How far from the warlock we look for already-infected enemies to spread FROM.
 // The hop itself is still SPREAD_RANGE; this only bounds the search, so the
 // plague can creep well past the warlock's own casting range one hop at a time.
