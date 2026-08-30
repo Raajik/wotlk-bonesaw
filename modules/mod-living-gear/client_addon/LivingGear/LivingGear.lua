@@ -6568,20 +6568,29 @@ evCraftErr:SetScript("OnEvent", function(_, _, a1, a2)
         -- Name the recipe, its reagents, and where the counts came from, so the
         -- next occurrence is diagnosable from the player's own chat line.
         if LG2._lastCraftDiag then
-            local d = LG2._lastCraftDiag
-            local parts = {}
-            for r = 1, (d.numReagents or 0) do
-                local link = d.reagentLink and d.reagentLink(r)
-                local id = link and tonumber(string.match(link, "item:(%d+)"))
-                local req, have = d.reagentInfo and select(3, d.reagentInfo(r)) or 0, 0
-                have = id and (GetItemCount(id) or 0) or 0
-                local vault = id and VaultCountOf(id) or 0
-                table.insert(parts, string.format("%s x%s (bags %d + vault %d)",
-                    tostring(id), tostring(req), have, vault))
-            end
-            DEFAULT_CHAT_FRAME:AddMessage(string.format(
-                "|cffff3333[LG diag]|r craft blocked: %s (index %s) needs %s",
-                tostring(d.name), tostring(d.index), table.concat(parts, ", ")))
+            -- Report #192 follow-up: reagentLink/reagentInfo were called with the
+            -- reagent index only; both want (craftIndex, reagentIndex), so
+            -- the first reagent error during a craft-all threw inside this
+            -- handler -- and because it throws, it also skipped the cache
+            -- heal right below, un-doing the #137/#138 fix it sits next to.
+            -- Diagnostics must never be able to re-break the bug they
+            -- diagnose: pcall the whole block.
+            pcall(function()
+                local d = LG2._lastCraftDiag
+                local parts = {}
+                for r = 1, (d.numReagents or 0) do
+                    local link = d.reagentLink and d.reagentLink(d.index, r)
+                    local id = link and tonumber(string.match(link, "item:(%d+)"))
+                    local req = d.reagentInfo and select(3, d.reagentInfo(d.index, r)) or 0
+                    local have = id and (GetItemCount(id) or 0) or 0
+                    local vault = id and VaultCountOf(id) or 0
+                    table.insert(parts, string.format("%s x%s (bags %d + vault %d)",
+                        tostring(id), tostring(req), have, vault))
+                end
+                DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                    "|cffff3333[LG diag]|r craft blocked: %s (index %s) needs %s",
+                    tostring(d.name), tostring(d.index), table.concat(parts, ", ")))
+            end)
         end
         LG2._craftAvail, LG2._craftAvailGen = {}, nil
         LG2._bagGen = (LG2._bagGen or 0) + 1
