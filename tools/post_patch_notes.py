@@ -20,16 +20,20 @@ it did not achieve.
 """
 
 import argparse
+import io
 import json
+import re
 import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WEBHOOK_FILE = ROOT / "tools" / "client-update" / "discord.webhook"
 LIMIT = 1900          # under Discord's 2000 so a code fence or mention cannot tip it over
+UA = "bonesaw-patch-notes/1.1"
 
 
 def load_webhook() -> str:
@@ -70,14 +74,37 @@ def chunk(text: str) -> list:
     return out
 
 
-def post(url: str, content: str) -> str:
-    body = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8")
-    req = urllib.request.Request(
-        url + "?wait=true",
-        data=body,
-        headers={"Content-Type": "application/json", "User-Agent": "bonesaw-patch-notes/1.0"},
-        method="POST",
-    )
+def post(url: str, content: str, filename: str | None = None,
+         attachment: bytes | None = None) -> str:
+    """Post one message; with an attachment, use a multipart upload so the
+    full notes ride along as a .txt file regardless of length."""
+    if attachment is None:
+        body = json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8")
+        req = urllib.request.Request(
+            url + "?wait=true",
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": UA},
+            method="POST",
+        )
+    else:
+        boundary = "----bonesawBoundary" + uuid.uuid4().hex
+        buf = io.BytesIO()
+        buf.write(f"--{boundary}\r\n".encode())
+        buf.write(b"Content-Disposition: form-data; name=\"payload_json\"\r\n\r\n")
+        buf.write(json.dumps({"content": content, "allowed_mentions": {"parse": []}}).encode("utf-8"))
+        buf.write(f"\r\n--{boundary}\r\n".encode())
+        buf.write(
+            f"Content-Disposition: form-data; name=\"files[0]\"; "
+            f"filename=\"{filename}\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n".encode()
+        )
+        buf.write(attachment)
+        buf.write(f"\r\n--{boundary}--\r\n".encode())
+        req = urllib.request.Request(
+            url + "?wait=true",
+            data=buf.getvalue(),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "User-Agent": UA},
+            method="POST",
+        )
     with urllib.request.urlopen(req, timeout=30) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
         return payload.get("id", "?")
@@ -101,28 +128,35 @@ def main() -> int:
     if bad:
         sys.exit(f"notes contain non-ascii characters: {bad!r}")
 
+    # Advisory lines (e.g. retest_list's char count) must never reach players;
+    # they used to leak into the notes file and then into the Discord post.
+    text = "\n".join(line for line in text.splitlines()
+                     if not re.match(r"^\[\d+ chars;", line)).strip() + "\n"
+
+    # Post ONE message (first chunk) and attach the full notes as a .txt file,
+    # so nothing is ever truncated the way multi-message splits used to be.
     parts = chunk(text)
-    print(f"{path.name}: {len(text)} chars -> {len(parts)} message(s)")
+    body = parts[0]
+    attach_name = f"Bonesaw-{path.stem}-patch-notes.txt"
+    extra = len(parts) - 1
+    print(f"{path.name}: {len(text)} chars; body {len(body)} chars; attached as {attach_name}"
+          + (f" ({extra} chunk(s) are in the attachment only)" if extra > 0 else ""))
 
     if args.dry_run:
-        for i, part in enumerate(parts, 1):
-            print(f"\n----- message {i}/{len(parts)} ({len(part)} chars) -----")
-            print(part)
+        print("\n----- body -----")
+        print(body)
+        print(f"\n----- attachment: {attach_name} ({len(text.encode('utf-8'))} bytes) -----")
         return 0
 
     url = load_webhook()
-    for i, part in enumerate(parts, 1):
-        try:
-            msg_id = post(url, part)
-        except urllib.error.HTTPError as err:
-            detail = err.read().decode("utf-8", "replace")[:300]
-            sys.exit(f"message {i}/{len(parts)} rejected ({err.code}): {detail}")
-        except urllib.error.URLError as err:
-            sys.exit(f"message {i}/{len(parts)} failed to send: {err.reason}")
-        print(f"  posted {i}/{len(parts)}  id {msg_id}")
-        if i < len(parts):
-            time.sleep(1.0)
-
+    try:
+        msg_id = post(url, body, attach_name, text.encode("utf-8"))
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", "replace")[:300]
+        sys.exit(f"post rejected ({err.code}): {detail}")
+    except urllib.error.URLError as err:
+        sys.exit(f"post failed to send: {err.reason}")
+    print(f"  posted  id {msg_id}  (notes attached as {attach_name})")
     print("done")
     return 0
 

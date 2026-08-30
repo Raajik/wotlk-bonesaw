@@ -72,7 +72,9 @@ def is_ascii(text):
     return all(ord(c) < 128 for c in text)
 
 
-def trim(title, limit=100):
+def trim(title, limit=160):
+    # Report-#-style titles used to cut at 100 and every long ask ended in
+    # "..." on Discord; 160 keeps full sentences while still bounding width.
     if len(title) <= limit:
         return title
     return title[:limit - 3].rstrip() + "..."
@@ -146,8 +148,10 @@ def main():
     for note in skipped:
         print(f"warning: skipped {note} - rephrase it by hand")
     print(section)
-    print(f"\n[{len(section)} chars; post_patch_notes.py splits on blank lines "
-          f"if the whole file exceeds one message]")
+    # stderr: ship_bookkeeping.py captures this script's stdout into the
+    # notes file, so an advisory line here used to leak into the notes AND
+    # then into the Discord post.
+    print(f"\n[{len(section)} chars; the full file is attached to the post] ", file=sys.stderr)
     return 0
 
 
