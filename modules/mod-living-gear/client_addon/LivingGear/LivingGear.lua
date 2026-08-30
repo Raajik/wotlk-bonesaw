@@ -6499,6 +6499,10 @@ if LG2._origTradeSkillInfo then
         -- Headers have no reagents; asking about them returns nothing useful
         -- and would poison the cache.
         if name and skillType ~= "header" and GetTradeSkillNumReagents then
+            LG2._lastCraftDiag = { name = name, index = index,
+                numReagents = GetTradeSkillNumReagents(index),
+                reagentInfo = GetTradeSkillReagentInfo,
+                reagentLink = GetTradeSkillReagentItemLink }
             local ok, n = pcall(LG2.CraftableWithVault, index,
                 GetTradeSkillNumReagents(index), GetTradeSkillReagentInfo)
             if ok and n and n > (numAvailable or 0) then
@@ -6515,6 +6519,10 @@ if LG2._origCraftInfo then
         local name, subName, craftType, numAvailable, isExpanded, cost, level =
             LG2._origCraftInfo(index)
         if name and craftType ~= "header" and GetCraftNumReagents then
+            LG2._lastCraftDiag = { name = name, index = index,
+                numReagents = GetCraftNumReagents(index),
+                reagentInfo = GetCraftReagentInfo,
+                reagentLink = GetCraftReagentItemLink }
             local ok, n = pcall(LG2.CraftableWithVault, index,
                 GetCraftNumReagents(index), GetCraftReagentInfo)
             if ok and n and n > (numAvailable or 0) then
@@ -6549,6 +6557,26 @@ evCraftErr:SetScript("OnEvent", function(_, _, a1, a2)
     local text = a2 or (GetGameMessageText and GetGameMessageText(a1)) or a1
     if type(text) == "string" and (string.find(text, SPELL_FAILED_REAGENTS or "Missing reagent", 1, true)
         or string.find(text, ERR_SPELL_FAILED_REAGENTS_GENERIC or "Missing reagent", 1, true)) then
+        -- Report #192 diagnostics: a refusal with zero server-side refusals in
+        -- the log means the CLIENT blocked the cast before it was ever sent.
+        -- Name the recipe, its reagents, and where the counts came from, so the
+        -- next occurrence is diagnosable from the player's own chat line.
+        if LG2._lastCraftDiag then
+            local d = LG2._lastCraftDiag
+            local parts = {}
+            for r = 1, (d.numReagents or 0) do
+                local link = d.reagentLink and d.reagentLink(r)
+                local id = link and tonumber(string.match(link, "item:(%d+)"))
+                local req, have = d.reagentInfo and select(3, d.reagentInfo(r)) or 0, 0
+                have = id and (GetItemCount(id) or 0) or 0
+                local vault = id and VaultCountOf(id) or 0
+                table.insert(parts, string.format("%s x%s (bags %d + vault %d)",
+                    tostring(id), tostring(req), have, vault))
+            end
+            DEFAULT_CHAT_FRAME:AddMessage(string.format(
+                "|cffff3333[LG diag]|r craft blocked: %s (index %s) needs %s",
+                tostring(d.name), tostring(d.index), table.concat(parts, ", ")))
+        end
         LG2._craftAvail, LG2._craftAvailGen = {}, nil
         LG2._bagGen = (LG2._bagGen or 0) + 1
     end
