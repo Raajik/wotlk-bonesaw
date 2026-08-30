@@ -1625,11 +1625,11 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
     SpellCastResult lastResult = SPELL_CAST_OK;
     for (Unit* target : clean)
     {
-        bool nearCarrier = false;
+        Unit* nearCarrier = nullptr;
         for (Unit* carrier : carriers)
             if (target->IsWithinDist(carrier, MAGE_FIRE_SPREAD_RANGE))
             {
-                nearCarrier = true;
+                nearCarrier = carrier;
                 break;
             }
 
@@ -1640,8 +1640,13 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
         // of trusting the silent CastSpell. BestOwnedOrFirst guarantees a spell
         // ID, so a failure is a Spell::cast rejection (range, facing, target
         // invalid) that would otherwise be swallowed.
+        // Report #156 parity with the affliction spread: the new infection is
+        // cast BY the carrier so it visibly jumps bomb to bomb, while
+        // originalCaster stays the mage so HasLivingBombFrom (caster-guid
+        // keyed) and the explosion damage keep keying off the player.
         SpellCastResult const res =
-            player->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true);
+            nearCarrier->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true,
+                nullptr, nullptr, player->GetGUID());
         if (res == SPELL_CAST_OK)
             ++spread;
         else
