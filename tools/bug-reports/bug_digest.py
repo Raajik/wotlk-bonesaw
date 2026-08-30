@@ -96,7 +96,8 @@ def _fetch_reports(where: str, db_password: str) -> list[dict]:
             ROUND(pos_x, 1), ROUND(pos_y, 1), ROUND(pos_z, 1),
             target_entry, target_name,
             REPLACE(REPLACE(description, '\\n', ' '), '\\r', ' '), report_type,
-            status, COALESCE(github_issue_number, 0), COALESCE(github_issue_url, '')
+            status, COALESCE(github_issue_number, 0), COALESCE(github_issue_url, ''),
+            COALESCE(is_critical, 0), COALESCE(is_recurring, 0)
         ), '{ROW_SEP}'
         FROM lg_bug_report
         WHERE {where}
@@ -130,6 +131,8 @@ def _fetch_reports(where: str, db_password: str) -> list[dict]:
             "status": parts[14],
             "github_issue_number": parts[15],
             "github_issue_url": parts[16],
+            "is_critical": parts[17] if len(parts) > 17 else "0",
+            "is_recurring": parts[18] if len(parts) > 18 else "0",
         })
     return rows
 
@@ -163,10 +166,14 @@ def format_report(row: dict) -> str:
     rtype = row.get("report_type")
     if rtype == "feature":
         heading = f"Feature #{row['id']}"
-    elif rtype == "critical":
-        heading = f"CRITICAL #{row['id']}"
     else:
         heading = f"#{row['id']}"
+    # is_critical replaces the old '.crit' report_type; either spelling means
+    # the player flagged it game-breaking.
+    if row.get("is_critical") in ("1", "true", "True"):
+        heading = f"CRITICAL #{row['id']}"
+    if row.get("is_recurring") in ("1", "true", "True"):
+        heading += " (recurring)"
     lines = [
         f"**{heading}** - {row['name']} (level {row['level']}) - {when}",
         f"> {row['description']}",

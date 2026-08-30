@@ -5607,6 +5607,12 @@ function LG2.HandleAddon(prefix, message)
         LG2.OpenArmoryView()
         return
     end
+    -- ".bug" with no text asks for the report form. Built lazily so a player
+    -- who never reports never pays for the frame.
+    if message == "REPORTUI" then
+        LG2.ReportUI.Toggle()
+        return
+    end
     -- A Create just materialised an item, so the entry is no longer uncreated.
     -- Ask for a fresh sync rather than patching the row locally: the item now
     -- exists in bags and belongs in the list as a real item, which is the
@@ -7641,42 +7647,258 @@ end
 -- command that opens Blizzard's own report frame -- that frame files into a
 -- table nobody here reads, so overriding it would silently swallow reports.
 -- The server also accepts ".bug <text>" for anyone without the addon loaded.
+-- ---------------------------------------------------------------------
+-- Report form (2026-08-29 redesign)
+--
+-- One intake for everything: /report (or bare /bugreport, /crit, ...) opens a
+-- small window where the player picks Bug / Feature / Other, ticks Critical
+-- and/or Recurring, types the report, and sends. Replaces the three separate
+-- one-line slash flows; the server still accepts BUG|/FEATURE|/CRIT| so an
+-- old client copy cannot lose a report.
+--
+-- Item links: pasting an item link from chat/bags into the edit box keeps its
+-- |Hitem hyperlink, which travels over the addon channel and files as a
+-- clickable link in the report. Typed "[item:12345]" ids are converted to a
+-- link server-side.
+-- ---------------------------------------------------------------------
+local ReportUI = {}
+LG2.ReportUI = ReportUI
+
+local REPORT_KINDS = { { label = "Bug" }, { label = "Feature" }, { label = "Other" } }
+local REPORT_W, REPORT_H = 340, 250
+
+-- A pasted item link keeps its |H...|h payload inside the edit box text; what
+-- we send is the text as typed, links intact. Escape strips them only when the
+-- player asks (plain text reports read better in Discord).
+local function ReportText(raw)
+    local text = raw or ""
+    text = string.gsub(text, "|c%x%x%x%x%x%x%x%x", "")
+    text = string.gsub(text, "|Hitem:", "|Hitem:")  -- keep hyperlink payloads
+    text = string.gsub(text, "|r", "")
+    return text
+end
+
+function ReportUI.Toggle(kindOverride, critOverride)
+    if ReportUI.frame and ReportUI.frame:IsShown() then
+        ReportUI.frame:Hide()
+        return
+    end
+    if not ReportUI.frame then
+        ReportUI.Build()
+    end
+    ReportUI.frame:Show()
+    if kindOverride then
+        ReportUI.SetKind(kindOverride)
+    end
+    if critOverride then
+        ReportUI.critBox:SetChecked(true)
+    end
+    ReportUI.body:SetFocus()
+end
+
+function ReportUI.SetKind(idx)
+    ReportUI.kind = idx
+    for i = 1, #REPORT_KINDS do
+        local btn = ReportUI.kindBtns[i]
+        if btn then
+            if i == idx then
+                StyleBtnColor(btn, COLOR_ON)
+            else
+                StyleBtnColor(btn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+            end
+        end
+    end
+end
+
+function ReportUI.Send()
+    local text = ReportText(ReportUI.body:GetText() or "")
+    if string.len(string.gsub(text, "%s", "")) < 5 then
+        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Report]|r Say a little more about what went wrong or what you would like.")
+        return
+    end
+    local crit = ReportUI.critBox:GetChecked() and 1 or 0
+    local rec = ReportUI.recBox:GetChecked() and 1 or 0
+    local kind = ReportUI.kind or 1
+    SendLine(string.format("REPORT|%d|%d|%d|%s", kind - 1, crit, rec, text))
+    ReportUI.body:SetText("")
+    ReportUI.critBox:SetChecked(false)
+    ReportUI.recBox:SetChecked(false)
+    ReportUI.frame:Hide()
+end
+
+function ReportUI.Build()
+    local f = CreateFrame("Frame", "LivingGearReportFrame", UIParent)
+    f:SetSize(REPORT_W, REPORT_H)
+    f:SetPoint("CENTER", UIParent, "CENTER", 0, 80)
+    f:SetFrameStrata("HIGH")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetBackdrop({
+        bgFile = WHITE,
+        edgeFile = WHITE,
+        edgeSize = 1,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    f:SetBackdropColor(0.07, 0.07, 0.07, 0.96)
+    f:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
+    f:Hide()
+    tinsert(UISpecialFrames, "LivingGearReportFrame")
+    ReportUI.frame = f
+
+    local title = Font(f, 13, 0.4, 0.8, 1)
+    title:SetPoint("TOPLEFT", 10, -8)
+    title:SetText("Report")
+
+    local close = CreateFrame("Button", nil, f)
+    close:SetSize(22, 18)
+    close:SetPoint("TOPRIGHT", -8, -8)
+    StyleBtn(close, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+    close.label = Font(close, 12, 0.9, 0.9, 0.9)
+    close.label:SetPoint("CENTER", 0, 0)
+    close.label:SetJustifyH("CENTER")
+    close.label:SetText("X")
+    close:SetScript("OnClick", function() f:Hide() end)
+
+    -- Type row: three equal buttons, selected one tinted green.
+    local kindLabel = Font(f, 10, 0.55, 0.55, 0.55)
+    kindLabel:SetPoint("TOPLEFT", 10, -32)
+    kindLabel:SetText("Type")
+
+    ReportUI.kindBtns = {}
+    for i, kd in ipairs(REPORT_KINDS) do
+        local btn = CreateFrame("Button", nil, f)
+        btn:SetSize(100, 20)
+        btn:SetPoint("TOPLEFT", 10 + (i - 1) * 107, -44)
+        StyleBtn(btn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+        btn.label = Font(btn, 11, 0.9, 0.9, 0.9)
+        btn.label:SetPoint("CENTER", 0, 0)
+        btn.label:SetJustifyH("CENTER")
+        btn.label:SetText(kd.label)
+        btn:SetScript("OnClick", function()
+            ReportUI.SetKind(i)
+        end)
+        ReportUI.kindBtns[i] = btn
+    end
+
+    -- Flags row: labelled checkboxes (self-describing, no bare color cues).
+    local function FlagBox(name, label, x, tip)
+        local box = CreateFrame("CheckButton", nil, f)
+        box:SetSize(18, 18)
+        box:SetPoint("TOPLEFT", x, -74)
+        box:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
+        box:SetPushedTexture("Interface\\Buttons\\UI-CheckBox-Down")
+        box:SetHighlightTexture("Interface\\Buttons\\UI-CheckBox-Highlight")
+        box:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
+        local lbl = Font(f, 11, 0.85, 0.85, 0.85)
+        lbl:SetPoint("LEFT", box, "RIGHT", 4, 0)
+        lbl:SetText(label)
+        box:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+            GameTooltip:SetText(tip, 0.9, 0.9, 0.9, true)
+            GameTooltip:Show()
+        end)
+        box:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        return box
+    end
+
+    ReportUI.critBox = FlagBox("crit", "Critical", 10,
+        "Everything stops until this is fixed. Use for game-breaking problems.")
+    ReportUI.recBox = FlagBox("rec", "Recurring", 130,
+        "Still happening or keeps coming back -- feedback on a previous fix.")
+
+    -- Body: multi-line edit box, the whole point of the form.
+    local bodyLabel = Font(f, 10, 0.55, 0.55, 0.55)
+    bodyLabel:SetPoint("TOPLEFT", 10, -100)
+    bodyLabel:SetText("What happened? Paste item links straight in.")
+
+    local bodyWrap = CreateFrame("Frame", nil, f)
+    bodyWrap:SetSize(REPORT_W - 20, 92)
+    bodyWrap:SetPoint("TOPLEFT", 10, -112)
+    bodyWrap:SetBackdrop({
+        bgFile = WHITE,
+        edgeFile = WHITE,
+        edgeSize = 1,
+        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    })
+    bodyWrap:SetBackdropColor(0.08, 0.08, 0.08, 1)
+    bodyWrap:SetBackdropBorderColor(0.22, 0.22, 0.22, 1)
+
+    local body = CreateFrame("EditBox", nil, bodyWrap)
+    body:SetPoint("TOPLEFT", 6, -4)
+    body:SetPoint("BOTTOMRIGHT", -6, 4)
+    body:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
+    body:SetTextColor(0.9, 0.9, 0.9, 1)
+    body:SetAutoFocus(false)
+    body:SetMultiLine(true)
+    body:SetMaxLetters(500)
+    body:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    body:SetScript("OnEnterPressed", function() ReportUI.Send() end)
+    ReportUI.body = body
+
+    local send = CreateFrame("Button", nil, f)
+    send:SetSize(90, 20)
+    send:SetPoint("BOTTOMRIGHT", -10, 8)
+    StyleBtn(send, COLOR_ADD[1], COLOR_ADD[2], COLOR_ADD[3])
+    send.label = Font(send, 11, 0.85, 0.95, 0.85)
+    send.label:SetPoint("CENTER", 0, 0)
+    send.label:SetJustifyH("CENTER")
+    send.label:SetText("Send")
+    send:SetScript("OnClick", function() ReportUI.Send() end)
+
+    local hint = Font(f, 9, 0.5, 0.5, 0.5)
+    hint:SetPoint("BOTTOMLEFT", 10, 12)
+    hint:SetText("Your location and target are sent automatically.")
+
+    ReportUI.SetKind(1)
+end
+
+SLASH_LGREPORT1 = "/lgreport"
+SLASH_LGREPORT2 = "/report"
+SlashCmdList["LGREPORT"] = function(msg)
+    ReportUI.Toggle()
+end
+
+-- Bug reports. /bugreport rather than /bug, because /bug is a stock WoW slash
+-- command that opens Blizzard's own report frame -- that frame files into a
+-- table nobody here reads, so overriding it would silently swallow reports.
+-- Bare (no text) now opens the report form; with text it files a plain bug
+-- directly, same as before.
 SLASH_LGBUG1 = "/bugreport"
 SLASH_LGBUG2 = "/lgbug"
 SlashCmdList["LGBUG"] = function(msg)
     msg = string.gsub(msg or "", "^%s+", "")
     if msg == "" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Bug]|r Usage: /bugreport <what went wrong>")
-        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Bug]|r Your location and current target are sent automatically.")
+        ReportUI.Toggle()
         return
     end
     SendLine("BUG|" .. msg)
 end
 
--- Feature requests use the same durable intake/context capture as bugs, but
--- route to GitHub as enhancements rather than bugs.
+-- Feature requests and critical reports route through the same form now.
+-- With text they keep their old server meaning (a feature-kind report, a
+-- critical-priority one); bare they just open the form.
 SLASH_LGFEATURE1 = "/featurerequest"
 SLASH_LGFEATURE2 = "/lgfeature"
 SlashCmdList["LGFEATURE"] = function(msg)
     msg = string.gsub(msg or "", "^%s+", "")
     if msg == "" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Feature]|r Usage: /featurerequest <what you would like>")
-        DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Feature]|r Your location and current target are sent automatically.")
+        ReportUI.Toggle(2)   -- Feature preselected
         return
     end
     SendLine("FEATURE|" .. msg)
 end
 
--- Critical reports (.crit): same context capture as bugs, marked CRITICAL
--- so the digest and GitHub tracker prioritise them.
 SLASH_LGCRIT1 = "/crit"
 SLASH_LGCRIT2 = "/lgcrit"
 SlashCmdList["LGCRIT"] = function(msg)
     msg = string.gsub(msg or "", "^%s+", "")
     if msg == "" then
-        DEFAULT_CHAT_FRAME:AddMessage("|cffff3333[CRITICAL]|r Usage: /crit <what is critically broken>")
-        DEFAULT_CHAT_FRAME:AddMessage("|cffff3333[CRITICAL]|r Your location and current target are sent automatically.")
+        ReportUI.Toggle(1, true)   -- Bug preselected, Critical ticked
         return
     end
     SendLine("CRIT|" .. msg)
 end
+

@@ -162,21 +162,30 @@ std::string Trim(std::string s)
 // Bug reports and feature requests
 // ---------------------------------------------------------------------
 
-// Report kinds: 0 = bug, 1 = feature, 2 = critical (report #189: a .crit
-// command that files with CRITICAL priority so the digest marks it).
-enum LgReportKind { LG_REPORT_BUG = 0, LG_REPORT_FEATURE = 1, LG_REPORT_CRITICAL = 2 };
+// Report intake, 2026-08-29 redesign: one ".bug" entry point with a small
+// addon form. The player picks bug / feature / other and ticks Critical and
+// Recurring separately, so the kind no longer lives in which command they
+// typed. .feature and .crit still work (mapped onto the flags below) so old
+// muscle memory and old addon copies keep filing reports.
+//
+// is_recurring marks "still not working / keeps happening": feedback on a
+// previous fix rather than a brand-new problem.
+enum LgReportKind { LG_REPORT_BUG = 0, LG_REPORT_FEATURE = 1, LG_REPORT_OTHER = 2 };
+
+// [item:12345] in the report text -> a real clickable item link.
+std::string ExpandItemLinks(std::string text);
 
 // Context is the whole point. "The chest in Uldaman does not open" is close
 // to unactionable; the same sentence with a map, a zone, exact coordinates,
 // the reporter's level and the entry id of whatever they had targeted
 // usually points straight at the row that needs fixing.
-bool RecordSupportReport(Player* player, std::string const& description, uint8 kind)
+bool RecordSupportReport(Player* player, std::string const& description, uint8 kind,
+    bool critical = false, bool recurring = false)
 {
     if (!player || !player->GetSession())
         return false;
 
-    static char const* const KIND_LABEL[3] = { "Bug", "Feature", "Critical" };
-    static char const* const KIND_TYPE[3] = { "bug", "feature", "critical" };
+    static char const* const KIND_TYPE[3] = { "bug", "feature", "other" };
 
     uint32 const accountId = player->GetSession()->GetAccountId();
     uint32 const now = uint32(GameTime::GetGameTime().count());
@@ -185,12 +194,16 @@ bool RecordSupportReport(Player* player, std::string const& description, uint8 k
     if (text.size() < BUG_MIN_LENGTH)
     {
         ChatHandler(player->GetSession()).SendSysMessage(
-            kind == LG_REPORT_FEATURE ? "|cff66ccff[Feature]|r Say a little more about what you would like."
-                                      : "|cff66ccff[Bug]|r Say a little more about what went wrong.");
+            "|cff66ccff[Report]|r Say a little more about what went wrong or what you would like.");
         return false;
     }
     if (text.size() > BUG_MAX_LENGTH)
         text.resize(BUG_MAX_LENGTH);
+
+    // [item:12345] becomes a real item link, so a report about a specific item
+    // reads in game without the reporter having to own or target it. Unknown
+    // ids are left as typed rather than dropped silently.
+    text = ExpandItemLinks(text);
 
     uint32 const last = g_lastBugAt[accountId];
     if (last && now - last < BUG_COOLDOWN_SECONDS)
@@ -213,25 +226,61 @@ bool RecordSupportReport(Player* player, std::string const& description, uint8 k
 
     CharacterDatabase.Execute(
         "INSERT INTO `lg_bug_report` "
-        "(`report_type`, `account_id`, `character_guid`, `character_name`, `reported_at`, `map_id`, `zone_id`, "
+        "(`report_type`, `is_critical`, `is_recurring`, `account_id`, `character_guid`, `character_name`, `reported_at`, `map_id`, `zone_id`, "
         "`zone_name`, `pos_x`, `pos_y`, `pos_z`, `player_level`, `target_entry`, `target_name`, `description`) "
-        "VALUES ('{}', {}, {}, '{}', {}, {}, {}, '{}', {}, {}, {}, {}, {}, '{}', '{}')",
-        KIND_TYPE[kind], accountId, player->GetGUID().GetCounter(), Escape(player->GetName()), now,
+        "VALUES ('{}', {}, {}, {}, {}, {}, '{}', {}, {}, {}, '{}', {}, {}, {}, {}, {}, '{}', '{}')",
+        KIND_TYPE[kind], critical ? 1 : 0, recurring ? 1 : 0,
+        accountId, player->GetGUID().GetCounter(), Escape(player->GetName()), now,
         player->GetMapId(), player->GetZoneId(), Escape(ZoneName(player)),
         player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(),
         uint32(player->GetLevel()), targetEntry, Escape(targetName), Escape(text));
 
     // Also written to the worldserver log, so a report survives the digest
     // script being broken or the characters DB being rolled back.
-    LOG_INFO("module.livinggear", "{} report from {} (account {}): {} [map {} zone {} at {} {} {}]",
-        KIND_LABEL[kind], player->GetName(), accountId, text, player->GetMapId(), player->GetZoneId(),
+    LOG_INFO("module.livinggear", "{} report{}{} from {} (account {}): {} [map {} zone {} at {} {} {}]",
+        critical ? "CRITICAL" : KIND_TYPE[kind], critical ? " [critical]" : "", recurring ? " [recurring]" : "",
+        player->GetName(), accountId, text, player->GetMapId(), player->GetZoneId(),
         player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
 
     ChatHandler(player->GetSession()).SendSysMessage(
-        kind == LG_REPORT_FEATURE ? "|cff66ccff[Feature]|r Requested, thank you. Your location and target were included."
-        : kind == LG_REPORT_CRITICAL ? "|cffff3333[CRITICAL]|r Reported, thank you. Your location and target were included."
-        : "|cff66ccff[Bug]|r Reported, thank you. Your location and target were included.");
+        critical ? "|cffff3333[CRITICAL]|r Reported, thank you. Your location and target were included."
+                  : "|cff66ccff[Report]|r Reported, thank you. Your location and target were included.");
     return true;
+}
+
+// [item:12345] -> clickable item link. Kept tolerant: whitespace and a
+// missing id are left untouched so nothing the player typed disappears.
+std::string ExpandItemLinks(std::string text)
+{
+    std::size_t pos = 0;
+    while ((pos = text.find("[item:", pos)) != std::string::npos)
+    {
+        std::size_t const close = text.find(']', pos);
+        if (close == std::string::npos)
+            break;
+        uint32 entry = 0;
+        if (sscanf(text.c_str() + pos, "[item:%u]", &entry) != 1 || !entry)
+        {
+            pos += 6;
+            continue;
+        }
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+        if (!proto)
+        {
+            pos = close + 1;
+            continue;
+        }
+        std::string const name = proto->Name1;
+        uint32 const quality = std::min<uint32>(proto->Quality, MAX_ITEM_QUALITY - 1);
+        // |c<8 hex>|Hitem:entry:0:0:0:0:0:0:0:0|h[Name]|h|r -- colors from the
+        // same table the client's own item links use (Hyperlinks.cpp).
+        char link[256];
+        snprintf(link, sizeof(link), "|cff%06x|Hitem:%u:0:0:0:0:0:0:0:0|h[%s]|h|r",
+            ItemQualityColors[quality] & 0xFFFFFFu, entry, Escape(name).c_str());
+        text.replace(pos, close - pos + 1, link);
+        pos += strlen(link);
+    }
+    return text;
 }
 
 // ---------------------------------------------------------------------
@@ -770,26 +819,39 @@ public:
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
-        RecordSupportReport(player, std::string(description), LG_REPORT_BUG);
+        std::string text = std::string(description);
+        // Bare ".bug" opens the report form; ".bug <text>" files directly, so
+        // the old one-line habit keeps working without the addon.
+        if (LivingGearSupport::Trim(std::string(text)).size() < LivingGearSupport::BUG_MIN_LENGTH)
+        {
+            LivingGearSupport::SendLine(player, "REPORTUI|");
+            return true;
+        }
+        LivingGearSupport::RecordSupportReport(player, std::string(text), LivingGearSupport::LG_REPORT_BUG);
         return true;
     }
 
+    // Legacy spellings kept working after the single-.bug redesign: they map
+    // onto the form's flags rather than being kinds of their own any more.
     static bool HandleFeature(ChatHandler* handler, Tail description)
     {
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
-        RecordSupportReport(player, std::string(description), LG_REPORT_FEATURE);
+        LivingGearSupport::RecordSupportReport(player, std::string(description), LivingGearSupport::LG_REPORT_FEATURE);
         return true;
     }
 
-    // Report #189: ".crit <description>" files with CRITICAL priority.
+    // Report #189: .crit files with CRITICAL priority. Now just .bug with the
+    // Critical box ticked, kept as its own command so #189's muscle memory and
+    // the addon's /crit slash both keep working.
     static bool HandleCritical(ChatHandler* handler, Tail description)
     {
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
-        RecordSupportReport(player, std::string(description), LG_REPORT_CRITICAL);
+        LivingGearSupport::RecordSupportReport(player, std::string(description),
+            LivingGearSupport::LG_REPORT_BUG, /*critical=*/true);
         return true;
     }
 
@@ -823,7 +885,22 @@ bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg)
     }
     if (msg.rfind("CRIT|", 0) == 0)
     {
-        LivingGearSupport::RecordSupportReport(player, msg.substr(5), LivingGearSupport::LG_REPORT_CRITICAL);
+        LivingGearSupport::RecordSupportReport(player, msg.substr(5),
+            LivingGearSupport::LG_REPORT_BUG, /*critical=*/true);
+        return true;
+    }
+    // New form intake: REPORT|kind|critical|recurring|text. kind is 0 bug,
+    // 1 feature, 2 other; crit/rec are 0 or 1.
+    if (msg.rfind("REPORT|", 0) == 0)
+    {
+        uint32 kind = 0, critical = 0, recurring = 0;
+        if (sscanf(msg.c_str(), "REPORT|%u|%u|%u|", &kind, &critical, &recurring) == 3)
+        {
+            std::size_t const third = msg.find('|', msg.find('|', msg.find('|', 7) + 1) + 1);
+            if (kind <= 2 && third != std::string::npos)
+                LivingGearSupport::RecordSupportReport(player, msg.substr(third + 1),
+                    uint8(kind), critical != 0, recurring != 0);
+        }
         return true;
     }
     if (msg.rfind("QDONE|", 0) == 0)

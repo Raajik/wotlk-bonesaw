@@ -28,6 +28,8 @@ LABEL_DEFINITIONS = {
     "resolution:fixed": ("0e8a16", "Resolved by a verified fix"),
     "resolution:wontfix": ("ffffff", "Deliberately not being changed"),
     "resolution:duplicate": ("cfd3d7", "Covered by another issue"),
+    "priority:critical": ("b60205", "Player flagged as game-breaking (Critical in the report form)"),
+    "recurring": ("d93f0b", "Reported still broken / keeps coming back"),
 }
 
 
@@ -37,7 +39,14 @@ def labels_to_create(existing: set[str]) -> dict[str, tuple[str, str]]:
 
 def labels_for_report(report: dict) -> list[str]:
     kind = "enhancement" if report.get("report_type") == "feature" else "bug"
-    return [kind, "source:in-game", "status:needs-triage"]
+    labels = [kind, "source:in-game", "status:needs-triage"]
+    # is_critical replaces the old '.crit' report_type encoding; recurring
+    # marks still-not-working feedback on a previous fix.
+    if str(report.get("is_critical", "0")) in ("1", "true", "True"):
+        labels.append("priority:critical")
+    if str(report.get("is_recurring", "0")) in ("1", "true", "True"):
+        labels.append("recurring")
+    return labels
 
 
 def clean_wow_text(text: str) -> str:
@@ -60,6 +69,8 @@ def build_issue(report: dict) -> tuple[str, str]:
     report_id = int(report["id"])
     description = clean_wow_text(report.get("description", ""))
     is_feature = report.get("report_type") == "feature"
+    is_critical = str(report.get("is_critical", "0")) in ("1", "true", "True")
+    is_recurring = str(report.get("is_recurring", "0")) in ("1", "true", "True")
     prefix = f"[{'Feature' if is_feature else 'Report'} #{report_id}] "
     title = prefix + description
     if len(title) > MAX_TITLE_LENGTH:
@@ -71,13 +82,22 @@ def build_issue(report: dict) -> tuple[str, str]:
         "",
         description,
         "",
+    ]
+    flags = []
+    if is_critical:
+        flags.append("- **Critical** (player-flagged game-breaking)")
+    if is_recurring:
+        flags.append("- **Recurring** (still not working / keeps coming back)")
+    if flags:
+        lines.extend(["## Flags", "", *flags, ""])
+    lines.extend([
         "## Captured context",
         "",
         f"- Reported by: `{clean_wow_text(report.get('name', 'unknown'))}` (level {report.get('level', '0')})",
         f"- Reported at: {_reported_at(report.get('at', '0'))}",
         f"- Location: `{where}` at `{report.get('x', '0')} {report.get('y', '0')} {report.get('z', '0')}` "
         f"(map {report.get('map', '0')}, zone {report.get('zone_id', '0')})",
-    ]
+    ])
     target_name = clean_wow_text(report.get("target_name", ""))
     target_entry = str(report.get("target_entry", "0"))
     if target_name:
