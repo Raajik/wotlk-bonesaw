@@ -7878,7 +7878,15 @@ function ReportUI.Build()
     -- under it (REPORT|0|0|0| prefix eats 13 more).
     body:SetMaxLetters(230)
     body:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    body:SetScript("OnEnterPressed", function() ReportUI.Send() end)
+    -- Enter must make a newline (multi-line box); Ctrl+Enter sends, so a
+    -- half-written report is never blasted by reflex.
+    body:SetScript("OnEnterPressed", function(self)
+        if IsControlKeyDown() then
+            ReportUI.Send()
+        else
+            self:Insert("\n")
+        end
+    end)
     ReportUI.body = body
 
     local send = CreateFrame("Button", nil, f)
@@ -7893,7 +7901,33 @@ function ReportUI.Build()
 
     local hint = Font(f, 9, 0.5, 0.5, 0.5)
     hint:SetPoint("BOTTOMLEFT", 10, 12)
-    hint:SetText("Your location and target are sent automatically.")
+    hint:SetText("Ctrl+Enter sends. Shift+click items in your bags to link them.")
+
+    -- Live character counter next to the hint (max is on the next line).
+    local count = Font(f, 9, 0.5, 0.5, 0.5)
+    count:SetPoint("LEFT", hint, "RIGHT", 8, 0)
+    body:HookScript("OnTextChanged", function()
+        local n = body:GetNumLetters()
+        count:SetText(n .. "/230")
+        if n >= 200 then
+            count:SetTextColor(1, 0.55, 0.3)
+        end
+    end)
+
+    -- Shift+click item links land in the chat editbox by default, which is
+    -- useless when the report body has focus. Route them here instead.
+    if not ReportUI._insertHooked then
+        ReportUI._insertHooked = true
+        local origInsert = ChatEdit_InsertLink
+        ChatEdit_InsertLink = function(text, ...)
+            if ReportUI.frame and ReportUI.frame:IsShown()
+                and ReportUI.body and ReportUI.body:IsFocused() then
+                ReportUI.body:Insert(text)
+                return true
+            end
+            return origInsert(text, ...)
+        end
+    end
 
     ReportUI.SetKind(1)
 end

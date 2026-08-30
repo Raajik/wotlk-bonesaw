@@ -65,6 +65,8 @@ local ok, report = xpcall(function()
       SetMultiLine = function() end, SetAutoFocus = function() end,
       SetMaxBytes = function() end, SetMaxLetters = function() end,
       SetNumber = function() end, GetNumber = function() return 0 end,
+      Insert = function(self, s) w._text = (w._text or "") .. tostring(s) end,
+      IsFocused = function() return w._focused or false end,
       ClearFocus = function() end, SetFocus = function() end,
       SetParent = function() end, SetOwner = function() end,
       AddMessage = function(self, s) log("CHAT: " .. tostring(s)) end,
@@ -299,6 +301,7 @@ local ok, report = xpcall(function()
   step("slash /crit bare (toggle hide)", function() E.SlashCmdList.LGCRIT("") end)
   step("slash /report reopen", function() E.SlashCmdList.LGREPORT("") end)
   step("report Send via editbox OnEnterPressed", function()
+    E.IsControlKeyDown = function() return true end
     for i = nload + 1, #allframes do
       local f = allframes[i]
       if f._scripts.OnEnterPressed then return f._scripts.OnEnterPressed(f) end
