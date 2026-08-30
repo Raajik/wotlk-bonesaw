@@ -228,7 +228,7 @@ bool RecordSupportReport(Player* player, std::string const& description, uint8 k
         "INSERT INTO `lg_bug_report` "
         "(`report_type`, `is_critical`, `is_recurring`, `account_id`, `character_guid`, `character_name`, `reported_at`, `map_id`, `zone_id`, "
         "`zone_name`, `pos_x`, `pos_y`, `pos_z`, `player_level`, `target_entry`, `target_name`, `description`) "
-        "VALUES ('{}', {}, {}, {}, {}, {}, '{}', {}, {}, {}, '{}', {}, {}, {}, {}, {}, '{}', '{}')",
+        "VALUES ('{}', {}, {}, {}, {}, '{}', {}, {}, {}, '{}', {}, {}, {}, {}, {}, '{}', '{}')",
         KIND_TYPE[kind], critical ? 1 : 0, recurring ? 1 : 0,
         accountId, player->GetGUID().GetCounter(), Escape(player->GetName()), now,
         player->GetMapId(), player->GetZoneId(), Escape(ZoneName(player)),
