@@ -15,6 +15,20 @@ AzerothCore is a C++ MMORPG server emulator for World of Warcraft 3.3.5a (WotLK)
 - Append durable learnings (crashes, UI rules, deploy, spell IDs, do-not-repeat mistakes) to `A:\obsidian\jeremy\wiki\Bonesaw.md` as part of shipping, not after. Client-facing strings are ASCII only.
 - **When shipping: never restart/replace worldserver without warning players, then saving.** Run `powershell tools/restart_worldserver.ps1` before `docker compose up` / `restart` / `kill` of `ac-worldserver`. (Not before `build` -- building only writes an image and is deliberately done first, so a broken compile never reaches the warn.) That announces in-game, waits **45 seconds**, then `saveall`. Skip only if the container is not running. Do not use AzerothCore `server shutdown` for docker replace. Do not start this sequence unless the user asked to ship or restart.
 
+## Session handoff protocol
+
+- `HANDOFF.md` (repo root, untracked) is a session-to-session handoff. **At the
+  start of a session: if `HANDOFF.md` exists, read it before anything else,
+  absorb it, then delete it.** Do not commit it, do not ship it.
+- **When closing in on the context cap (roughly under 15% remaining):** stop
+  starting new multi-step work. Write the current state to `HANDOFF.md` — open
+  threads with exact file/line pointers, unshipped commits, gotchas — then tell
+  the user to start a fresh session. Finish or commit whatever is already
+  mid-flight first; never leave an edit half-applied across the handoff.
+- The budget countdown is visible in the per-turn context; treat it as the
+  trigger, not a suggestion. Long sessions lose fine detail before they lose
+  coarse intent — record exact line numbers, not vibes.
+
 ## Build
 
 Out-of-source build is required (in-source is blocked).
