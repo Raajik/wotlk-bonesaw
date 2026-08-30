@@ -505,7 +505,11 @@ uint32 const MAGE_FIRE_TICK_MS = 1000;
 // bounds the search, so the chain can creep past the mage's own range one hop
 // at a time -- same shape as the warlock affliction contagion constants.
 float const MAGE_FIRE_CONTAGION_RANGE = 60.0f;
-float const MAGE_FIRE_SPREAD_RANGE = CLASS_PERK_RANGE;
+// Feature #202: "spread to all enemies within 40 yards (like Affliction dots)"
+float const MAGE_FIRE_SPREAD_RANGE = 40.0f;
+// Feature #202: Living Bomb ticks deal 2000% more (x21), same ladder as the
+// Affliction DoT multiplier. Fires from ModifyPeriodicDamageAurasTick.
+float const MAGE_LIVING_BOMB_DMG_MULT = 21.0f;
 uint32 const MAGE_FROST_ICE_TICK_MS = 2000;
 uint32 const FURY_HASTE_CAP = 20;
 uint32 const FURY_HASTE_PCT_PER_STACK = 5;
@@ -1519,7 +1523,7 @@ void ApplyMageFireDamage(Unit* attacker, int32& damage, SpellInfo const* info)
     Player* player = attacker->ToPlayer();
     if (!player || GetClassPerk(player) != SPELL_MAGE_FIRE)
         return;
-    damage *= int32(MAGE_DAMAGE_MULT);
+    damage *= int32(MAGE_DAMAGE_MULT > MAGE_LIVING_BOMB_DMG_MULT ? MAGE_DAMAGE_MULT : MAGE_LIVING_BOMB_DMG_MULT);
 }
 
 void ApplyMageFirePeriodic(Unit* attacker, uint32& damage, SpellInfo const* info)
@@ -1529,7 +1533,7 @@ void ApplyMageFirePeriodic(Unit* attacker, uint32& damage, SpellInfo const* info
     Player* player = attacker->ToPlayer();
     if (!player || GetClassPerk(player) != SPELL_MAGE_FIRE)
         return;
-    damage *= MAGE_DAMAGE_MULT;
+    damage *= MAGE_DAMAGE_MULT > MAGE_LIVING_BOMB_DMG_MULT ? MAGE_DAMAGE_MULT : MAGE_LIVING_BOMB_DMG_MULT;
 }
 
 // Fire Blast becomes a detonator.
