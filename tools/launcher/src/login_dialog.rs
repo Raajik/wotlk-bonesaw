@@ -206,7 +206,7 @@ unsafe fn build_controls(parent: HWND) {
         "EDIT",
         "",
         WS_EX_CLIENTEDGE,
-        WS_TABSTOP | ES_AUTOHSCROLL as u32,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
         24,
         40,
         336,
@@ -214,15 +214,21 @@ unsafe fn build_controls(parent: HWND) {
         ID_ACCOUNT,
         F_BODY,
     );
-    if let Some((a, _)) = &old {
-        SetWindowTextW(account, wide(a).as_ptr());
+    // Pre-fill from a saved login, else from the account name the client
+    // itself remembers (WTF/Config.wtf, written by "remember name").
+    let prefill = old
+        .as_ref()
+        .map(|(a, _)| a.clone())
+        .or_else(|| client.as_deref().and_then(crate::login::saved_account_name));
+    if let Some(a) = prefill {
+        SetWindowTextW(account, wide(&a).as_ptr());
     }
     control(
         parent,
         "EDIT",
         "",
         WS_EX_CLIENTEDGE,
-        WS_TABSTOP | (ES_PASSWORD | ES_AUTOHSCROLL) as u32,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (ES_PASSWORD | ES_AUTOHSCROLL) as u32,
         24,
         96,
         336,

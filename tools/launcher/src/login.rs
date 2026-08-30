@@ -64,6 +64,24 @@ pub fn focus(hwnd: isize) {
     }
 }
 
+/// The account name the client itself remembers: WTF/Config.wtf holds
+/// `SET accountName "..."` once "remember account name" has been ticked on
+/// the login screen (the launcher's typed login updates it too). Used only
+/// to pre-fill the auto-login dialog; the value is never logged.
+pub fn saved_account_name(client: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(client.join("WTF").join("Config.wtf")).ok()?;
+    for line in text.lines() {
+        if line.to_ascii_lowercase().starts_with("set accountname") {
+            let start = line.find('"')? + 1;
+            let end = line.rfind('"')?;
+            if start < end {
+                return Some(line[start..end].to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Reads the opt-in login file, if present and decryptable. A missing,
 /// empty or undecryptable file simply means manual login; the contents are
 /// never logged or displayed anywhere.
