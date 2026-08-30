@@ -5,6 +5,7 @@
 #![windows_subsystem = "windows"]
 
 mod login;
+mod login_dialog;
 mod manifest;
 mod payload;
 mod realmlist;
@@ -38,6 +39,8 @@ fn run(ui: &Ui) -> R<()> {
         .ok_or("cannot locate the client folder")?
         .to_path_buf();
     validate(&client)?;
+    ui.set_client_dir(&client); // the auto-login button needs to know where to write
+    log("");
     log("");
     log(&format!("Bonesaw launcher {VERSION} in {}", client.display()));
 
@@ -147,6 +150,9 @@ fn run(ui: &Ui) -> R<()> {
     }
 
     ui.status("Ready, starting Bonesaw...");
+    // With Wow focused on top a moment later, a warm local run would flash
+    // this window for a blink. Hold it long enough to actually be seen.
+    ui.linger();
     launch(&client)?;
     log("started Wow.exe");
     Ok(())
@@ -198,6 +204,7 @@ fn launch(client: &Path) -> R<()> {
 
 /// A rolling log next to the exe. Players can paste it when something breaks.
 /// Delete the client's cached item/spell/creature data.
+/// Delete the client's cached item/spell/creature data.
 ///
 /// WoW caches what the server tells it about items, spells and creatures in
 /// Cache/WDB and then trusts that copy over the server. Shipping new DBC data
@@ -243,7 +250,7 @@ fn clear_wdb_cache(client: &Path) -> Vec<String> {
     removed
 }
 
-fn log(line: &str) {
+pub fn log(line: &str) {
     use std::io::Write;
     static PATH: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     let path = PATH.get_or_init(|| {

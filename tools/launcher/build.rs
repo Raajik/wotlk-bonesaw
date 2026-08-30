@@ -33,7 +33,7 @@ fn main() {
     }
     let mut res = winresource::WindowsResource::new();
     res.set("ProductName", "Bonesaw")
-        .set("FileDescription", "Bonesaw launcher")
+        .set("FileDescription", "Bonesaw")
         .set("CompanyName", "Bonesaw")
         .set("LegalCopyright", "")
         .set("OriginalFilename", "Bonesaw.exe")

@@ -7,7 +7,9 @@
 //! blitted from the icon so it can turn -- slowly while the launcher idles,
 //! and visibly faster whenever something is actually downloading.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use windows_sys::core::PCWSTR;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::*;
@@ -18,28 +20,48 @@ const W: i32 = 512;
 const H: i32 = 352;
 
 // COLORREF is 0x00BBGGRR.
-const BG: COLORREF = 0x00141113; // near-black with a plum hint
-const BLADE_BG: COLORREF = 0x001A1518; // inside the blade ring
-const BLOOD: COLORREF = 0x001C169E; // arterial red, the accent
-const BLOOD_DEEP: COLORREF = 0x0001016E; // the icon's own blood, top edge
-const BLOOD_HOT: COLORREF = 0x002C40D8; // bright red: hover, percent, bar edge
-const STEEL: COLORREF = 0x00F0F2F2; // blade teeth, straight from the icon
-const BONE: COLORREF = 0x00D2DEE4; // primary text, warm bone white
-const BONE_DIM: COLORREF = 0x007E888F; // secondary text
-const TRACK: COLORREF = 0x0019171E; // progress track
-const RULE: COLORREF = 0x00242127;
-const FRAME: COLORREF = 0x0027242A;
+pub(crate) const BG: COLORREF = 0x00141113; // near-black with a plum hint
+pub(crate) const BLADE_BG: COLORREF = 0x001A1518; // inside the blade ring
+pub(crate) const BLOOD: COLORREF = 0x001C169E; // arterial red, the accent
+pub(crate) const BLOOD_DEEP: COLORREF = 0x0001016E; // the icon's own blood, top edge
+pub(crate) const BLOOD_HOT: COLORREF = 0x002C40D8; // bright red: hover, percent, bar edge
+pub(crate) const STEEL: COLORREF = 0x00F0F2F2; // blade teeth, straight from the icon
+pub(crate) const BONE: COLORREF = 0x00D2DEE4; // primary text, warm bone white
+pub(crate) const BONE_DIM: COLORREF = 0x007E888F; // secondary text
+pub(crate) const TRACK: COLORREF = 0x0019171E; // progress track
+pub(crate) const RULE: COLORREF = 0x00242127;
+pub(crate) const FRAME: COLORREF = 0x0027242A;
 
 const WM_UI_REFRESH: u32 = WM_APP + 1;
 
-#[derive(Default)]
 struct State {
     status: String,
     file: String,
     percent: Option<f64>,
     hover_close: bool,
+    hover_login: bool,
     spin: f64, // blade angle, degrees
     version: String,
+    client: Option<std::path::PathBuf>,
+    auto_login: bool,
+    created: Instant,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            status: String::new(),
+            file: String::new(),
+            percent: None,
+            hover_close: false,
+            hover_login: false,
+            spin: 0.0,
+            version: String::new(),
+            client: None,
+            auto_login: false,
+            created: Instant::now(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -60,6 +82,7 @@ impl Ui {
         let state = Arc::new(Mutex::new(State {
             status: "Starting...".into(),
             version: version.to_string(),
+            created: Instant::now(),
             ..Default::default()
         }));
         unsafe {
@@ -104,6 +127,31 @@ impl Ui {
     pub fn quit(&self) {
         if self.hwnd != 0 {
             unsafe { PostMessageW(self.hwnd as HWND, WM_CLOSE, 0, 0) };
+        }
+    }
+
+    /// Records the client folder (the auto-login dialog writes beside the
+    /// launcher) and picks up whether a saved login already exists.
+    pub fn set_client_dir(&self, client: &Path) {
+        {
+            let mut s = self.state.lock().unwrap();
+            s.client = Some(client.to_path_buf());
+            s.auto_login = client.join("Bonesaw.login").is_file();
+        }
+        self.refresh();
+    }
+
+    /// With Wow focused on top a moment later, a warm local run would flash
+    /// this window for a blink. Hold it up long enough to actually be seen.
+    pub fn linger(&self) {
+        const MIN_VISIBLE: std::time::Duration = std::time::Duration::from_secs(4);
+        let until = {
+            let s = self.state.lock().unwrap();
+            s.created + MIN_VISIBLE
+        };
+        let now = Instant::now();
+        if now < until {
+            std::thread::sleep(until - now);
         }
     }
 
@@ -219,14 +267,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 HTCLIENT as LRESULT
             }
         }
-        WM_MOUSEMOVE => {
+    WM_MOUSEMOVE => {
             let x = (lp & 0xFFFF) as i16 as i32;
             let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
-            let hot = in_close_box(x, y);
+            let hot_close = in_close_box(x, y);
+            let hot_login = in_login_button(x, y);
             if let Some(st) = state() {
                 let mut s = st.lock().unwrap();
-                if s.hover_close != hot {
-                    s.hover_close = hot;
+                let mut changed = false;
+                if s.hover_close != hot_close {
+                    s.hover_close = hot_close;
+                    changed = true;
+                }
+                if s.hover_login != hot_login {
+                    s.hover_login = hot_login;
+                    changed = true;
+                }
+                if changed {
                     drop(s);
                     InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
@@ -238,6 +295,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let y = ((lp >> 16) & 0xFFFF) as i16 as i32;
             if in_close_box(x, y) {
                 PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            } else if in_login_button(x, y) {
+                open_login_dialog(hwnd);
             }
             0
         }
@@ -258,6 +317,41 @@ fn in_close_box(x: i32, y: i32) -> bool {
     (W - 44..W - 12).contains(&x) && (10..42).contains(&y)
 }
 
+fn in_login_button(x: i32, y: i32) -> bool {
+    (W - 192..W - 22).contains(&x) && (H - 40..H - 14).contains(&y)
+}
+
+/// Opens the auto-login dialog and reflects the outcome on the button and
+/// status line.
+unsafe fn open_login_dialog(hwnd: HWND) {
+    let dir = state()
+        .and_then(|st| st.lock().ok())
+        .and_then(|s| s.client.clone());
+    let Some(dir) = dir else { return };
+    match crate::login_dialog::show(hwnd as isize, &dir) {
+        crate::login_dialog::Outcome::Saved => {
+            if let Some(st) = state() {
+                let mut s = st.lock().unwrap();
+                s.auto_login = true;
+                s.status = "Auto-login saved - encrypted on this machine.".into();
+                s.file.clear();
+                s.percent = None;
+            }
+        }
+        crate::login_dialog::Outcome::Removed => {
+            if let Some(st) = state() {
+                let mut s = st.lock().unwrap();
+                s.auto_login = false;
+                s.status = "Auto-login removed.".into();
+                s.file.clear();
+                s.percent = None;
+            }
+        }
+        crate::login_dialog::Outcome::None => {}
+    }
+    InvalidateRect(hwnd, std::ptr::null(), 0);
+}
+
 unsafe fn state() -> Option<&'static Mutex<State>> {
     let p = STATE_PTR;
     if p.is_null() {
@@ -267,7 +361,7 @@ unsafe fn state() -> Option<&'static Mutex<State>> {
     }
 }
 
-unsafe fn font(size: i32, bold: bool, face: &str) -> HFONT {
+pub(crate) unsafe fn font(size: i32, bold: bool, face: &str) -> HFONT {
     let name = wide(face);
     CreateFontW(
         -size,
@@ -397,6 +491,29 @@ unsafe fn blade(mem: HDC, cx: i32, cy: i32, spin_deg: f64) {
     fill_ellipse(mem, bx - 16, by + 4, bx - 9, by + 11, BLOOD);
 }
 
+/// The auto-login button, bottom-right: blood outline while off, bone while
+/// on, filled blood on hover.
+unsafe fn login_button(mem: HDC, on: bool, hover: bool) {
+    let (x, y, w, h) = (W - 192, H - 40, 170, 26);
+    let border = if on { BONE_DIM } else { BLOOD };
+    let (bg, fg) = if hover {
+        (BLOOD, BG)
+    } else if on {
+        (BLADE_BG, BONE)
+    } else {
+        (BLADE_BG, BLOOD)
+    };
+    fill(mem, x, y, w, h, bg);
+    fill(mem, x, y, w, 1, border);
+    fill(mem, x, y + h - 1, w, 1, border);
+    fill(mem, x, y, 1, h, border);
+    fill(mem, x + w - 1, y, 1, h, border);
+    let label = if on { "AUTO-LOGIN: ON" } else { "SET UP AUTO-LOGIN" };
+    let f = font(11, true, "Segoe UI");
+    text(mem, label, x, y + 6, w, fg, f, DT_CENTER | DT_SINGLELINE);
+    DeleteObject(f as _);
+}
+
 /// Sawtooth progress bar: the fill is cut into teeth along its top edge, with
 /// a hot leading edge like the side of the blade doing the cutting.
 unsafe fn saw_bar(mem: HDC, x0: i32, y0: i32, w: i32, h: i32, p: f64) {
@@ -472,7 +589,7 @@ unsafe fn paint(hwnd: HWND) {
     let bmp = CreateCompatibleBitmap(dc, W, H);
     let old_bmp = SelectObject(mem, bmp as _);
 
-    let (status, file, percent, hover, spin, version) = match state() {
+    let (status, file, percent, hover, spin, version, auto_login, hover_login) = match state() {
         Some(st) => {
             let s = st.lock().unwrap();
             (
@@ -482,9 +599,20 @@ unsafe fn paint(hwnd: HWND) {
                 s.hover_close,
                 s.spin,
                 s.version.clone(),
+                s.auto_login,
+                s.hover_login,
             )
         }
-        None => (String::new(), String::new(), None, false, 0.0, String::new()),
+        None => (
+            String::new(),
+            String::new(),
+            None,
+            false,
+            0.0,
+            String::new(),
+            false,
+            false,
+        ),
     };
 
     fill(mem, 0, 0, W, H, BG);
@@ -592,13 +720,14 @@ unsafe fn paint(hwnd: HWND) {
     text(
         mem,
         "Bonesaw  \u{00B7}  github.com/Raajik/wotlk-bonesaw",
-        0,
-        H - 32,
-        W,
+        24,
+        H - 30,
+        270,
         BONE_DIM,
         f_foot,
-        DT_CENTER | DT_SINGLELINE,
+        DT_LEFT | DT_SINGLELINE,
     );
+    login_button(mem, auto_login, hover_login);
 
     for f in [f_title, f_sub, f_body, f_small, f_foot, f_close] {
         DeleteObject(f as _);
