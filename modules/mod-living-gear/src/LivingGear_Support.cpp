@@ -62,10 +62,9 @@ uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
 
 namespace LivingGearSupport
 {
-// One report per minute per account. Generous for anyone actually reporting
-// something, and enough to stop a stuck key or a frustrated player filling
-// the table (and the Discord channel) in a single sitting.
-uint32 const BUG_COOLDOWN_SECONDS = 60;
+// No per-account throttle: rate-limiting a player who is actively testing is
+// worse than the flood risk, and the length caps below keep any one report
+// bounded. The digest batches deliveries on the tracker side anyway.
 uint32 const BUG_MAX_LENGTH = 500;
 uint32 const BUG_MIN_LENGTH = 5;
 
@@ -125,7 +124,6 @@ float g_wgMaxSiegeMult = 10.0f;
 // and nothing at all until someone types the command.
 std::unordered_map<uint32, std::map<std::string, uint32>> g_diag;
 
-std::unordered_map<uint32, uint32> g_lastBugAt;      // account id -> unix seconds
 std::unordered_map<uint32, uint32> g_questCooldown;  // character guid -> unix seconds
 
 void SendLine(Player* player, std::string const& line)
@@ -274,15 +272,8 @@ bool RecordSupportReport(Player* player, std::string const& description, uint8 k
     // ids are left as typed rather than dropped silently.
     text = ExpandItemLinks(text);
 
-    uint32 const last = g_lastBugAt[accountId];
-    if (last && now - last < BUG_COOLDOWN_SECONDS)
-    {
-        ChatHandler(player->GetSession()).PSendSysMessage(
-            "|cff66ccff[Report]|r Give it {} more second(s) before the next report.",
-            BUG_COOLDOWN_SECONDS - (now - last));
-        return false;
-    }
-    g_lastBugAt[accountId] = now;
+    // Deliberately no rate limit here: the reporter is doing us a favour and
+    // the length caps bound the abuse surface.
 
     uint32 targetEntry = 0;
     std::string targetName;
