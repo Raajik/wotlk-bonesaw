@@ -466,7 +466,7 @@ uint8 const WG_MAX_KEEP_NPC = 45;
 uint8 const WG_MAX_OUTSIDE_NPC = 14;
 // Report #169: copies spawned per keep/outside army row (triples the
 // faction-aligned battle NPCs; see BattlefieldWG.cpp OnBattleStart).
-uint8 const WG_ARMY_COPIES_PER_ROW = 3;
+uint8 const WG_ARMY_COPIES_PER_ROW = 5;
 // Ring offsets (yards) so the copies of one row don't stack invisibly.
 float const WG_ARMY_RING[3][2] = { { 0.0f, 0.0f }, { 3.0f, 2.0f }, { -3.0f, -2.0f } };
 uint8 const WG_OUTSIDE_ALLIANCE_NPC = 7;

@@ -17,3 +17,9 @@ faction-swap and cleanup logic works unchanged. New constants in
 BattlefieldWG.h next to the other WG counts.
 
 Touches: src/server/game/Battlefield/Zones/BattlefieldWG.{h,cpp}
+
+Addendum (report #205): raised to 5 copies per row -- the reporter says the
+tripled armies read as unchanged and asks for 5x ("would actually like them
+increased to 5x normal amount of spawns; do the same with the Alliance
+equivalent"). WG_ARMY_COPIES_PER_ROW covers both factions' tables, so the
+Alliance side scales identically.
