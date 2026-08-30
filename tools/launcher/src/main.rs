@@ -4,6 +4,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod login;
 mod manifest;
 mod payload;
 mod realmlist;
@@ -11,7 +12,6 @@ mod selfupdate;
 mod ui;
 mod util;
 mod wowpatch;
-
 use std::path::{Path, PathBuf};
 use ui::Ui;
 use util::R;
@@ -172,10 +172,27 @@ fn launch(client: &Path) -> R<()> {
     if !wow.is_file() {
         return Err("Wow.exe is missing from this folder.".into());
     }
-    std::process::Command::new(&wow)
+    let child = std::process::Command::new(&wow)
         .current_dir(client)
         .spawn()
         .map_err(|e| format!("cannot start Wow.exe: {e}"))?;
+
+    // A freshly spawned Wow usually loses the race for the foreground: the
+    // launcher window was frontmost when it exited, Windows does not grant
+    // foreground rights to a background process, and the game opens behind
+    // whatever the player was doing. Wait for the game window and raise it.
+    // The same wait is where a saved login gets typed, if one exists.
+    match login::wait_for_window(child.id(), login::WINDOW_TIMEOUT) {
+        Some(hwnd) => {
+            login::focus(hwnd);
+            if let Some((account, password)) = login::load(client) {
+                login::type_login(&account, &password);
+                log("typed saved login into the Wow login screen");
+            }
+        }
+        None => log("Wow window did not appear in time; no focus or auto-login"),
+    }
+    log("started Wow.exe");
     Ok(())
 }
 
