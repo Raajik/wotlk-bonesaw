@@ -25,6 +25,8 @@
 #include "Item.h"
 #include "SpellInfo.h"
 #include "WorldSessionMgr.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "ItemTemplate.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -1797,6 +1799,11 @@ bool HandleVaultChat(Player* player, std::string msg)
     return false;
 }
 
+// Report #191: proximity re-poll cadence and scratch list for the 5s sweep.
+uint32 const AUTOLOOT_POLL_MS = 5000;
+float const AUTLOOT_POLL_RANGE = 30.0f;
+std::unordered_map<uint32, uint32> g_autolootPollAcc;
+
 class VaultPlayer : public PlayerScript
 {
 public:
@@ -1808,7 +1815,8 @@ public:
         PLAYERHOOK_ON_LOGIN,
         PLAYERHOOK_ON_STORE_NEW_ITEM,
         PLAYERHOOK_ON_CREATURE_KILL,
-        PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST
+        PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST,
+        PLAYERHOOK_ON_UPDATE
     }) { }
 
     // *Autoloot (910008) is "on by default" -- there's no unlock condition,
@@ -1914,6 +1922,34 @@ public:
             AutolootCreatureKill(player, creature);
             AutolootSkinKill(player, creature);
         }, std::chrono::milliseconds(1));
+    }
+
+    // Report #191: autoloot was purely event-driven (kill, chest open, loot
+    // window), so lootable corpses left behind by other players -- or ones a
+    // late-arriving group member filled -- sat unlooted until the player
+    // walked away. Re-poll nearby lootable corpses on a 5s cadence and run
+    // them through the same guarded autoloot path (which still enforces the
+    // recipient/loot-method rules, so this never takes someone else's roll).
+    void OnPlayerUpdate(Player* player, uint32 diff) override
+    {
+        if (!player || !player->IsAlive() || !player->GetSession())
+            return;
+        if (!LivingGear_HasPerk(player, SPELL_AUTOLOOT) || !AutolootOn(player->GetSession()->GetAccountId()))
+            return;
+        uint32& acc = g_autolootPollAcc[player->GetGUID().GetCounter()];
+        acc += diff;
+        if (acc < AUTOLOOT_POLL_MS)
+            return;
+        acc = 0;
+
+        std::list<Unit*> nearby;
+        Acore::AnyUnitInObjectRangeCheck check(player, AUTLOOT_POLL_RANGE);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(player, nearby, check);
+        Cell::VisitObjects(player, searcher, AUTLOOT_POLL_RANGE);
+        for (Unit* unit : nearby)
+            if (Creature* c = unit->ToCreature())
+                if (c->IsAlive() && c->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE))
+                    AutolootCreatureKill(player, c);
     }
 };
 
