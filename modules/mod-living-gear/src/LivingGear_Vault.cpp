@@ -1609,14 +1609,12 @@ void DepositAll(Player* player)
     SendVaultAndRuleSync(player);
 }
 
-// Withdraw one entry from the vault back into the bags. The client has
-// always sent "TAKE|<kind>|<entry>" from a vault row's OnClick
-// (LivingGear.lua) and nothing has ever parsed it, in any revision -- so
-// clicking a row was a silent no-op and the reagent bank was a one-way
-// trip. One click takes at most a single stack so a 900-count entry can't
-// try to materialise 900 items at once, and anything that doesn't fit
-// goes straight back into the vault rather than evaporating.
-void VaultWithdraw(Player* player, uint8 kind, uint32 itemEntry)
+// Withdraw one entry from the vault back into the bags. The client sends
+// "TAKE|<kind>|<entry>" from a vault row's OnClick (LivingGear.lua) -- one
+// stack per click -- and "TAKE|<kind>|<entry>|<count>" from the craft
+// staging path, which wants an exact shortfall, not a stack. Anything that
+// doesn't fit goes straight back into the vault rather than evaporating.
+void VaultWithdraw(Player* player, uint8 kind, uint32 itemEntry, uint32 count = 0)
 {
     if (!player || !player->GetSession())
         return;
@@ -1633,7 +1631,8 @@ void VaultWithdraw(Player* player, uint8 kind, uint32 itemEntry)
     if (!stored)
         return;
 
-    uint32 const want = std::min<uint32>(stored, std::max<uint32>(proto->GetMaxStackSize(), 1));
+    uint32 const want = std::min<uint32>(stored,
+        count ? count : std::max<uint32>(proto->GetMaxStackSize(), 1));
     uint32 const taken = VaultRemove(accountId, ownerGuid, kind, itemEntry, want);
     if (!taken)
         return;
@@ -1722,9 +1721,11 @@ bool HandleVaultChat(Player* player, std::string msg)
     }
     uint32 takeKind = 0;
     uint32 takeEntry = 0;
-    if (sscanf(msg.c_str(), "TAKE|%u|%u", &takeKind, &takeEntry) == 2)
+    uint32 takeCount = 0;
+    // Third field (exact count) is optional; the vault panel never sends it.
+    if (sscanf(msg.c_str(), "TAKE|%u|%u|%u", &takeKind, &takeEntry, &takeCount) >= 2)
     {
-        VaultWithdraw(player, uint8(takeKind), takeEntry);
+        VaultWithdraw(player, uint8(takeKind), takeEntry, takeCount);
         return true;
     }
     if (msg == "RULECLR" || msg == "RULERESET")

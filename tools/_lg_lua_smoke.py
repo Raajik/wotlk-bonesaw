@@ -28,6 +28,11 @@ local ok, report = xpcall(function()
   local allframes = {}
   local touched, stubcache = {}, {}
 
+  -- Driver-controllable sim time and bag counts: the staging test advances
+  -- both to walk the craft path through its states.
+  local rawbags, simNow = 0, 0
+  local origCasts = { ts = 0, dc = 0 }
+
   local function widget(name)
     local w = { _name = name or "anon", _scripts = {}, _events = {},
                 _shown = false, _text = "Smoke test report text." }
@@ -159,8 +164,12 @@ local ok, report = xpcall(function()
     hooksecurefunc = function() end, issecurevariable = function() return true end,
     SendAddonMessage = function(_, msg) log("SEND: " .. tostring(msg)) end,
     SendChatMessage = function() end,
-    GetItemCount = function() return 0 end,
+    GetItemCount = function() return rawbags end,
     GetItemInfo = function() return nil end, GetItemIcon = function() return nil end,
+    -- Spies, not stubs: the staging test must see whether the real DoCraft /
+    -- DoTradeSkill underneath the hook actually ran.
+    DoTradeSkill = function() origCasts.ts = origCasts.ts + 1 end,
+    DoCraft = function() origCasts.dc = origCasts.dc + 1 end,
     UnitName = function() return "Smokeplayer" end,
     UnitExists = function() return false end, UnitLevel = function() return 80 end,
     UnitHealth = function() return 100 end, UnitHealthMax = function() return 100 end,
@@ -170,7 +179,7 @@ local ok, report = xpcall(function()
     UnitGUID = function() return "0x0000000000000000" end,
     UnitIsDead = function() return false end,
     UnitAffectingCombat = function() return false end,
-    GetTime = function() return 0 end, GetMoney = function() return 0 end,
+    GetTime = function() return simNow end, GetMoney = function() return 0 end,
     GetZoneText = function() return "Stormwind" end,
     GetSubZoneText = function() return "Old Town" end,
     IsInInstance = function() return false, nil end,
@@ -332,6 +341,73 @@ local ok, report = xpcall(function()
       if string.find(m, "LG diag", 1, true) then return end
     end
     error("handler ran but no [LG diag] line was printed")
+  end)
+
+  -- 4. craft staging from an empty-bag vault (reports #195/#198): the click
+  -- must hold the craft, send an exact TAKE, and fire the cast only once the
+  -- withdrawal lands in the bags. The vault is fed through the real addon
+  -- sync handler (VLT| lines), and the casts are watched via the DoTradeSkill
+  -- / DoCraft spies in the env, because LG2 is a local inside the addon.
+  local function feedAddon(msg)
+    for i = 1, #allframes do
+      local f = allframes[i]
+      if f._events.CHAT_MSG_ADDON and f._scripts.OnEvent then
+        f._scripts.OnEvent(f, "CHAT_MSG_ADDON", "LG", msg, "WHISPER", "Smokeplayer")
+        return
+      end
+    end
+    error("no CHAT_MSG_ADDON frame found")
+  end
+  local function countTake()
+    local n = 0
+    for _, m in ipairs(L) do
+      if string.find(m, "SEND: TAKE|2|2589|", 1, true) then n = n + 1 end
+    end
+    return n
+  end
+  step("empty-bag craft stages shortfall out of the vault", function()
+    feedAddon("VLT|2|2589|5|Linen Cloth") -- vault holds 5x reagent 2589
+    local framesBefore, origBefore, takesBefore = #allframes, origCasts.ts, countTake()
+    E.DoTradeSkill(1)
+    if origCasts.ts ~= origBefore then
+      error("the held craft was cast immediately anyway")
+    end
+    if #allframes == framesBefore then
+      error("no retry frame was created")
+    end
+    if countTake() == takesBefore then
+      error("no TAKE sent for a covered shortfall")
+    end
+  end)
+  step("staged craft casts once the withdrawal lands", function()
+    rawbags = 5 -- the withdrawal landed
+    simNow = 5 -- past the 0.30s re-TAKE gate
+    local frames = {}
+    for i = 1, #allframes do frames[i] = allframes[i] end
+    for i = 1, #frames do
+      if frames[i]._scripts.OnUpdate then
+        frames[i]._scripts.OnUpdate(frames[i], 0.4)
+      end
+    end
+    -- One cast from the pre-vault diag step, one from the fired retry.
+    if origCasts.ts ~= 2 then
+      error("retry never cast the held craft (casts=" .. origCasts.ts .. ")")
+    end
+  end)
+  step("craft the bags can pay stages nothing", function()
+    local framesBefore, origBefore, takesBefore = #allframes, origCasts.ts, countTake()
+    E.DoTradeSkill(1)
+    if #allframes ~= framesBefore or origCasts.ts ~= origBefore + 1 or countTake() ~= takesBefore then
+      error("a fully-paid craft went through staging")
+    end
+  end)
+  step("craft short even with the vault is not staged", function()
+    feedAddon("VLT|2|2589|0|Linen Cloth")
+    local framesBefore, origBefore, takesBefore = #allframes, origCasts.ts, countTake()
+    E.DoTradeSkill(1)
+    if #allframes ~= framesBefore or origCasts.ts ~= origBefore + 1 or countTake() ~= takesBefore then
+      error("staged a craft that is truly short")
+    end
   end)
 
   -- 4. unknown globals the file touched (review: WoW API vs typo)

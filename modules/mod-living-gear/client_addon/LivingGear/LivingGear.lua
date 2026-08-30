@@ -6424,6 +6424,10 @@ end
 
 local origGetItemCount = GetItemCount
 if origGetItemCount then
+    -- Pristine, pre-hook count. The craft staging path needs what the
+    -- client's own native cast check will see (real bag contents), which the
+    -- hooked GetItemCount below reports plus the vault.
+    LG2.RawItemCount = origGetItemCount
     GetItemCount = function(item, includeBank, includeCharges)
         local n = origGetItemCount(item, includeBank, includeCharges) or 0
         local id = LG2.ItemIdFromArg(item)
@@ -6523,12 +6527,18 @@ end
 LG2._origDoTradeSkill = DoTradeSkill
 if LG2._origDoTradeSkill then
     DoTradeSkill = function(index, repeatCount)
-        if index and GetTradeSkillNumReagents then
+        local numReagents = index and GetTradeSkillNumReagents and GetTradeSkillNumReagents(index)
+        if index and numReagents then
             local name = LG2._origTradeSkillInfo and LG2._origTradeSkillInfo(index) or nil
             LG2._lastCraftDiag = { name = name, index = index,
-                numReagents = GetTradeSkillNumReagents(index),
+                numReagents = numReagents,
                 reagentInfo = GetTradeSkillReagentInfo,
                 reagentLink = GetTradeSkillReagentItemLink }
+        end
+        if index and numReagents and LG2.StageVaultCraft
+            and LG2.StageVaultCraft(index, numReagents, GetTradeSkillReagentInfo,
+                GetTradeSkillReagentItemLink, repeatCount, LG2._origDoTradeSkill) then
+            return -- shortfall staged out of the vault; the retry fires the craft
         end
         return LG2._origDoTradeSkill(index, repeatCount)
     end
@@ -6537,15 +6547,133 @@ end
 LG2._origDoCraft = DoCraft
 if LG2._origDoCraft then
     DoCraft = function(index, repeatCount)
-        if index and GetCraftNumReagents then
+        local numReagents = index and GetCraftNumReagents and GetCraftNumReagents(index)
+        if index and numReagents then
             local name = LG2._origCraftInfo and LG2._origCraftInfo(index) or nil
             LG2._lastCraftDiag = { name = name, index = index,
-                numReagents = GetCraftNumReagents(index),
+                numReagents = numReagents,
                 reagentInfo = GetCraftReagentInfo,
                 reagentLink = GetCraftReagentItemLink }
         end
+        if index and numReagents and LG2.StageVaultCraft
+            and LG2.StageVaultCraft(index, numReagents, GetCraftReagentInfo,
+                GetCraftReagentItemLink, repeatCount, LG2._origDoCraft) then
+            return
+        end
         return LG2._origDoCraft(index, repeatCount)
     end
+end
+
+-- Reports #195/#198 (recurring, critical): a craft whose reagents live only
+-- in the reagent vault was refused with "Missing Reagents" and NOTHING in
+-- the worldserver log. The window promises the craft because every count it
+-- shows is vault-inclusive, but the C code under DoCraft/DoTradeSkill counts
+-- REAL bag contents and refuses the cast before a packet is ever sent. The
+-- player's own diag line is the shape of it: "needs 14047 x2 (bags 0-ish +
+-- vault 249)" -- bags 249 was the vault-inclusive hooked count, the real
+-- bags were empty.
+--
+-- The staging path pulls exactly the shortfall out of the vault (the same
+-- TAKE message the vault panel's row click sends, with an exact count now)
+-- and re-fires the craft the moment the withdrawal lands in the bags. A
+-- craft the bags can already pay for stages nothing; a craft that is short
+-- even with the vault stages nothing and lets the native refusal speak.
+function LG2.StageVaultCraft(index, numReagents, reagentInfo, reagentLink, repeatCount, castFn)
+    if not (index and numReagents and numReagents > 0 and reagentInfo and reagentLink
+        and LG2.RawItemCount and SendLine) then
+        return false
+    end
+    local want = tonumber(repeatCount) or 1
+    if want < 1 then
+        want = 1
+    end
+    local need, covered = {}, true
+    for r = 1, numReagents do
+        local ok, link = pcall(reagentLink, index, r)
+        local id = ok and link and tonumber(string.match(link, "item:(%d+)"))
+        local okReq, req = pcall(select, 3, reagentInfo(index, r))
+        req = okReq and (tonumber(req) or 0) or 0
+        if ok and id and req > 0 then
+            local bags = tonumber(LG2.RawItemCount(id)) or 0
+            local total = bags + (VaultCountOf(id) or 0)
+            if total < req then
+                -- Short even counting the vault: the refusal the player is
+                -- about to see is the truth. Stage nothing.
+                return false
+            end
+            if bags < req then
+                covered = false
+            end
+            table.insert(need, { id = id, req = req, total = req * want, bags = bags })
+        end
+    end
+    if covered then
+        return false -- bags pay in full; nothing to stage, craft normally
+    end
+    local pending = { castFn = castFn, index = index, repeatCount = repeatCount,
+        need = need, at = GetTime(), started = GetTime(), tries = 0 }
+    LG2._pendingCraft = pending
+    LG2.TakeFromVaultFor(pending)
+    if not LG2._craftRetryFrame then
+        LG2._craftRetryFrame = CreateFrame("Frame")
+        LG2._craftRetryFrame:SetScript("OnUpdate", function() LG2.TickVaultCraft() end)
+    end
+    return true
+end
+
+-- Send one TAKE per short reagent for exactly what is missing right now.
+-- The server takes min(count, stock, one stack) per message, so a shortfall
+-- wider than a stack re-runs this -- TickVaultCraft retries up to three
+-- times as partial withdrawals land.
+function LG2.TakeFromVaultFor(pending)
+    for i = 1, #pending.need do
+        local r = pending.need[i]
+        local bags = tonumber(LG2.RawItemCount(r.id)) or 0
+        local short = r.total - bags
+        if short > 0 then
+            local vault = VaultCountOf(r.id) or 0
+            if vault > 0 then
+                SendLine("TAKE|2|" .. tostring(r.id) .. "|" .. tostring(math.min(short, vault)))
+            end
+        end
+    end
+end
+
+-- Fires the queued craft as soon as the bags can pay its first craft; the
+-- server pays the rest of a batch out of the vault in place (Spell::
+-- TakeReagents). Re-TAKEs up to three times while partial withdrawals land,
+-- and gives up with a plain-language reason instead of a silent nothing.
+function LG2.TickVaultCraft()
+    local pending = LG2._pendingCraft
+    if not pending then
+        return
+    end
+    local now = GetTime()
+    if now - pending.at < 0.30 then
+        return
+    end
+    local payable = true
+    for i = 1, #pending.need do
+        local r = pending.need[i]
+        if (tonumber(LG2.RawItemCount and LG2.RawItemCount(r.id)) or 0) < r.req then
+            payable = false
+            break
+        end
+    end
+    if payable and pending.castFn then
+        LG2._pendingCraft = nil
+        pcall(pending.castFn, pending.index, pending.repeatCount)
+        return
+    end
+    if now - pending.started > 6 or pending.tries >= 3 then
+        LG2._pendingCraft = nil
+        DEFAULT_CHAT_FRAME:AddMessage(
+            "|cffff3333[Reagent bank]|r could not stage reagents for that craft (bags full, or the vault ran short).")
+        return
+    end
+    pending.tries = pending.tries + 1
+    pending.at = now
+    LG2.TakeFromVaultFor(pending)
 end
 
 LG2._origCraftInfo = GetCraftInfo
@@ -6602,12 +6730,19 @@ evCraftErr:SetScript("OnEvent", function(_, _, a1, a2)
             -- diagnose: pcall the whole block.
             pcall(function()
                 local d = LG2._lastCraftDiag
+                -- RawItemCount is the pristine, pre-hook count: the hooked
+                -- GetItemCount adds the vault, which is why the old diag
+                -- printed "bags 249 + vault 249" for a player whose bags
+                -- were EMPTY (reports #195/#198) -- the refusal was the
+                -- client's own native bag check, and the staging path now
+                -- covers it.
+                local raw = LG2.RawItemCount or origGetItemCount or GetItemCount
                 local parts = {}
                 for r = 1, (d.numReagents or 0) do
                     local link = d.reagentLink and d.reagentLink(d.index, r)
                     local id = link and tonumber(string.match(link, "item:(%d+)"))
                     local req = d.reagentInfo and select(3, d.reagentInfo(d.index, r)) or 0
-                    local have = id and (GetItemCount(id) or 0) or 0
+                    local have = id and (raw(id) or 0) or 0
                     local vault = id and VaultCountOf(id) or 0
                     table.insert(parts, string.format("%s x%s (bags %d + vault %d)",
                         tostring(id), tostring(req), have, vault))
