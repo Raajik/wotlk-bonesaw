@@ -1111,7 +1111,9 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
     // currency storage, and pooled tokens are spent straight from the pool
     // on vendor purchases, so the currency-tab visibility problem 0044 solved
     // no longer applies (the balance follows the player account-wide via the
-    // CUR| sync line). Gold is ITEM_CLASS_MONEY above and stays in bags.
+    // CUR| sync line). Gold itself was already pooled account-wide by the
+    // SharedCurrencies system in LivingGear_Next.cpp -- ACT_BAG here just
+    // leaves it to that path.
     if (proto->IsCurrencyToken())
         return ACT_ACCOUNT_CURRENCY;
     if (IsReagentItem(proto, player))

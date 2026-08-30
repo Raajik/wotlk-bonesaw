@@ -6,7 +6,8 @@
 -- vendor purchases that cost those tokens pay from the pool first.
 --
 -- Only currency TOKENS (BagFamily currency tokens: shards, emblems, marks)
--- pool here. Gold (ITEM_CLASS_MONEY) stays per-character as always.
+-- pool here. Gold, honor, and arena points were already pooled account-wide
+-- by the SharedCurrencies system in LivingGear_Next.cpp and are untouched.
 --
 -- Idempotent: CREATE TABLE IF NOT EXISTS.
 
