@@ -7703,7 +7703,7 @@ LG2.ReportUI = ReportUI
 -- 200-local main-chunk ceiling (see LG2 at the top and the matching
 -- Bonesaw.md entry), so new low-call-count helpers go on tables.
 ReportUI.KINDS = { { label = "Bug" }, { label = "Feature" }, { label = "Other" } }
-ReportUI.W, ReportUI.H = 340, 250
+ReportUI.W, ReportUI.H = 460, 300
 
 -- A pasted item link keeps its full |Hitem...|h payload in the edit box text
 -- and travels over the addon channel intact, so what files into the report is
@@ -7752,6 +7752,16 @@ end
 
 function ReportUI.Send()
     local text = ReportUI.Clean(ReportUI.body:GetText() or "")
+    -- Links insert with full escape markup (|Hitem:ID:...|h[Name]|h): those
+    -- pipes break the chunked, pipe-framed addon protocol, so reports with a
+    -- pasted or shift+clicked link never arrived whole (report #208), and the
+    -- markup ate most of the 230-letter budget. Collapse to the plain
+    -- [item:ID] form -- the server expands it back into a real link -- and
+    -- strip any leftover color codes.
+    text = text:gsub("|Hitem:(%d+):[^|]*|h%[([^%]]-)%]|h", "[item:%1]")
+    text = text:gsub("|H([a-z]+):(%d+):[^|]*|h%[([^%]]-)%]|h", "[%3]")
+    text = text:gsub("|c%x%x%x%x%x%x%x%x", "")
+    text = text:gsub("|r", "")
     if string.len(string.gsub(text, "%s", "")) < 5 then
         DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Report]|r Say a little more about what went wrong or what you would like.")
         return
@@ -7855,7 +7865,7 @@ function ReportUI.Build()
     bodyLabel:SetText("What happened? Paste item links straight in.")
 
     local bodyWrap = CreateFrame("Frame", nil, f)
-    bodyWrap:SetSize(ReportUI.W - 20, 92)
+    bodyWrap:SetSize(ReportUI.W - 20, 132)
     bodyWrap:SetPoint("TOPLEFT", 10, -112)
     bodyWrap:SetBackdrop({
         bgFile = WHITE,

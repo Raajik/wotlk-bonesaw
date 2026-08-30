@@ -74,6 +74,7 @@ float const HOLY_SHOCK_SPLASH_RANGE = 10.0f;
 uint32 const DIVINE_STORM_EXTRA_HITS = 3;      // "each press hits 4 times"
 float const EXORCISM_SPLASH_RANGE = 10.0f;
 uint32 const SPELL_AVENGERS_SHIELD = 31935;
+uint32 const SPELL_PALADIN_PROTECTION = 910070; // the Protection perk spell (LivingGear_ClassPerks.cpp)
 uint32 const NPC_KELTHUZAD = 15990;
 uint32 const MAP_NAXXRAMAS = 533;
 uint32 const QUEST_RESPAWN_CAP = 10;
@@ -1210,6 +1211,13 @@ void SwingCleaveSanctifiedWhirlwind(Unit* target, Unit* attacker, uint32 damage)
 void ThrowExtraAvengers(Player* player, Spell* spell)
 {
     if (!player || !spell || player->getClass() != CLASS_PALADIN)
+        return;
+    // Report #207: the old extra-throw design fights the Protection perk's
+    // bounce rework -- players saw many shields in the air instead of one
+    // bouncing chain, plus a second cooldown writer racing the rework's flat
+    // 6s override (which is why the 30s category cooldown kept winning).
+    // With the Protection perk taken, the rework owns the spell entirely.
+    if (GetClassPerk(player) == SPELL_PALADIN_PROTECTION)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
     if (!RankOf(info, SPELL_AVENGERS_SHIELD))
