@@ -1266,6 +1266,30 @@ void KeepHofOneTarget(Player* caster, Unit* target)
     caster->RemoveSpellCooldown(SPELL_HAND_OF_FREEDOM, true);
 }
 
+// Report #195: the permanent Blessing of Freedom auto-applies to the paladin
+// themself -- on login and on resurrect -- so the perk's movement immunity is
+// always up without a manual cast. Recasting still toggles it off (see the
+// self-only cast check below); it comes back at the next login/resurrect.
+void EnsurePermanentHof(Player* player)
+{
+    if (!player || !player->IsInWorld() || player->isDead())
+        return;
+    if (!HasPerk(player, SPELL_PALADIN_RETRIBUTION))
+        return;
+    if (player->HasAura(SPELL_HAND_OF_FREEDOM) || !sSpellMgr->GetSpellInfo(SPELL_HAND_OF_FREEDOM))
+        return;
+    player->CastSpell(player, SPELL_HAND_OF_FREEDOM, true);
+    if (Aura* aura = player->GetAura(SPELL_HAND_OF_FREEDOM))
+    {
+        aura->SetMaxDuration(-1);
+        aura->SetDuration(-1);
+        if (AuraEffect* eff = aura->GetEffect(EFFECT_0))
+            eff->ChangeAmount(eff->GetAmount() + 2000); // same +20% as a hand-cast blessing
+    }
+    StateFor(player).hofTarget = player->GetGUID().GetCounter();
+    player->RemoveSpellCooldown(SPELL_HAND_OF_FREEDOM, true);
+}
+
 void ApplyWeaponPeak(Player* player)
 {
     if (!player || !player->GetSession())
@@ -1382,7 +1406,8 @@ public:
         PLAYERHOOK_ON_GIVE_EXP,
         PLAYERHOOK_ON_EQUIP,
         PLAYERHOOK_ON_UNEQUIP_ITEM,
-        PLAYERHOOK_ON_PLAYER_QUEST_ACCEPT
+        PLAYERHOOK_ON_PLAYER_QUEST_ACCEPT,
+        PLAYERHOOK_ON_PLAYER_RESURRECT
     }) { }
 
     void OnPlayerLogin(Player* player) override
@@ -1406,6 +1431,9 @@ public:
         if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && !player->HasSpell(SPELL_SANCTIFIED_WHIRLWIND)
             && sSpellMgr->GetSpellInfo(SPELL_SANCTIFIED_WHIRLWIND))
             player->learnSpell(SPELL_SANCTIFIED_WHIRLWIND);
+        // Report #195: the permanent Blessing of Freedom is already up the
+        // moment the paladin logs in, no manual cast needed.
+        EnsurePermanentHof(player);
         if (g_hasSpeedCapCol)
         {
             if (QueryResult result = CharacterDatabase.Query(
@@ -1426,6 +1454,12 @@ public:
             UnlockPerk(player, SPELL_CLASS_BUFFS);
         ApplyWeaponPeak(player);
         SendLine(player, Acore::StringFormat("SCAP|{}", SpeedCapPct(player)));
+    }
+
+    // Report #195: death drops the blessing; bring it straight back up.
+    void OnPlayerResurrect(Player* player, float /*restore_percent*/, bool& /*applySickness*/) override
+    {
+        EnsurePermanentHof(player);
     }
 
     void OnPlayerLogout(Player* player) override
