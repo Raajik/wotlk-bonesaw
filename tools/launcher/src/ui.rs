@@ -2,16 +2,18 @@
 //! one double-buffered WM_PAINT, and a shared state struct the worker thread
 //! updates. Everything the player sees during a launch is drawn here.
 //!
-//! The look is lifted from assets/bonesaw.ico: a charcoal disc, a white steel
-//! sawblade and deep blood. The blade in the header is drawn here rather than
-//! blitted from the icon so it can turn -- slowly while the launcher idles,
-//! and visibly faster whenever something is actually downloading.
+//! The look is lifted from assets/bonesaw.ico: a charcoal disc, bone
+//! lettering and deep blood. The header monogram is drawn here rather than
+//! blitted from the icon, and its blood drip animates -- slowly while the
+//! launcher idles, and visibly faster whenever something is downloading.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use windows_sys::core::PCWSTR;
-use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -25,7 +27,6 @@ pub(crate) const BLADE_BG: COLORREF = 0x001A1518; // inside the blade ring
 pub(crate) const BLOOD: COLORREF = 0x001C169E; // arterial red, the accent
 pub(crate) const BLOOD_DEEP: COLORREF = 0x0001016E; // the icon's own blood, top edge
 pub(crate) const BLOOD_HOT: COLORREF = 0x002C40D8; // bright red: hover, percent, bar edge
-pub(crate) const STEEL: COLORREF = 0x00F0F2F2; // blade teeth, straight from the icon
 pub(crate) const BONE: COLORREF = 0x00D2DEE4; // primary text, warm bone white
 pub(crate) const BONE_DIM: COLORREF = 0x007E888F; // secondary text
 pub(crate) const TRACK: COLORREF = 0x0019171E; // progress track
@@ -264,14 +265,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_CREATE => {
-            // The saw never rests; the timer drives the sawing stroke at ~30 fps.
+            // Load the embedded monogram font, then start the drip timer.
             SetTimer(hwnd, 1, 33, None);
+            install_font();
             0
         }
         WM_TIMER => {
             if let Some(st) = state() {
                 let mut s = st.lock().unwrap();
-                // Chewing on a download makes the sawing stroke much faster.
+                // Chewing on a download makes the drip cycle much faster.
                 let speed = if s.percent.is_some() { 11.0 } else { 3.0 };
                 s.spin = (s.spin + speed) % 360.0;
                 drop(s);
@@ -457,48 +459,87 @@ unsafe fn fill_disc(dc: HDC, cx: i32, cy: i32, r: f64, color: COLORREF) {
     DeleteObject(b as _);
 }
 
-/// The player-picked mark: a bonesaw as a white outline (the icon is the same
-/// drawing on the charcoal disc). The saw rocks a few degrees around its
-/// middle like a cutting stroke; the phase advances constantly and the swing
-/// comes from its sine, so downloads turn sway into vigorous sawing.
-unsafe fn bonesaw_x(mem: HDC, cx: i32, cy: i32, phase: f64) {
-    let (cxf, cyf) = (cx as f64, cy as f64);
-    let k = 0.78f64; // mark units (radius 36) -> header pixels
-    let rock = 0.0; // outline strokes below are recomputed per angle below
-    let _ = rock;
-    let sa = -45.0f64.to_radians() + 7.0f64.to_radians() * phase.to_radians().sin();
-    let sp = |lx: f64, ly: f64| -> POINT {
-        let (c, s) = (sa.cos(), sa.sin());
-        POINT {
-            x: (cxf + k * (lx * c - ly * s)).round() as i32,
-            y: (cyf + k * (lx * s + ly * c)).round() as i32,
-        }
-    };
+/// Uncial Antiqua, embedded (OFL license next to the TTF in assets/) so every
+/// machine draws the same monogram without the font installed.
+static UNICIAL_TTF: &[u8] = include_bytes!("../assets/UncialAntiqua-Regular.ttf");
 
-    // Solid mark: steel blade, blood grip, bone ring, blood drip.
-    let mut p: Vec<POINT> = vec![sp(-21.1, 3.7), sp(12.6, 3.7), sp(12.6, -2.8)];
-    let teeth = 8;
-    let tw = 29.4 / teeth as f64;
-    for i in (0..teeth).rev() {
-        let bx = -20.2 + i as f64 * tw;
-        p.push(sp(bx + tw * 0.5, -5.6));
-        p.push(sp(bx, -2.8));
+/// Register that font with this process as a private, memory-only copy.
+unsafe fn install_font() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let mut n: u32 = 0;
+        AddFontMemResourceEx(
+            UNICIAL_TTF.as_ptr() as *const core::ffi::c_void,
+            UNICIAL_TTF.len() as u32,
+            std::ptr::null(),
+            &mut n,
+        );
+    });
+}
+
+/// The monogram: "BS" in Uncial Antiqua, bone on the charcoal disc, over a
+/// blood sawtooth underline (the icon is the same drawing; it simplifies to a
+/// bare B below 32 px, where the S melts). The underline drips: the drop
+/// swells, detaches and falls on a loop -- faster while something is
+/// downloading, so the mark keeps chewing.
+unsafe fn monogram(mem: HDC, cx: i32, cy: i32, phase: f64) {
+    let face = wide("Uncial Antiqua");
+    let hfont = CreateFontW(
+        -46,
+        0,
+        0,
+        0,
+        700,
+        0,
+        0,
+        0,
+        DEFAULT_CHARSET as u32,
+        OUT_DEFAULT_PRECIS as u32,
+        CLIP_DEFAULT_PRECIS as u32,
+        ANTIALIASED_QUALITY as u32,
+        (DEFAULT_PITCH | FF_DONTCARE) as u32,
+        face.as_ptr(),
+    );
+    let old = SelectObject(mem, hfont as _);
+    SetBkMode(mem, TRANSPARENT as i32);
+    SetTextColor(mem, BONE);
+    let label = wide("BS");
+    let mut sz = SIZE { cx: 0, cy: 0 };
+    GetTextExtentPoint32W(mem, label.as_ptr(), label.len() as i32, &mut sz);
+    let x = cx - sz.cx / 2;
+    let y = cy - sz.cy / 2;
+    TextOutW(mem, x, y, label.as_ptr(), label.len() as i32);
+    SelectObject(mem, old);
+    DeleteObject(hfont as _);
+
+    // The blood bar under the letters, teeth down like a saw edge.
+    let uw = (sz.cx as f64 * 0.9).round() as i32;
+    let uy = y + sz.cy + 4;
+    let teeth = 5;
+    let tw = uw as f64 / teeth as f64;
+    let mut pts: Vec<POINT> = Vec::new();
+    for i in 0..teeth {
+        let bx = (cx - uw / 2) as f64 + i as f64 * tw;
+        pts.push(POINT { x: bx.round() as i32, y: uy });
+        pts.push(POINT { x: (bx + tw * 0.5).round() as i32, y: uy + 5 });
+        pts.push(POINT { x: (bx + tw).round() as i32, y: uy });
     }
-    p.push(sp(-21.1, 3.7));
-    fill_shape(mem, &p, STEEL);
+    fill_shape(mem, &pts, BLOOD);
 
-    let grip = [sp(10.5, -2.8), sp(22.0, -2.8), sp(22.0, 3.7), sp(10.5, 3.7)];
-    fill_shape(mem, &grip, BLOOD);
-
-    let ring_c = sp(25.5, 0.45);
-    fill_disc(mem, ring_c.x, ring_c.y, 5.4, STEEL);
-    fill_disc(mem, ring_c.x, ring_c.y, 1.9, BG);
-
-    // Drip: run off the low edge plus a hanging drop.
-    let run = [sp(0.8, 3.6), sp(2.8, 3.6), sp(2.8, 7.9), sp(0.8, 7.9)];
-    fill_shape(mem, &run, BLOOD);
-    let drop = sp(1.8, 10.1);
-    fill_disc(mem, drop.x, drop.y, 2.9, BLOOD);
+    // A drop swells on a low tooth, then falls.
+    let t = (phase % 360.0) / 360.0;
+    let dx = cx as f64 + uw as f64 * 0.30;
+    let (r, dy);
+    if t < 0.5 {
+        let g = t / 0.5;
+        r = 1.6 + 1.4 * g;
+        dy = (uy + 6) as f64 + g * 1.5;
+    } else {
+        let f = (t - 0.5) / 0.5;
+        r = 3.0 - 1.6 * f;
+        dy = (uy + 8) as f64 + f * f * 26.0;
+    }
+    fill_disc(mem, dx.round() as i32, dy.round() as i32, r, BLOOD);
 }
 
 /// The auto-login button, bottom-right: blood outline while off, bone while
@@ -635,7 +676,7 @@ unsafe fn paint(hwnd: HWND) {
     fill(mem, W - 1, 0, 1, H, FRAME);
     fill(mem, 0, 0, W, 2, BLOOD_DEEP);
 
-    bonesaw_x(mem, 46, 46, spin);
+    monogram(mem, 46, 42, spin);
 
     let f_title = font(28, true, "Segoe UI");
     let f_sub = font(11, true, "Segoe UI");
