@@ -720,6 +720,8 @@ void ApplyAccountRiding(Player* player)
         maxv = 150;
     }
     player->SetSkill(SKILL_RIDING, uint16(step), uint16(have), uint16(maxv));
+    LOG_INFO("module.livinggear", "riding share: {} lifted {} -> {} (account {})",
+        player->GetName(), cur, have, accountId);
 }
 
 void NoteRiding(Player* player)
@@ -729,8 +731,27 @@ void NoteRiding(Player* player)
     uint16 const val = player->GetSkillValue(SKILL_RIDING);
     if (!val)
         return;
-    SaveAccountRiding(player->GetSession()->GetAccountId(), val);
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountRiding(accountId);
+    bool const raised = val > g_accountRiding[accountId];
+    SaveAccountRiding(accountId, val);
     UnlockPerk(player, SPELL_RIDING_SHARE);
+    // Report #185: the account value rising used to wait for each alt's own
+    // relog. Push it to every online character of the account now, same shape
+    // as the shared-gold push (SyncSharedCurrencies) -- riding skill is a
+    // threshold, not a pool, so a direct SetSkill per online alt is enough
+    // and cannot recurse (SetSkill doesn't fire OnPlayerLearnSpell).
+    if (raised)
+    {
+        for (auto const& pair : ObjectAccessor::GetPlayers())
+        {
+            Player* alt = pair.second;
+            if (!alt || alt == player || !alt->GetSession()
+                || alt->GetSession()->GetAccountId() != accountId)
+                continue;
+            ApplyAccountRiding(alt);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
