@@ -153,6 +153,9 @@ fn run(ui: &Ui) -> R<()> {
     // With Wow focused on top a moment later, a warm local run would flash
     // this window for a blink. Hold it long enough to actually be seen.
     ui.linger();
+    // If the player opened the auto-login dialog, hold the launch until they
+    // have finished with it.
+    ui.wait_for_dialog();
     launch(&client)?;
     log("started Wow.exe");
     Ok(())

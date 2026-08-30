@@ -44,6 +44,7 @@ struct State {
     version: String,
     client: Option<std::path::PathBuf>,
     auto_login: bool,
+    dialog_open: bool,
     created: Instant,
 }
 
@@ -59,6 +60,7 @@ impl Default for State {
             version: String::new(),
             client: None,
             auto_login: false,
+            dialog_open: false,
             created: Instant::now(),
         }
     }
@@ -152,6 +154,21 @@ impl Ui {
         let now = Instant::now();
         if now < until {
             std::thread::sleep(until - now);
+        }
+    }
+
+    /// Blocks the launch flow while the auto-login dialog is open: the player
+    /// is mid-edit and Wow must not spawn out from under them.
+    pub fn wait_for_dialog(&self) {
+        loop {
+            let open = {
+                let s = self.state.lock().unwrap();
+                s.dialog_open
+            };
+            if !open {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
@@ -328,6 +345,12 @@ unsafe fn open_login_dialog(hwnd: HWND) {
         .and_then(|st| st.lock().ok())
         .and_then(|s| s.client.clone());
     let Some(dir) = dir else { return };
+    if let Some(st) = state() {
+        let mut s = st.lock().unwrap();
+        s.dialog_open = true;
+        s.status = "Auto-login setup - launch paused...".into();
+    }
+    InvalidateRect(hwnd, std::ptr::null(), 0);
     match crate::login_dialog::show(hwnd as isize, &dir) {
         crate::login_dialog::Outcome::Saved => {
             if let Some(st) = state() {
@@ -348,6 +371,10 @@ unsafe fn open_login_dialog(hwnd: HWND) {
             }
         }
         crate::login_dialog::Outcome::None => {}
+    }
+    if let Some(st) = state() {
+        let mut s = st.lock().unwrap();
+        s.dialog_open = false;
     }
     InvalidateRect(hwnd, std::ptr::null(), 0);
 }

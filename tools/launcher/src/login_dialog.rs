@@ -40,7 +40,6 @@ static mut CLIENT: Option<PathBuf> = None;
 static mut F_BOLD: HFONT = std::ptr::null_mut();
 static mut F_BODY: HFONT = std::ptr::null_mut();
 static mut BRUSH_BG: HBRUSH = std::ptr::null_mut();
-static mut BRUSH_FIELD: HBRUSH = std::ptr::null_mut();
 
 unsafe fn client_dir() -> Option<PathBuf> {
     std::ptr::addr_of!(CLIENT).as_ref().and_then(|c| c.clone())
@@ -184,9 +183,8 @@ unsafe fn build_controls(parent: HWND) {
         .unwrap_or(false);
 
     BRUSH_BG = CreateSolidBrush(crate::ui::BG);
-    BRUSH_FIELD = CreateSolidBrush(crate::ui::BLADE_BG);
-    F_BOLD = crate::ui::font(11, true, "Segoe UI");
-    F_BODY = crate::ui::font(15, false, "Segoe UI");
+    F_BOLD = crate::ui::font(12, true, "Segoe UI");
+    F_BODY = crate::ui::font(16, false, "Segoe UI");
 
     control(
         parent,
@@ -210,7 +208,7 @@ unsafe fn build_controls(parent: HWND) {
         24,
         40,
         336,
-        26,
+        28,
         ID_ACCOUNT,
         F_BODY,
     );
@@ -239,7 +237,7 @@ unsafe fn build_controls(parent: HWND) {
         24,
         96,
         336,
-        26,
+        28,
         ID_PASSWORD,
         F_BODY,
     );
@@ -250,9 +248,9 @@ unsafe fn build_controls(parent: HWND) {
         0,
         WS_CHILD | WS_VISIBLE,
         24,
-        138,
+        140,
         336,
-        16,
+        18,
         ID_NOTE,
         F_BODY,
     );
@@ -305,17 +303,9 @@ unsafe extern "system" fn dlgproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_DESTROY => {
             DeleteObject(BRUSH_BG as _);
-            DeleteObject(BRUSH_FIELD as _);
             DeleteObject(F_BOLD as _);
             DeleteObject(F_BODY as _);
             0
-        }
-        // Dark text boxes.
-        WM_CTLCOLOREDIT => {
-            let dc = lp as HDC;
-            SetBkColor(dc, crate::ui::BLADE_BG);
-            SetTextColor(dc, crate::ui::BONE);
-            BRUSH_FIELD as LRESULT
         }
         WM_CTLCOLORSTATIC => {
             let dc = lp as HDC;
