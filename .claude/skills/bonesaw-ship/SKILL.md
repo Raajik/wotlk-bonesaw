@@ -244,8 +244,11 @@ python tools/post_patch_notes.py tools/patch-notes/X.Y.Z.md --dry-run
 python tools/post_patch_notes.py tools/patch-notes/X.Y.Z.md
 ```
 
-Dry-run first - it checks the notes are ASCII and shows how the 2000-character
-Discord limit will split them, before contacting anyone. The webhook lives in
+Dry-run first - it checks the notes are ASCII and previews the title-line body
+plus the attachment before contacting anyone. Posting is attachment-only: the
+body is just the title line and the full notes ride as a .txt attachment, so
+the 2000-character message limit never splits or truncates anything. The
+webhook lives in
 `tools/client-update/discord.webhook`, which is gitignored because it is a
 credential; never echo it into a log or a commit.
 

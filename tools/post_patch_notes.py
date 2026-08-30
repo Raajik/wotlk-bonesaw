@@ -11,9 +11,10 @@ notes ever reaching players. This is the missing half.
 The webhook URL lives in tools/client-update/discord.webhook, which is
 gitignored -- it is a credential, do not commit it or echo it into a log.
 
-Discord caps a message at 2000 characters. Long notes are split on blank lines
-so a section never straddles two messages, and posted in order with a short
-pause so Discord does not reorder or rate-limit them.
+The Discord post is attachment-only: the message body is the notes' title line
+plus a pointer, and the full notes ride along as a .txt attachment. Notes of
+any length post as ONE message - the 2000-character limit never splits or
+truncates anything.
 
 Exits non-zero on any failure so the ship stops rather than reporting success
 it did not achieve.
@@ -32,8 +33,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WEBHOOK_FILE = ROOT / "tools" / "client-update" / "discord.webhook"
-LIMIT = 1900          # under Discord's 2000 so a code fence or mention cannot tip it over
-UA = "bonesaw-patch-notes/1.1"
+UA = "bonesaw-patch-notes/1.2"
 
 
 def load_webhook() -> str:
@@ -43,35 +43,6 @@ def load_webhook() -> str:
     if not url.startswith("https://discord.com/api/webhooks/"):
         sys.exit("webhook file does not contain a discord webhook url")
     return url
-
-
-def chunk(text: str) -> list:
-    """Split on blank lines, never mid-section, never over the limit."""
-    blocks = text.strip().split("\n\n")
-    out, cur = [], ""
-    for block in blocks:
-        candidate = block if not cur else cur + "\n\n" + block
-        if len(candidate) <= LIMIT:
-            cur = candidate
-            continue
-        if cur:
-            out.append(cur)
-        # A single block over the limit still has to go somewhere: split it by
-        # line rather than truncating and silently losing bullets.
-        if len(block) > LIMIT:
-            line_cur = ""
-            for line in block.split("\n"):
-                if len(line_cur) + len(line) + 1 > LIMIT:
-                    out.append(line_cur)
-                    line_cur = line
-                else:
-                    line_cur = line if not line_cur else line_cur + "\n" + line
-            cur = line_cur
-        else:
-            cur = block
-    if cur:
-        out.append(cur)
-    return out
 
 
 def post(url: str, content: str, filename: str | None = None,
@@ -133,14 +104,13 @@ def main() -> int:
     text = "\n".join(line for line in text.splitlines()
                      if not re.match(r"^\[\d+ chars;", line)).strip() + "\n"
 
-    # Post ONE message (first chunk) and attach the full notes as a .txt file,
-    # so nothing is ever truncated the way multi-message splits used to be.
-    parts = chunk(text)
-    body = parts[0]
+    # Attachment-only: the body is just the title line plus a pointer, and the
+    # full notes ride as a .txt attachment - no chunking, no truncation, no
+    # 2000-character ceiling to think about.
+    title = text.splitlines()[0].strip() if text.splitlines() else "Bonesaw patch notes"
+    body = title + "\nFull patch notes attached - open the file to read them."
     attach_name = f"Bonesaw-{path.stem}-patch-notes.txt"
-    extra = len(parts) - 1
-    print(f"{path.name}: {len(text)} chars; body {len(body)} chars; attached as {attach_name}"
-          + (f" ({extra} chunk(s) are in the attachment only)" if extra > 0 else ""))
+    print(f"{path.name}: {len(text)} chars in attachment; body {len(body)} chars; attached as {attach_name}")
 
     if args.dry_run:
         print("\n----- body -----")
