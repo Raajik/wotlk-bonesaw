@@ -7664,14 +7664,18 @@ end
 local ReportUI = {}
 LG2.ReportUI = ReportUI
 
-local REPORT_KINDS = { { label = "Bug" }, { label = "Feature" }, { label = "Other" } }
-local REPORT_W, REPORT_H = 340, 250
+-- Everything below hangs off ReportUI rather than the file's local list:
+-- LivingGear.lua is within a handful of declarations of the Lua 5.1
+-- 200-local main-chunk ceiling (see LG2 at the top and the matching
+-- Bonesaw.md entry), so new low-call-count helpers go on tables.
+ReportUI.KINDS = { { label = "Bug" }, { label = "Feature" }, { label = "Other" } }
+ReportUI.W, ReportUI.H = 340, 250
 
 -- A pasted item link keeps its full |Hitem...|h payload in the edit box text
 -- and travels over the addon channel intact, so what files into the report is
 -- a real clickable link. Color wrappers are stripped server-side; the
 -- |Hitem:...|h[Name]|h core is left alone.
-local function ReportText(raw)
+function ReportUI.Clean(raw)
     return raw or ""
 end
 
@@ -7708,7 +7712,7 @@ function ReportUI.SetKind(idx)
 end
 
 function ReportUI.Send()
-    local text = ReportText(ReportUI.body:GetText() or "")
+    local text = ReportUI.Clean(ReportUI.body:GetText() or "")
     if string.len(string.gsub(text, "%s", "")) < 5 then
         DEFAULT_CHAT_FRAME:AddMessage("|cff66ccff[Report]|r Say a little more about what went wrong or what you would like.")
         return
@@ -7725,7 +7729,7 @@ end
 
 function ReportUI.Build()
     local f = CreateFrame("Frame", "LivingGearReportFrame", UIParent)
-    f:SetSize(REPORT_W, REPORT_H)
+    f:SetSize(ReportUI.W, ReportUI.H)
     f:SetPoint("CENTER", UIParent, "CENTER", 0, 80)
     f:SetFrameStrata("HIGH")
     f:SetMovable(true)
@@ -7765,7 +7769,7 @@ function ReportUI.Build()
     kindLabel:SetText("Type")
 
     ReportUI.kindBtns = {}
-    for i, kd in ipairs(REPORT_KINDS) do
+    for i, kd in ipairs(ReportUI.KINDS) do
         local btn = CreateFrame("Button", nil, f)
         btn:SetSize(100, 20)
         btn:SetPoint("TOPLEFT", 10 + (i - 1) * 107, -44)
@@ -7812,7 +7816,7 @@ function ReportUI.Build()
     bodyLabel:SetText("What happened? Paste item links straight in.")
 
     local bodyWrap = CreateFrame("Frame", nil, f)
-    bodyWrap:SetSize(REPORT_W - 20, 92)
+    bodyWrap:SetSize(ReportUI.W - 20, 92)
     bodyWrap:SetPoint("TOPLEFT", 10, -112)
     bodyWrap:SetBackdrop({
         bgFile = WHITE,
