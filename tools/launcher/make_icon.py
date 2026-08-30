@@ -31,51 +31,44 @@ def rot(x: float, y: float, deg: float) -> tuple[float, float]:
     return (x * c - y * s, x * s + y * c)
 
 
-def femur_hit(ux: float, uy: float) -> bool:
-    """Symmetric bone: shaft with a double-lobed knob at each end."""
-    lx, ly = rot(ux, uy, -FEM_DEG)
-    if -18.0 <= lx <= 14.0 and abs(ly) <= 3.5:
-        return True
-    for ex, ey in [(-19.0, -4.4), (-19.0, 4.4), (15.0, -4.6), (15.0, 4.6)]:
-        if math.hypot(lx - ex, ly - ey) <= 4.6:
-            return True
-    return False
-
-
-def saw_hit(lx: float, ly: float) -> int:
-    """0 none, 1 blade (steel), 2 grip (blood), 3 ring (bone)."""
+def saw_inside(lx: float, ly: float) -> bool:
+    """The saw silhouette (blade + teeth + grip + ring + drip), saw-local."""
     if -24.0 <= lx <= 14.0 and -3.2 <= ly <= 4.2:
-        return 1
-    # teeth: 8 notches above the blade's top edge
+        return True
     if -23.0 <= lx <= 14.0 and -6.4 <= ly < -3.2:
         tw = 34.0 / 8.0
         k = int((lx + 23.0) // tw)
         bx = -23.0 + k * tw
-        frac = (ly + 6.4) / 3.2  # 0 at tip, 1 at base
+        frac = (ly + 6.4) / 3.2
         half = (tw / 2.0) * frac
         if abs(lx - (bx + tw / 2.0)) <= half:
-            return 1
+            return True
     if 14.0 <= lx <= 30.0 and abs(ly) <= 3.4:
-        return 2
-    d = math.hypot(lx - 31.5, ly)
-    if 2.0 <= d <= 4.6:
-        return 3
-    return 0
+        return True
+    if math.hypot(lx - 33.0, ly) <= 4.6:
+        return True
+    if (abs(lx - 2.0) <= 1.1 and 4.0 <= ly <= 9.0) or (
+        (lx - 2.0) ** 2 + ((ly - 11.5) * 1.3) ** 2 <= 9.0
+    ):
+        return True
+    return False
 
 
-def mark_color(wx: float, wy: float) -> tuple[int, int, int] | None:
-    """Color of the mark at world coords, or None for disc/background."""
-    lx, ly = rot(wx, wy, -SAW_DEG)
-    s = saw_hit(lx, ly)
-    if s == 1:
-        return STEEL
-    if s == 2:
-        return BLOOD
-    if s == 3:
-        return BONE
-    if femur_hit(wx, wy):
-        return BONE
+def mark_color(wx: float, wy: float, w: float) -> tuple[int, int, int] | None:
+    """White outline of the saw silhouette; w = stroke half-width in units."""
+    def inside(ax: float, ay: float) -> bool:
+        lx, ly = rot(ax, ay, -SAW_DEG)
+        return saw_inside(lx, ly)
+
+    if inside(wx, wy):
+        return None
+    for dx, dy in [(w, 0), (-w, 0), (0, w), (0, -w),
+                   (w * 0.7, w * 0.7), (-w * 0.7, w * 0.7),
+                   (w * 0.7, -w * 0.7), (-w * 0.7, w * 0.7)]:
+        if inside(wx + dx, wy + dy):
+            return (0xF2, 0xF2, 0xF0)
     return None
+
 
 
 def render(size: int) -> bytes:
@@ -85,6 +78,8 @@ def render(size: int) -> bytes:
     r_disc = size * 0.47
     scale = r_disc / R_UNITS  # mark units -> pixels
     ss = 3
+    # Stroke half-width in pixels, clamped so tiny sizes still read.
+    w = min(6.0, max(1.4, size * 0.05)) / scale
 
     for y in range(size):
         for x in range(size):
@@ -98,7 +93,7 @@ def render(size: int) -> bytes:
                     if math.hypot(wx, wy) > r_disc:
                         continue
                     disc += 1
-                    mark = mark_color(wx / scale, wy / scale)
+                    mark = mark_color(wx / scale, wy / scale, w)
                     col = mark if mark is not None else BG
                     sums[0] += col[0]
                     sums[1] += col[1]

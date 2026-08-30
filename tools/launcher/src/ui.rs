@@ -446,85 +446,68 @@ unsafe fn fill_shape(dc: HDC, pts: &[POINT], color: COLORREF) {
     DeleteObject(b as _);
 }
 
-unsafe fn fill_disc(dc: HDC, cx: i32, cy: i32, r: f64, color: COLORREF) {
-    let b = CreateSolidBrush(color);
-    let open_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-    let open_brush = SelectObject(dc, b as _);
-    let ri = r.round() as i32;
-    Ellipse(dc, cx - ri, cy - ri, cx + ri, cy + ri);
-    SelectObject(dc, open_pen);
-    SelectObject(dc, open_brush);
-    DeleteObject(b as _);
+/// Polyline stroke with a solid pen: the outline mark's brush.
+unsafe fn stroke(dc: HDC, pts: &[POINT], color: COLORREF, w: i32) {
+    let pen = CreatePen(PS_SOLID, w, color);
+    let old = SelectObject(dc, pen as _);
+    Polyline(dc, pts.as_ptr(), pts.len() as i32);
+    SelectObject(dc, old);
+    DeleteObject(pen as _);
 }
 
-unsafe fn fill_ellipse(dc: HDC, x0: i32, y0: i32, x1: i32, y1: i32, color: COLORREF) {
-    let b = CreateSolidBrush(color);
-    let open_pen = SelectObject(dc, GetStockObject(NULL_PEN));
-    let open_brush = SelectObject(dc, b as _);
-    Ellipse(dc, x0, y0, x1, y1);
-    SelectObject(dc, open_pen);
-    SelectObject(dc, open_brush);
-    DeleteObject(b as _);
+/// A single thick segment, as two points.
+unsafe fn line(dc: HDC, a: POINT, b: POINT, color: COLORREF, w: i32) {
+    stroke(dc, &[a, b], color, w);
 }
 
-/// The mark, redrawn as vectors, redrawn as vectors so it can move: a bonesaw crossed with a
-/// femur -- an X. The femur runs one way; the toothed blade and its ringed
-/// handle cross it. The whole mark rocks a few degrees around the crossing
-/// point, a sawing stroke: the phase advances constantly and the drawing
-/// derives the swing from its sine, so downloads turn the sway into vigorous
-/// sawing.
+/// The player-picked mark: a bonesaw as a white outline (the icon is the same
+/// drawing on the charcoal disc). The saw rocks a few degrees around its
+/// middle like a cutting stroke; the phase advances constantly and the swing
+/// comes from its sine, so downloads turn sway into vigorous sawing.
 unsafe fn bonesaw_x(mem: HDC, cx: i32, cy: i32, phase: f64) {
     let (cxf, cyf) = (cx as f64, cy as f64);
-    let rock = 7.0f64.to_radians() * phase.to_radians().sin();
-    let fa = 45.0f64.to_radians() + rock; // femur axis
-    let sa = -45.0f64.to_radians() + rock; // saw axis, crossing it
-
-    // local (along-axis, across-axis) -> screen, per tool
-    let fp = |lx: f64, ly: f64| -> POINT {
-        POINT {
-            x: (cxf + lx * fa.cos() - ly * fa.sin()).round() as i32,
-            y: (cyf + lx * fa.sin() + ly * fa.cos()).round() as i32,
-        }
-    };
+    let k = 0.78f64; // mark units (radius 36) -> header pixels
+    let rock = 0.0; // outline strokes below are recomputed per angle below
+    let _ = rock;
+    let sa = -45.0f64.to_radians() + 7.0f64.to_radians() * phase.to_radians().sin();
     let sp = |lx: f64, ly: f64| -> POINT {
+        let (c, s) = (sa.cos(), sa.sin());
         POINT {
-            x: (cxf + lx * sa.cos() - ly * sa.sin()).round() as i32,
-            y: (cyf + lx * sa.sin() + ly * sa.cos()).round() as i32,
+            x: (cxf + k * (lx * c - ly * s)).round() as i32,
+            y: (cyf + k * (lx * s + ly * c)).round() as i32,
         }
     };
 
-    // Femur, behind: shaft with a double-lobed knob at each end -- the
-    // classic symmetric bone silhouette, so nothing reads wrong.
-    let shaft = [fp(-18.0, -3.4), fp(14.0, -3.6), fp(14.0, 3.6), fp(-18.0, 3.4)];
-    fill_shape(mem, &shaft, BONE);
-    for (t, o, r) in [(-19.0f64, -4.4, 4.6), (-19.0, 4.4, 4.6), (15.0, -4.6, 4.6), (15.0, 4.6, 4.6)] {
-        let p = fp(t, o);
-        fill_disc(mem, p.x, p.y, r, BONE);
-    }
-
-    // Saw, on top: blade with a notched top edge, blood grip, bone ring.
-    let mut blade_pts: Vec<POINT> = vec![sp(-24.0, 4.2)];
+    // Blade: bottom edge out, toothed top edge back, closed.
+    let mut p: Vec<POINT> = vec![sp(-24.0, 4.2), sp(14.0, 4.2), sp(14.0, -3.2)];
     let teeth = 8;
     let tw = 34.0 / teeth as f64;
-    for k in 0..teeth {
-        let tip = sp(-23.0 + k as f64 * tw + tw * 0.5, -6.4);
-        blade_pts.push(tip);
-        let next = sp(-23.0 + (k + 1) as f64 * tw, -3.2);
-        blade_pts.push(next);
+    for i in (0..teeth).rev() {
+        let bx = -23.0 + i as f64 * tw;
+        p.push(sp(bx + tw * 0.5, -6.4));
+        p.push(sp(bx, -3.2));
     }
-    blade_pts.push(sp(14.0, 4.2));
-    fill_shape(mem, &blade_pts, STEEL);
-    let grip = [sp(14.0, -3.8), sp(30.0, -3.0), sp(30.0, 3.0), sp(14.0, 4.2)];
-    fill_shape(mem, &grip, BLOOD);
-    let ring = sp(31.5, 0.0);
-    fill_disc(mem, ring.x, ring.y, 4.6, BONE);
-    fill_disc(mem, ring.x, ring.y, 2.0, BG);
+    p.push(sp(-24.0, 4.2));
+    stroke(mem, &p, STEEL, 2);
 
-    // A drip falls from the low edge, beside the crossing point.
-    let bx = cxf.round() as i32;
-    let by = cyf.round() as i32;
-    fill(mem, bx + 6, by + 12, 2, 6, BLOOD);
-    fill_ellipse(mem, bx + 3, by + 17, bx + 11, by + 25, BLOOD);
+    // Grip and the ring at its end.
+    let grip = [sp(14.0, -3.4), sp(30.0, -3.4), sp(30.0, 3.4), sp(14.0, 3.4), sp(14.0, -3.4)];
+    stroke(mem, &grip, STEEL, 2);
+    let mut ring_pts: Vec<POINT> = Vec::with_capacity(21);
+    for i in 0..=20 {
+        let a = std::f64::consts::TAU * i as f64 / 20.0;
+        ring_pts.push(sp(33.0 + 4.6 * a.cos(), 4.6 * a.sin()));
+    }
+    stroke(mem, &ring_pts, STEEL, 2);
+
+    // Drip: a short run off the low edge and a hanging drop, outlined.
+    line(mem, sp(2.0, 5.0), sp(2.0, 9.0), STEEL, 2);
+    let mut e: Vec<POINT> = Vec::with_capacity(17);
+    for i in 0..=16 {
+        let a = std::f64::consts::TAU * i as f64 / 16.0;
+        e.push(sp(2.0 + 3.0 * a.cos(), 11.5 + 3.4 * a.sin()));
+    }
+    stroke(mem, &e, STEEL, 2);
 }
 
 /// The auto-login button, bottom-right: blood outline while off, bone while
