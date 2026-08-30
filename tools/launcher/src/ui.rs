@@ -493,10 +493,11 @@ unsafe fn bonesaw_x(mem: HDC, cx: i32, cy: i32, phase: f64) {
         }
     };
 
-    // Femur, behind: shaft, one ball head, two condyle knobs.
-    let shaft = [fp(-17.0, -3.4), fp(13.0, -3.6), fp(13.0, 3.6), fp(-17.0, 3.4)];
+    // Femur, behind: shaft with a double-lobed knob at each end -- the
+    // classic symmetric bone silhouette, so nothing reads wrong.
+    let shaft = [fp(-18.0, -3.4), fp(14.0, -3.6), fp(14.0, 3.6), fp(-18.0, 3.4)];
     fill_shape(mem, &shaft, BONE);
-    for (t, o, r) in [(-17.0f64, 0.0, 7.0), (13.0, -5.2, 5.2), (13.0, 5.2, 5.2)] {
+    for (t, o, r) in [(-19.0f64, -4.4, 4.6), (-19.0, 4.4, 4.6), (15.0, -4.6, 4.6), (15.0, 4.6, 4.6)] {
         let p = fp(t, o);
         fill_disc(mem, p.x, p.y, r, BONE);
     }

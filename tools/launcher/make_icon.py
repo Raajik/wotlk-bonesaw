@@ -32,15 +32,13 @@ def rot(x: float, y: float, deg: float) -> tuple[float, float]:
 
 
 def femur_hit(ux: float, uy: float) -> bool:
+    """Symmetric bone: shaft with a double-lobed knob at each end."""
     lx, ly = rot(ux, uy, -FEM_DEG)
-    if -17.0 <= lx <= 13.0 and abs(ly) <= 3.5:
+    if -18.0 <= lx <= 14.0 and abs(ly) <= 3.5:
         return True
-    if math.hypot(lx + 17.0, ly) <= 7.0:  # ball head
-        return True
-    if math.hypot(lx - 13.0, ly + 5.2) <= 5.2:  # condyle knobs
-        return True
-    if math.hypot(lx - 13.0, ly - 5.2) <= 5.2:
-        return True
+    for ex, ey in [(-19.0, -4.4), (-19.0, 4.4), (15.0, -4.6), (15.0, 4.6)]:
+        if math.hypot(lx - ex, ly - ey) <= 4.6:
+            return True
     return False
 
 
