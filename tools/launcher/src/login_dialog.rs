@@ -5,7 +5,9 @@
 //! login is already saved. A blank password field means "keep the saved one".
 
 use std::path::{Path, PathBuf};
-use windows_sys::Win32::Foundation::{HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    COLORREF, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+};
 use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::Security::Cryptography::{
@@ -32,14 +34,26 @@ const ID_CANCEL: usize = 2; // IDCANCEL
 const ID_REMOVE: usize = 9;
 const ID_ACCOUNT: usize = 100;
 const ID_PASSWORD: usize = 101;
-const ID_NOTE: usize = 105;
 
 // One dialog at a time, on the UI thread -- plain statics, same as ui.rs.
 static mut RESULT: u8 = 0;
 static mut CLIENT: Option<PathBuf> = None;
+static mut NOTE_TEXT: String = String::new();
 static mut F_BOLD: HFONT = std::ptr::null_mut();
 static mut F_BODY: HFONT = std::ptr::null_mut();
+static mut F_NOTE: HFONT = std::ptr::null_mut();
 static mut BRUSH_BG: HBRUSH = std::ptr::null_mut();
+
+// The dialog is light so nothing can hide the text: medium grey background,
+// stock white input fields, and hand-painted white labels with a black
+// outline (the launcher's dark edit controls were unreadable on some setups).
+const GREY_BG: COLORREF = 0x00D6D6D6;
+const GREY_PLATE: COLORREF = 0x00C9C9C9;
+const GREY_PLATE_HOT: COLORREF = 0x00B0B0B0;
+const GREY_EDGE: COLORREF = 0x008A8A8A;
+const WHITE: COLORREF = 0x00FFFFFF;
+const BLACK: COLORREF = 0x00000000;
+const BLOOD_FILL: COLORREF = 0x001C169E;
 
 unsafe fn client_dir() -> Option<PathBuf> {
     std::ptr::addr_of!(CLIENT).as_ref().and_then(|c| c.clone())
@@ -136,7 +150,7 @@ unsafe fn register_class(hinst: HMODULE) {
         wc.hInstance = hinst;
         wc.lpszClassName = class.as_ptr();
         wc.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
-        wc.hbrBackground = CreateSolidBrush(crate::ui::BG);
+        wc.hbrBackground = CreateSolidBrush(GREY_BG);
         RegisterClassW(&wc);
     });
 }
@@ -182,23 +196,11 @@ unsafe fn build_controls(parent: HWND) {
         .map(|c| c.join("Bonesaw.login").is_file())
         .unwrap_or(false);
 
-    BRUSH_BG = CreateSolidBrush(crate::ui::BG);
+    BRUSH_BG = CreateSolidBrush(GREY_BG);
     F_BOLD = crate::ui::font(12, true, "Segoe UI");
     F_BODY = crate::ui::font(16, false, "Segoe UI");
+    F_NOTE = crate::ui::font(12, false, "Segoe UI");
 
-    control(
-        parent,
-        "STATIC",
-        "ACCOUNT",
-        0,
-        WS_CHILD | WS_VISIBLE,
-        24,
-        18,
-        200,
-        16,
-        103,
-        F_BOLD,
-    );
     let account = control(
         parent,
         "EDIT",
@@ -217,19 +219,6 @@ unsafe fn build_controls(parent: HWND) {
     }
     control(
         parent,
-        "STATIC",
-        "PASSWORD",
-        0,
-        WS_CHILD | WS_VISIBLE,
-        24,
-        76,
-        200,
-        16,
-        104,
-        F_BOLD,
-    );
-    control(
-        parent,
         "EDIT",
         "",
         WS_EX_CLIENTEDGE,
@@ -241,21 +230,8 @@ unsafe fn build_controls(parent: HWND) {
         ID_PASSWORD,
         F_BODY,
     );
-    control(
-        parent,
-        "STATIC",
-        "Saved encrypted to this Windows user, on this machine only.",
-        0,
-        WS_CHILD | WS_VISIBLE,
-        24,
-        140,
-        336,
-        18,
-        ID_NOTE,
-        F_BODY,
-    );
 
-    // Buttons, owner-drawn to match the launcher.
+    // Buttons, owner-drawn: grey plates, blood fill for the primary action.
     button(parent, "CANCEL", W - 262, 186, 106, 32, ID_CANCEL, false);
     button(parent, "SAVE LOGIN", W - 140, 186, 116, 32, ID_SAVE, true);
     if has_login {
@@ -276,6 +252,21 @@ unsafe extern "system" fn dlgproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     match msg {
         WM_CREATE => {
             build_controls(hwnd);
+            0
+        }
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = std::mem::zeroed();
+            let dc = BeginPaint(hwnd, &mut ps);
+            outlined_text(dc, "ACCOUNT", 24, 16, 200, F_BOLD);
+            outlined_text(dc, "PASSWORD", 24, 74, 200, F_BOLD);
+            let note = std::ptr::addr_of!(NOTE_TEXT).read();
+            let note = if note.is_empty() {
+                "Encrypted to this Windows user, on this machine only.".to_string()
+            } else {
+                note
+            };
+            outlined_text(dc, &note, 24, 138, 340, F_NOTE);
+            EndPaint(hwnd, &ps);
             0
         }
         WM_COMMAND => match (wp & 0xffff) as usize {
@@ -305,13 +296,8 @@ unsafe extern "system" fn dlgproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             DeleteObject(BRUSH_BG as _);
             DeleteObject(F_BOLD as _);
             DeleteObject(F_BODY as _);
+            DeleteObject(F_NOTE as _);
             0
-        }
-        WM_CTLCOLORSTATIC => {
-            let dc = lp as HDC;
-            SetBkColor(dc, crate::ui::BG);
-            SetTextColor(dc, crate::ui::BONE);
-            BRUSH_BG as LRESULT
         }
         WM_DRAWITEM => {
             draw_button(lp);
@@ -376,8 +362,8 @@ unsafe fn field_text(hwnd: HWND, id: usize) -> String {
 }
 
 unsafe fn set_note(hwnd: HWND, s: &str) {
-    let t = wide(s);
-    SendDlgItemMessageW(hwnd, ID_NOTE as i32, WM_SETTEXT, 0, t.as_ptr() as LPARAM);
+    std::ptr::addr_of_mut!(NOTE_TEXT).write(s.to_string());
+    InvalidateRect(hwnd, std::ptr::null(), 1);
 }
 
 /// DPAPI encrypt (CurrentUser scope): decryptable only by this Windows user.
@@ -408,25 +394,18 @@ fn protect(plain: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Owner-drawn buttons: dark plates, the primary action filled blood.
+/// Owner-drawn buttons on the grey dialog: white outlined labels, blood fill
+/// for the primary action.
 unsafe fn draw_button(lp: LPARAM) {
     let ds = &*(lp as *const DRAWITEMSTRUCT);
     let save = ds.CtlID as usize == ID_SAVE;
     let selected = ds.itemState & ODS_SELECTED != 0;
-    let (bg, fg, border) = if save {
-        if selected {
-            (
-                crate::ui::BLOOD_HOT,
-                crate::ui::BG,
-                crate::ui::BLOOD_HOT,
-            )
-        } else {
-            (crate::ui::BLOOD, crate::ui::BG, crate::ui::BLOOD)
-        }
+    let (bg, border) = if save {
+        (BLOOD_FILL, BLOOD_FILL)
     } else if selected {
-        (crate::ui::BLADE_BG, crate::ui::BONE, crate::ui::BONE_DIM)
+        (GREY_PLATE_HOT, GREY_EDGE)
     } else {
-        (crate::ui::TRACK, crate::ui::BONE_DIM, crate::ui::FRAME)
+        (GREY_PLATE, GREY_EDGE)
     };
     let brush = CreateSolidBrush(bg);
     FillRect(ds.hDC, &ds.rcItem, brush);
@@ -439,8 +418,24 @@ unsafe fn draw_button(lp: LPARAM) {
     let n = GetWindowTextW(ds.hwndItem, buf.as_mut_ptr(), 64);
     let mut rc = ds.rcItem;
     let old_font = SelectObject(ds.hDC, F_BOLD as _);
-    SetTextColor(ds.hDC, fg);
     SetBkMode(ds.hDC, TRANSPARENT as i32);
+    // Black offset passes under a white face: readable on any plate color.
+    SetTextColor(ds.hDC, BLACK);
+    for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+        let mut o = rc;
+        o.left += dx;
+        o.right += dx;
+        o.top += dy;
+        o.bottom += dy;
+        DrawTextW(
+            ds.hDC,
+            buf.as_mut_ptr(),
+            n,
+            &mut o,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
+    }
+    SetTextColor(ds.hDC, WHITE);
     DrawTextW(
         ds.hDC,
         buf.as_mut_ptr(),
@@ -452,4 +447,31 @@ unsafe fn draw_button(lp: LPARAM) {
     if selected {
         DrawFocusRect(ds.hDC, &rc);
     }
+}
+
+/// White label text over four black offset passes.
+unsafe fn outlined_text(dc: HDC, s: &str, x: i32, y: i32, w: i32, f: HFONT) {
+    let t = wide(s);
+    let n = (t.len() - 1) as i32;
+    let old_font = SelectObject(dc, f as _);
+    SetBkMode(dc, TRANSPARENT as i32);
+    SetTextColor(dc, BLACK);
+    for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+        let mut rc = RECT {
+            left: x + dx,
+            top: y + dy,
+            right: x + dx + w,
+            bottom: y + dy + 20,
+        };
+        DrawTextW(dc, t.as_ptr(), n, &mut rc, DT_LEFT | DT_SINGLELINE);
+    }
+    let mut rc = RECT {
+        left: x,
+        top: y,
+        right: x + w,
+        bottom: y + 22,
+    };
+    SetTextColor(dc, WHITE);
+    DrawTextW(dc, t.as_ptr(), n, &mut rc, DT_LEFT | DT_SINGLELINE);
+    SelectObject(dc, old_font);
 }
