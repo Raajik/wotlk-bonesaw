@@ -56,18 +56,26 @@ def saw_inside(lx: float, ly: float) -> bool:
 
 
 def mark_color(wx: float, wy: float, w: float) -> tuple[int, int, int] | None:
-    """White outline of the saw silhouette; w = stroke half-width in units."""
-    def inside(ax: float, ay: float) -> bool:
-        lx, ly = rot(ax, ay, -SAW_DEG)
-        return saw_inside(lx, ly)
-
-    if inside(wx, wy):
-        return None
-    for dx, dy in [(w, 0), (-w, 0), (0, w), (0, -w),
-                   (w * 0.7, w * 0.7), (-w * 0.7, w * 0.7),
-                   (w * 0.7, -w * 0.7), (-w * 0.7, w * 0.7)]:
-        if inside(wx + dx, wy + dy):
-            return (0xF2, 0xF2, 0xF0)
+    """Solid mark: steel blade, blood grip, bone ring, blood drip."""
+    lx, ly = rot(wx, wy, -SAW_DEG)
+    if -21.1 <= lx <= 12.3 and -2.8 <= ly <= 3.7:
+        return STEEL
+    if -20.2 <= lx <= 12.3 and -5.6 <= ly < -2.8:
+        tw = 29.4 / 8.0
+        k = int((lx + 21.1) // tw)
+        bx = -21.1 + k * tw
+        frac = (ly + 5.6) / 2.8
+        if abs(lx - (bx + tw / 2.0)) <= (tw / 2.0) * frac:
+            return STEEL
+    if 12.3 <= lx <= 26.4 and abs(ly) <= 3.0:
+        return BLOOD
+    d = math.hypot(lx - 29.0, ly)
+    if 1.9 <= d <= 5.6:
+        return BONE
+    if (abs(lx - 1.8) <= 1.0 and 3.5 <= ly <= 7.9) or (
+        (lx - 1.8) ** 2 + ((ly - 10.1) * 1.3) ** 2 <= 8.0
+    ):
+        return BLOOD
     return None
 
 

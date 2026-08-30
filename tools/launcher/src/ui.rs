@@ -446,18 +446,15 @@ unsafe fn fill_shape(dc: HDC, pts: &[POINT], color: COLORREF) {
     DeleteObject(b as _);
 }
 
-/// Polyline stroke with a solid pen: the outline mark's brush.
-unsafe fn stroke(dc: HDC, pts: &[POINT], color: COLORREF, w: i32) {
-    let pen = CreatePen(PS_SOLID, w, color);
-    let old = SelectObject(dc, pen as _);
-    Polyline(dc, pts.as_ptr(), pts.len() as i32);
-    SelectObject(dc, old);
-    DeleteObject(pen as _);
-}
-
-/// A single thick segment, as two points.
-unsafe fn line(dc: HDC, a: POINT, b: POINT, color: COLORREF, w: i32) {
-    stroke(dc, &[a, b], color, w);
+unsafe fn fill_disc(dc: HDC, cx: i32, cy: i32, r: f64, color: COLORREF) {
+    let b = CreateSolidBrush(color);
+    let open_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    let open_brush = SelectObject(dc, b as _);
+    let ri = r.round() as i32;
+    Ellipse(dc, cx - ri, cy - ri, cx + ri, cy + ri);
+    SelectObject(dc, open_pen);
+    SelectObject(dc, open_brush);
+    DeleteObject(b as _);
 }
 
 /// The player-picked mark: a bonesaw as a white outline (the icon is the same
@@ -478,36 +475,30 @@ unsafe fn bonesaw_x(mem: HDC, cx: i32, cy: i32, phase: f64) {
         }
     };
 
-    // Blade: bottom edge out, toothed top edge back, closed.
-    let mut p: Vec<POINT> = vec![sp(-21.1, 3.8), sp(12.6, 3.8), sp(12.6, -2.8)];
+    // Solid mark: steel blade, blood grip, bone ring, blood drip.
+    let mut p: Vec<POINT> = vec![sp(-21.1, 3.7), sp(12.6, 3.7), sp(12.6, -2.8)];
     let teeth = 8;
     let tw = 29.4 / teeth as f64;
     for i in (0..teeth).rev() {
         let bx = -20.2 + i as f64 * tw;
-        p.push(sp(bx + tw * 0.5, -5.8));
+        p.push(sp(bx + tw * 0.5, -5.6));
         p.push(sp(bx, -2.8));
     }
-    p.push(sp(-21.1, 3.8));
-    stroke(mem, &p, STEEL, 2);
+    p.push(sp(-21.1, 3.7));
+    fill_shape(mem, &p, STEEL);
 
-    // Grip and the ring at its end.
-    let grip = [sp(12.3, -3.0), sp(26.4, -3.0), sp(26.4, 3.0), sp(12.3, 3.0), sp(12.3, -3.0)];
-    stroke(mem, &grip, STEEL, 2);
-    let mut ring_pts: Vec<POINT> = Vec::with_capacity(21);
-    for i in 0..=20 {
-        let a = std::f64::consts::TAU * i as f64 / 20.0;
-        ring_pts.push(sp(29.0 + 5.6 * a.cos(), 5.6 * a.sin()));
-    }
-    stroke(mem, &ring_pts, STEEL, 2);
+    let grip = [sp(12.3, -3.0), sp(26.4, -3.0), sp(26.4, 3.0), sp(12.3, 3.0)];
+    fill_shape(mem, &grip, BLOOD);
 
-    // Drip: a short run off the low edge and a hanging drop, outlined.
-    line(mem, sp(1.8, 3.6), sp(1.8, 7.9), STEEL, 2);
-    let mut e: Vec<POINT> = Vec::with_capacity(17);
-    for i in 0..=16 {
-        let a = std::f64::consts::TAU * i as f64 / 16.0;
-        e.push(sp(1.8 + 2.7 * a.cos(), 10.1 + 2.9 * a.sin()));
-    }
-    stroke(mem, &e, STEEL, 2);
+    let ring_c = sp(29.0, 0.0);
+    fill_disc(mem, ring_c.x, ring_c.y, 5.6, STEEL);
+    fill_disc(mem, ring_c.x, ring_c.y, 1.9, BG);
+
+    // Drip: run off the low edge plus a hanging drop.
+    let run = [sp(0.8, 3.6), sp(2.8, 3.6), sp(2.8, 7.9), sp(0.8, 7.9)];
+    fill_shape(mem, &run, BLOOD);
+    let drop = sp(1.8, 10.1);
+    fill_disc(mem, drop.x, drop.y, 2.9, BLOOD);
 }
 
 /// The auto-login button, bottom-right: blood outline while off, bone while
