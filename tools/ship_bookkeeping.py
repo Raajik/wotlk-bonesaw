@@ -105,7 +105,7 @@ def write_patch_notes(version: str) -> Path:
         # subject after the hash; skip pure bookkeeping subjects
         subject = line.split(" ", 1)[1] if " " in line else line
         low = subject.lower()
-        if low.startswith(("bump bonesaw.version", "manifest ")):
+        if low.startswith(("bump bonesaw.version", "manifest ", "bookkeeping")):
             continue
         bullets.append(f"- {subject}")
     if not bullets:
@@ -122,6 +122,9 @@ def write_patch_notes(version: str) -> Path:
 
     NOTES_DIR.mkdir(exist_ok=True)
     path = NOTES_DIR / f"{version}.md"
+    if path.exists():
+        print(f"  keeping existing {path} (hand-written)")
+        return path
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"  wrote {path}")
     return path
