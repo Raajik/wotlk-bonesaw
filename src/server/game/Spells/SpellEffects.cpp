@@ -4775,6 +4775,11 @@ void Spell::EffectReputation(SpellEffIndex effIndex)
         return;
 
     repChange = player->CalculateReputationGain(REPUTATION_SOURCE_SPELL, 0, repChange, factionId);
+    // Report #204: item-granted reputation (Zandalari Honor Token and every
+    // other SPELL_EFFECT_REPUTATION item) never reached the rep-perk multiplier
+    // -- only kill/quest paths called the script hook. Route spell rep through
+    // it too (see core-patch 0052).
+    sScriptMgr->OnPlayerGiveReputation(player, int32(factionId), repChange, REPUTATION_SOURCE_SPELL);
     player->GetReputationMgr().ModifyReputation(factionEntry, repChange);
 }
 

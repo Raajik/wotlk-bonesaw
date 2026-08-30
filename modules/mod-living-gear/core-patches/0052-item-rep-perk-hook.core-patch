@@ -1,0 +1,16 @@
+Report #204: reputation perks did not multiply item-granted reputation.
+
+The rep perk family (910013+) multiplies reputation through the
+PlayerScript::OnPlayerGiveReputation hook. That hook was only invoked from the
+kill and quest reward paths (Player::RewardReputation, Battleground) -- not
+from Spell::EffectReputation, which is what every turn-in token uses (e.g.
+[Zandalari Honor Token]: spell with SPELL_EFFECT_REPUTATION). A player with the
+perk saw exactly 50 rep from the token instead of 100+.
+
+Change: Spell::EffectReputation now routes repChange through
+sScriptMgr->OnPlayerGiveReputation(..., REPUTATION_SOURCE_SPELL) before
+ModifyReputation, same as the other sources. The module-side hook is generic
+(RepPerkMultiplier on every call) and already ignores the source argument, so
+no module change is needed. Kill/quest behavior is untouched.
+
+Touches: src/server/game/Spells/SpellEffects.cpp (EffectReputation)
