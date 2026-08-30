@@ -7667,15 +7667,12 @@ LG2.ReportUI = ReportUI
 local REPORT_KINDS = { { label = "Bug" }, { label = "Feature" }, { label = "Other" } }
 local REPORT_W, REPORT_H = 340, 250
 
--- A pasted item link keeps its |H...|h payload inside the edit box text; what
--- we send is the text as typed, links intact. Escape strips them only when the
--- player asks (plain text reports read better in Discord).
+-- A pasted item link keeps its full |Hitem...|h payload in the edit box text
+-- and travels over the addon channel intact, so what files into the report is
+-- a real clickable link. Color wrappers are stripped server-side; the
+-- |Hitem:...|h[Name]|h core is left alone.
 local function ReportText(raw)
-    local text = raw or ""
-    text = string.gsub(text, "|c%x%x%x%x%x%x%x%x", "")
-    text = string.gsub(text, "|Hitem:", "|Hitem:")  -- keep hyperlink payloads
-    text = string.gsub(text, "|r", "")
-    return text
+    return raw or ""
 end
 
 function ReportUI.Toggle(kindOverride, critOverride)
@@ -7833,7 +7830,10 @@ function ReportUI.Build()
     body:SetTextColor(0.9, 0.9, 0.9, 1)
     body:SetAutoFocus(false)
     body:SetMultiLine(true)
-    body:SetMaxLetters(500)
+    -- SendAddonMessage in the 3.3.5 client caps a whisper payload at 255
+    -- bytes; a longer report would be silently cut off mid-sentence. Stay
+    -- under it (REPORT|0|0|0| prefix eats 13 more).
+    body:SetMaxLetters(230)
     body:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     body:SetScript("OnEnterPressed", function() ReportUI.Send() end)
     ReportUI.body = body
