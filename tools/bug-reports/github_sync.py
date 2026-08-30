@@ -10,7 +10,11 @@ from typing import Callable
 
 
 DEFAULT_REPO = "Raajik/wotlk-bonesaw"
-MAX_TITLE_LENGTH = 180
+# GitHub itself caps issue titles at 256 chars, and the addon sends at most
+# 230, so with the "[Report #N] " prefix every report fits untruncated. (This
+# used to be 180, which silently chopped long reports at sync time while the
+# database kept the full text -- see backfill_titles.py for the one-time repair.)
+MAX_TITLE_LENGTH = 256
 GH_TIMEOUT_SECONDS = 30
 LIFECYCLE_LABELS = [
     "status:needs-triage",

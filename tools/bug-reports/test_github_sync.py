@@ -111,6 +111,14 @@ class GitHubSyncTests(unittest.TestCase):
         self.assertTrue(title.startswith("[Report #102] "))
         self.assertLessEqual(len(title), github_sync.MAX_TITLE_LENGTH)
 
+    def test_full_addon_length_title_is_not_truncated(self):
+        # The addon sends at most 230 chars; with the prefix that must fit
+        # under the 256-char GitHub title cap without losing the tail.
+        description = "y" * 230
+        title, _ = github_sync.build_issue(sample_report(description=description))
+        self.assertEqual(title, "[Report #102] " + description)
+        self.assertFalse(title.endswith("..."))
+
     def test_sync_reuses_existing_issue_instead_of_creating_duplicate(self):
         github = FakeGitHub(existing={"number": 102, "url": "https://github.test/issues/102"})
         store = FakeStore()
