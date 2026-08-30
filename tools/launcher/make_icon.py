@@ -56,7 +56,9 @@ def saw_inside(lx: float, ly: float) -> bool:
 
 
 def mark_color(wx: float, wy: float, w: float) -> tuple[int, int, int] | None:
-    """Solid mark: steel blade, blood grip, bone ring, blood drip."""
+    """Solid mark: steel blade, blood grip, bone ring, blood drip. Grip is
+    centered on the blade axis and the ring rides the same line, pulled in
+    from the disc edge."""
     lx, ly = rot(wx, wy, -SAW_DEG)
     if -21.1 <= lx <= 12.3 and -2.8 <= ly <= 3.7:
         return STEEL
@@ -67,10 +69,10 @@ def mark_color(wx: float, wy: float, w: float) -> tuple[int, int, int] | None:
         frac = (ly + 5.6) / 2.8
         if abs(lx - (bx + tw / 2.0)) <= (tw / 2.0) * frac:
             return STEEL
-    if 12.3 <= lx <= 26.4 and abs(ly) <= 3.0:
+    if 10.5 <= lx <= 22.0 and abs(ly) <= 3.25:
         return BLOOD
-    d = math.hypot(lx - 29.0, ly)
-    if 1.9 <= d <= 5.6:
+    d = math.hypot(lx - 25.5, ly - 0.45)
+    if 1.8 <= d <= 5.4:
         return BONE
     if (abs(lx - 1.8) <= 1.0 and 3.5 <= ly <= 7.9) or (
         (lx - 1.8) ** 2 + ((ly - 10.1) * 1.3) ** 2 <= 8.0
@@ -121,6 +123,99 @@ def render(size: int) -> bytes:
             r, g, b, a = px[y][x]
             out += bytes((b, g, r, a))
     return bytes(out)
+
+
+def sawcut_color(wx: float, wy: float) -> tuple[int, int, int] | None:
+    """Saw mid-cut through a horizontal bone, blood pooling underneath."""
+    # The bone, lying horizontally in the lower half.
+    if -20.0 <= wx <= 20.0 and 4.8 <= wy <= 11.4:
+        return BONE
+    for ex in (-20.0, 20.0):
+        for o in (-4.2, 4.2):
+            if math.hypot(wx - ex, wy - 8.0) <= 4.2:
+                return BONE
+    # The blade, diagonal, mid-cut into the bone.
+    lx, ly = rot(wx, wy, -SAW_DEG)
+    if -12.0 <= lx <= 6.0 and -2.6 <= ly <= 3.4:
+        return STEEL
+    if -13.0 <= lx <= 8.5 and -5.4 <= ly < -2.8:
+        tw = 22.0 / 6.0
+        k = int((lx + 13.0) // tw)
+        bx = -13.0 + k * tw
+        frac = (ly + 5.4) / 2.6
+        if abs(lx - (bx + tw / 2.0)) <= (tw / 2.0) * frac:
+            return STEEL
+    if 6.0 <= lx <= 20.0 and abs(ly) <= 3.0:
+        return BLOOD
+    d = math.hypot(lx - 28.5, ly)
+    if 1.7 <= d <= 5.2:
+        return BONE
+    # Blood pooling under the cut.
+    if ((wx - 2.0) / 6.5) ** 2 + ((wy - 14.5) / 2.8) ** 2 <= 1.0:
+        return BLOOD
+    return None
+
+
+def bone_b_color(wx: float, wy: float) -> tuple[int, int, int] | None:
+    """A B built from bones: vertical bone stem, two saw-handle rings as the
+    bowls, one blood drip off the stem's foot."""
+    x, y = wx, -wy  # work upright: local y up
+    stem = -17.0 <= x <= -11.0 and -13.5 <= y <= 13.5
+    for oy in (-13.5, 13.5):
+        for o in (-4.4, 4.4):
+            if math.hypot(x + 14.0, y - (oy2 := oy)) <= 4.4:
+                return BONE
+    if stem:
+        return BONE
+    d_top = math.hypot(x - 1.0, y - 7.5)
+    if 4.2 <= math.hypot(x - 1.0, y - 7.5) <= 7.9 and x >= -13.0:
+        return BONE
+    d2 = math.hypot(x - 3.5, y + 9.0)
+    if 4.4 <= math.hypot(x - 3.5, y + 9.5) <= 9.0 and x >= -12.0:
+        return BONE
+    if abs(x + 14.0) <= 1.0 and -20.0 <= y <= -17.5:
+        return BLOOD
+    return None
+
+
+def skull_color(wx: float, wy: float) -> tuple[int, int, int] | None:
+    """Stylized skull, saw entering from the upper left, blade buried in the
+    crown, blood seeping from the cut. Saw axis +45: grip top-left, tip
+    bottom-right, cutting into the crown."""
+    # saw first, so it overlaps the skull: grip up-left, blade tip in-crown
+    lx, ly = rot(wx, wy, -SAW_DEG)
+    if -16.0 <= lx <= 6.0 and -2.6 <= ly <= 3.2:
+        return STEEL
+    if -15.0 <= lx <= 6.0 and -5.2 <= ly < -2.6:
+        tw = 21.0 / 6.0
+        k = int((lx + 13.0) // tw)
+        bx = -13.0 + k * tw
+        frac = (ly + 5.2) / 2.6
+        if abs(lx - (bx + tw / 2.0)) <= (tw / 2.0) * frac:
+            return STEEL
+    if -27.0 <= lx <= -16.0 and abs(ly) <= 3.0:
+        return BLOOD
+    d = math.hypot(lx + 31.0, ly)
+    if 1.6 <= d <= 5.0:
+        return BONE
+    # skull
+    dx, dy = wx - 4.0, wy - 9.0
+    if (dx / 14.5) ** 2 + ((dy + 2.0) / 12.5) ** 2 <= 1.0:
+        if math.hypot(wx - (-1.0), wy - 9.0) <= 3.6 and not (-16.0 <= lx <= 6.0 and abs(ly) <= 3.2):
+            return BG
+        if math.hypot(wx - 10.5, wy - 8.0) <= 3.4:
+            return BG
+        return BONE
+    if -6.0 <= wx <= 14.0 and 18.0 <= wy <= 23.0:
+        if abs(wx - 1.0) <= 1.0 or abs(wx - 6.5) <= 1.0:
+            return BG
+        return BONE
+    # blood at the cut, running down the brow
+    if ((wx - 5.0) / 5.0) ** 2 + ((wy - 3.5) / 3.0) ** 2 <= 1.0:
+        return BLOOD
+    if abs(wx - 9.0) <= 1.0 and 16.0 <= wy <= 21.0:
+        return BLOOD
+    return None
 
 
 def dib(size: int, bgra: bytes) -> bytes:

@@ -487,11 +487,11 @@ unsafe fn bonesaw_x(mem: HDC, cx: i32, cy: i32, phase: f64) {
     p.push(sp(-21.1, 3.7));
     fill_shape(mem, &p, STEEL);
 
-    let grip = [sp(12.3, -3.0), sp(26.4, -3.0), sp(26.4, 3.0), sp(12.3, 3.0)];
+    let grip = [sp(10.5, -2.8), sp(22.0, -2.8), sp(22.0, 3.7), sp(10.5, 3.7)];
     fill_shape(mem, &grip, BLOOD);
 
-    let ring_c = sp(29.0, 0.0);
-    fill_disc(mem, ring_c.x, ring_c.y, 5.6, STEEL);
+    let ring_c = sp(25.5, 0.45);
+    fill_disc(mem, ring_c.x, ring_c.y, 5.4, STEEL);
     fill_disc(mem, ring_c.x, ring_c.y, 1.9, BG);
 
     // Drip: run off the low edge plus a hanging drop.
