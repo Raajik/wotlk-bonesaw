@@ -162,14 +162,21 @@ std::string Trim(std::string s)
 // Bug reports and feature requests
 // ---------------------------------------------------------------------
 
+// Report kinds: 0 = bug, 1 = feature, 2 = critical (report #189: a .crit
+// command that files with CRITICAL priority so the digest marks it).
+enum LgReportKind { LG_REPORT_BUG = 0, LG_REPORT_FEATURE = 1, LG_REPORT_CRITICAL = 2 };
+
 // Context is the whole point. "The chest in Uldaman does not open" is close
 // to unactionable; the same sentence with a map, a zone, exact coordinates,
 // the reporter's level and the entry id of whatever they had targeted
 // usually points straight at the row that needs fixing.
-bool RecordSupportReport(Player* player, std::string const& description, bool feature)
+bool RecordSupportReport(Player* player, std::string const& description, uint8 kind)
 {
     if (!player || !player->GetSession())
         return false;
+
+    static char const* const KIND_LABEL[3] = { "Bug", "Feature", "Critical" };
+    static char const* const KIND_TYPE[3] = { "bug", "feature", "critical" };
 
     uint32 const accountId = player->GetSession()->GetAccountId();
     uint32 const now = uint32(GameTime::GetGameTime().count());
@@ -178,8 +185,8 @@ bool RecordSupportReport(Player* player, std::string const& description, bool fe
     if (text.size() < BUG_MIN_LENGTH)
     {
         ChatHandler(player->GetSession()).SendSysMessage(
-            feature ? "|cff66ccff[Feature]|r Say a little more about what you would like."
-                    : "|cff66ccff[Bug]|r Say a little more about what went wrong.");
+            kind == LG_REPORT_FEATURE ? "|cff66ccff[Feature]|r Say a little more about what you would like."
+                                      : "|cff66ccff[Bug]|r Say a little more about what went wrong.");
         return false;
     }
     if (text.size() > BUG_MAX_LENGTH)
@@ -209,7 +216,7 @@ bool RecordSupportReport(Player* player, std::string const& description, bool fe
         "(`report_type`, `account_id`, `character_guid`, `character_name`, `reported_at`, `map_id`, `zone_id`, "
         "`zone_name`, `pos_x`, `pos_y`, `pos_z`, `player_level`, `target_entry`, `target_name`, `description`) "
         "VALUES ('{}', {}, {}, '{}', {}, {}, {}, '{}', {}, {}, {}, {}, {}, '{}', '{}')",
-        feature ? "feature" : "bug", accountId, player->GetGUID().GetCounter(), Escape(player->GetName()), now,
+        KIND_TYPE[kind], accountId, player->GetGUID().GetCounter(), Escape(player->GetName()), now,
         player->GetMapId(), player->GetZoneId(), Escape(ZoneName(player)),
         player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(),
         uint32(player->GetLevel()), targetEntry, Escape(targetName), Escape(text));
@@ -217,12 +224,13 @@ bool RecordSupportReport(Player* player, std::string const& description, bool fe
     // Also written to the worldserver log, so a report survives the digest
     // script being broken or the characters DB being rolled back.
     LOG_INFO("module.livinggear", "{} report from {} (account {}): {} [map {} zone {} at {} {} {}]",
-        feature ? "Feature" : "Bug", player->GetName(), accountId, text, player->GetMapId(), player->GetZoneId(),
+        KIND_LABEL[kind], player->GetName(), accountId, text, player->GetMapId(), player->GetZoneId(),
         player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
 
     ChatHandler(player->GetSession()).SendSysMessage(
-        feature ? "|cff66ccff[Feature]|r Requested, thank you. Your location and target were included."
-                : "|cff66ccff[Bug]|r Reported, thank you. Your location and target were included.");
+        kind == LG_REPORT_FEATURE ? "|cff66ccff[Feature]|r Requested, thank you. Your location and target were included."
+        : kind == LG_REPORT_CRITICAL ? "|cffff3333[CRITICAL]|r Reported, thank you. Your location and target were included."
+        : "|cff66ccff[Bug]|r Reported, thank you. Your location and target were included.");
     return true;
 }
 
@@ -751,6 +759,7 @@ public:
         {
             { "bug", HandleBug, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
             { "feature", HandleFeature, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
+            { "crit", HandleCritical, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
             { "wg",  HandleWintergrasp, rbac::RBAC_PERM_COMMAND_HELP, Console::No },
         };
         return commandTable;
@@ -761,7 +770,7 @@ public:
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
-        RecordSupportReport(player, std::string(description), false);
+        RecordSupportReport(player, std::string(description), LG_REPORT_BUG);
         return true;
     }
 
@@ -770,7 +779,17 @@ public:
         Player* player = handler->GetPlayer();
         if (!player)
             return false;
-        RecordSupportReport(player, std::string(description), true);
+        RecordSupportReport(player, std::string(description), LG_REPORT_FEATURE);
+        return true;
+    }
+
+    // Report #189: ".crit <description>" files with CRITICAL priority.
+    static bool HandleCritical(ChatHandler* handler, Tail description)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+        RecordSupportReport(player, std::string(description), LG_REPORT_CRITICAL);
         return true;
     }
 
@@ -794,12 +813,17 @@ bool LivingGear_HandleSupportCommand(Player* player, std::string const& msg)
 
     if (msg.rfind("BUG|", 0) == 0)
     {
-        LivingGearSupport::RecordSupportReport(player, msg.substr(4), false);
+        LivingGearSupport::RecordSupportReport(player, msg.substr(4), LivingGearSupport::LG_REPORT_BUG);
         return true;
     }
     if (msg.rfind("FEATURE|", 0) == 0)
     {
-        LivingGearSupport::RecordSupportReport(player, msg.substr(8), true);
+        LivingGearSupport::RecordSupportReport(player, msg.substr(8), LivingGearSupport::LG_REPORT_FEATURE);
+        return true;
+    }
+    if (msg.rfind("CRIT|", 0) == 0)
+    {
+        LivingGearSupport::RecordSupportReport(player, msg.substr(5), LivingGearSupport::LG_REPORT_CRITICAL);
         return true;
     }
     if (msg.rfind("QDONE|", 0) == 0)

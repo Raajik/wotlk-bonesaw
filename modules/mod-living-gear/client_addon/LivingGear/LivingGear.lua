@@ -7638,3 +7638,17 @@ SlashCmdList["LGFEATURE"] = function(msg)
     end
     SendLine("FEATURE|" .. msg)
 end
+
+-- Critical reports (.crit): same context capture as bugs, marked CRITICAL
+-- so the digest and GitHub tracker prioritise them.
+SLASH_LGCRIT1 = "/crit"
+SLASH_LGCRIT2 = "/lgcrit"
+SlashCmdList["LGCRIT"] = function(msg)
+    msg = string.gsub(msg or "", "^%s+", "")
+    if msg == "" then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff3333[CRITICAL]|r Usage: /crit <what is critically broken>")
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff3333[CRITICAL]|r Your location and current target are sent automatically.")
+        return
+    end
+    SendLine("CRIT|" .. msg)
+end

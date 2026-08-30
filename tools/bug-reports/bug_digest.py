@@ -160,7 +160,13 @@ def format_report(row: dict) -> str:
         pass
 
     where = row["zone"] or f"map {row['map']}"
-    heading = f"Feature #{row['id']}" if row.get("report_type") == "feature" else f"#{row['id']}"
+    rtype = row.get("report_type")
+    if rtype == "feature":
+        heading = f"Feature #{row['id']}"
+    elif rtype == "critical":
+        heading = f"CRITICAL #{row['id']}"
+    else:
+        heading = f"#{row['id']}"
     lines = [
         f"**{heading}** - {row['name']} (level {row['level']}) - {when}",
         f"> {row['description']}",
