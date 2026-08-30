@@ -64,6 +64,38 @@ pub fn write_atomic(dest: &Path, bytes: &[u8]) -> R<()> {
     })
 }
 
+/// Windows keys its icon cache to the exe's path, so an in-place update leaves
+/// every shortcut and taskbar pin showing the OLD icon until the shell is told
+/// the file changed -- the launcher can look updated while the taskbar still
+/// wears the last version's face. Two broadcasts fix it without killing
+/// Explorer and without admin:
+/// - SHCNE_ASSOCCHANGED is the installer-standard "icon resources changed"
+///   refresh (what ie4uinit -show runs under the hood).
+/// - SHCNE_UPDATEITEM asks views showing this exact exe to re-resolve it.
+pub fn refresh_shell_icons(exe: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{
+        SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNE_UPDATEITEM, SHCNF_IDLIST, SHCNF_PATHW,
+    };
+
+    unsafe {
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED as i32,
+            SHCNF_IDLIST,
+            std::ptr::null(),
+            std::ptr::null(),
+        );
+        let mut wide: Vec<u16> = exe.as_os_str().encode_wide().collect();
+        wide.push(0);
+        SHChangeNotify(
+            SHCNE_UPDATEITEM as i32,
+            SHCNF_PATHW,
+            wide.as_ptr() as *const std::ffi::c_void,
+            std::ptr::null(),
+        );
+    }
+}
+
 pub fn wow_running() -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{

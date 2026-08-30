@@ -43,6 +43,12 @@ fn run(ui: &Ui) -> R<()> {
 
     selfupdate::cleanup(&exe);
     let just_updated = std::env::args().any(|a| a == "--updated");
+    if just_updated {
+        // The exe just changed under a path Windows' icon cache considers
+        // settled; without this, shortcuts and pins keep the old icon.
+        util::refresh_shell_icons(&exe);
+        log("refreshed shell icon cache after update");
+    }
 
     let agent = manifest::agent();
     let mut realm: Option<String> = None;
