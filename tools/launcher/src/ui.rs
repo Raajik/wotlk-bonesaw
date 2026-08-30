@@ -45,6 +45,7 @@ struct State {
     client: Option<std::path::PathBuf>,
     auto_login: bool,
     dialog_open: bool,
+    launch_in: Option<u8>,
     created: Instant,
 }
 
@@ -61,6 +62,7 @@ impl Default for State {
             client: None,
             auto_login: false,
             dialog_open: false,
+            launch_in: None,
             created: Instant::now(),
         }
     }
@@ -144,16 +146,29 @@ impl Ui {
     }
 
     /// With Wow focused on top a moment later, a warm local run would flash
-    /// this window for a blink. Hold it up long enough to actually be seen.
+    /// this window for a blink. Hold it up long enough to actually be seen,
+    /// counting down the last seconds so the hold reads as intentional.
     pub fn linger(&self) {
         const MIN_VISIBLE: std::time::Duration = std::time::Duration::from_secs(4);
-        let until = {
-            let s = self.state.lock().unwrap();
-            s.created + MIN_VISIBLE
-        };
-        let now = Instant::now();
-        if now < until {
-            std::thread::sleep(until - now);
+        loop {
+            let remaining = {
+                let mut s = self.state.lock().unwrap();
+                match MIN_VISIBLE.checked_sub(s.created.elapsed()) {
+                    Some(d) => {
+                        s.launch_in = Some(d.as_secs() as u8 + 1);
+                        d
+                    }
+                    None => {
+                        s.launch_in = None;
+                        std::time::Duration::ZERO
+                    }
+                }
+            };
+            self.refresh();
+            if remaining.is_zero() {
+                return;
+            }
+            std::thread::sleep(remaining.min(std::time::Duration::from_secs(1)));
         }
     }
 
@@ -249,15 +264,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_CREATE => {
-            // The blade never stops turning; the timer drives it at ~30 fps.
+            // The saw never rests; the timer drives the sawing stroke at ~30 fps.
             SetTimer(hwnd, 1, 33, None);
             0
         }
         WM_TIMER => {
             if let Some(st) = state() {
                 let mut s = st.lock().unwrap();
-                // Chewing on a download turns the blade much faster.
-                let speed = if s.percent.is_some() { 7.0 } else { 1.6 };
+                // Chewing on a download makes the sawing stroke much faster.
+                let speed = if s.percent.is_some() { 11.0 } else { 3.0 };
                 s.spin = (s.spin + speed) % 360.0;
                 drop(s);
                 InvalidateRect(hwnd, std::ptr::null(), 0);
@@ -452,70 +467,63 @@ unsafe fn fill_ellipse(dc: HDC, x0: i32, y0: i32, x1: i32, y1: i32, color: COLOR
     DeleteObject(b as _);
 }
 
-fn pt(cx: f64, cy: f64, r: f64, a: f64) -> POINT {
-    POINT {
-        x: (cx + r * a.cos()).round() as i32,
-        y: (cy + r * a.sin()).round() as i32,
-    }
-}
+/// The mark, redrawn as vectors, redrawn as vectors so it can move: a bonesaw crossed with a
+/// femur -- an X. The femur runs one way; the toothed blade and its ringed
+/// handle cross it. The whole mark rocks a few degrees around the crossing
+/// point, a sawing stroke: the phase advances constantly and the drawing
+/// derives the swing from its sine, so downloads turn the sway into vigorous
+/// sawing.
+unsafe fn bonesaw_x(mem: HDC, cx: i32, cy: i32, phase: f64) {
+    let (cxf, cyf) = (cx as f64, cy as f64);
+    let rock = 7.0f64.to_radians() * phase.to_radians().sin();
+    let fa = 45.0f64.to_radians() + rock; // femur axis
+    let sa = -45.0f64.to_radians() + rock; // saw axis, crossing it
 
-/// The mark from the icon, redrawn as vector shapes so it can spin: a ring of
-/// steel teeth with a blood sector, bolt holes, and two drips falling from the
-/// underside. `spin_deg` is the blade angle.
-unsafe fn blade(mem: HDC, cx: i32, cy: i32, spin_deg: f64) {
-    let cx = cx as f64;
-    let cy = cy as f64;
-    let r_out = 27.0; // tooth tips
-    let r_in = 20.0; // gullets
-    let r_hole = 12.5; // bolt-hole ring
-    let a0 = spin_deg.to_radians();
-
-    // Ten teeth; the gullets are the chords between them.
-    let teeth = 10;
-    let span = std::f64::consts::TAU / teeth as f64;
-    let mut pts: Vec<POINT> = Vec::with_capacity(teeth * 4);
-    for k in 0..teeth {
-        let base = a0 + k as f64 * span;
-        for (t, r) in [(0.0, r_in), (0.32, r_out), (0.62, r_out), (1.0, r_in)] {
-            pts.push(pt(cx, cy, r, base + t * span));
+    // local (along-axis, across-axis) -> screen, per tool
+    let fp = |lx: f64, ly: f64| -> POINT {
+        POINT {
+            x: (cxf + lx * fa.cos() - ly * fa.sin()).round() as i32,
+            y: (cyf + lx * fa.sin() + ly * fa.cos()).round() as i32,
         }
-    }
-    fill_shape(mem, &pts, STEEL);
+    };
+    let sp = |lx: f64, ly: f64| -> POINT {
+        POINT {
+            x: (cxf + lx * sa.cos() - ly * sa.sin()).round() as i32,
+            y: (cyf + lx * sa.sin() + ly * sa.cos()).round() as i32,
+        }
+    };
 
-    // One arc of blood riding the ring, like the icon's stained edge.
-    let sweep = 100.0_f64.to_radians();
-    let steps = 16;
-    let mut seg: Vec<POINT> = Vec::with_capacity(steps * 2 + 2);
-    for i in 0..=steps {
-        seg.push(pt(cx, cy, r_out, a0 + sweep * i as f64 / steps as f64));
-    }
-    for i in (0..=steps).rev() {
-        seg.push(pt(cx, cy, r_in, a0 + sweep * i as f64 / steps as f64));
-    }
-    fill_shape(mem, &seg, BLOOD);
-
-    // Hollow the middle back out, then the hub and the bolt holes.
-    fill_disc(mem, cx.round() as i32, cy.round() as i32, r_in - 2.0, BLADE_BG);
-    fill_disc(mem, cx.round() as i32, cy.round() as i32, 5.5, BONE);
-    let holes = 3;
-    for k in 0..holes {
-        let a = a0 + k as f64 * std::f64::consts::TAU / holes as f64;
-        fill_disc(
-            mem,
-            (cx + r_hole * a.cos()).round() as i32,
-            (cy + r_hole * a.sin()).round() as i32,
-            2.4,
-            BLADE_BG,
-        );
+    // Femur, behind: shaft, one ball head, two condyle knobs.
+    let shaft = [fp(-17.0, -3.4), fp(13.0, -3.6), fp(13.0, 3.6), fp(-17.0, 3.4)];
+    fill_shape(mem, &shaft, BONE);
+    for (t, o, r) in [(-17.0f64, 0.0, 7.0), (13.0, -5.2, 5.2), (13.0, 5.2, 5.2)] {
+        let p = fp(t, o);
+        fill_disc(mem, p.x, p.y, r, BONE);
     }
 
-    // Two drips fall from the underside of the blade.
-    let bx = cx.round() as i32;
-    let by = (cy + r_out).round() as i32; // bottom of the blade
-    fill(mem, bx + 2, by, 2, 8, BLOOD);
-    fill_ellipse(mem, bx - 1, by + 7, bx + 7, by + 15, BLOOD);
-    fill(mem, bx - 13, by, 2, 5, BLOOD);
-    fill_ellipse(mem, bx - 16, by + 4, bx - 9, by + 11, BLOOD);
+    // Saw, on top: blade with a notched top edge, blood grip, bone ring.
+    let mut blade_pts: Vec<POINT> = vec![sp(-24.0, 4.2)];
+    let teeth = 8;
+    let tw = 34.0 / teeth as f64;
+    for k in 0..teeth {
+        let tip = sp(-23.0 + k as f64 * tw + tw * 0.5, -6.4);
+        blade_pts.push(tip);
+        let next = sp(-23.0 + (k + 1) as f64 * tw, -3.2);
+        blade_pts.push(next);
+    }
+    blade_pts.push(sp(14.0, 4.2));
+    fill_shape(mem, &blade_pts, STEEL);
+    let grip = [sp(14.0, -3.8), sp(30.0, -3.0), sp(30.0, 3.0), sp(14.0, 4.2)];
+    fill_shape(mem, &grip, BLOOD);
+    let ring = sp(31.5, 0.0);
+    fill_disc(mem, ring.x, ring.y, 4.6, BONE);
+    fill_disc(mem, ring.x, ring.y, 2.0, BG);
+
+    // A drip falls from the low edge, beside the crossing point.
+    let bx = cxf.round() as i32;
+    let by = cyf.round() as i32;
+    fill(mem, bx + 6, by + 12, 2, 6, BLOOD);
+    fill_ellipse(mem, bx + 3, by + 17, bx + 11, by + 25, BLOOD);
 }
 
 /// The auto-login button, bottom-right: blood outline while off, bone while
@@ -616,31 +624,34 @@ unsafe fn paint(hwnd: HWND) {
     let bmp = CreateCompatibleBitmap(dc, W, H);
     let old_bmp = SelectObject(mem, bmp as _);
 
-    let (status, file, percent, hover, spin, version, auto_login, hover_login) = match state() {
-        Some(st) => {
-            let s = st.lock().unwrap();
-            (
-                s.status.clone(),
-                s.file.clone(),
-                s.percent,
-                s.hover_close,
-                s.spin,
-                s.version.clone(),
-                s.auto_login,
-                s.hover_login,
-            )
-        }
-        None => (
-            String::new(),
-            String::new(),
-            None,
-            false,
-            0.0,
-            String::new(),
-            false,
-            false,
-        ),
-    };
+    let (status, file, percent, hover, spin, version, auto_login, hover_login, launch_in) =
+        match state() {
+            Some(st) => {
+                let s = st.lock().unwrap();
+                (
+                    s.status.clone(),
+                    s.file.clone(),
+                    s.percent,
+                    s.hover_close,
+                    s.spin,
+                    s.version.clone(),
+                    s.auto_login,
+                    s.hover_login,
+                    s.launch_in,
+                )
+            }
+            None => (
+                String::new(),
+                String::new(),
+                None,
+                false,
+                0.0,
+                String::new(),
+                false,
+                false,
+                None,
+            ),
+        };
 
     fill(mem, 0, 0, W, H, BG);
     fill(mem, 0, 0, W, 1, FRAME);
@@ -649,7 +660,7 @@ unsafe fn paint(hwnd: HWND) {
     fill(mem, W - 1, 0, 1, H, FRAME);
     fill(mem, 0, 0, W, 2, BLOOD_DEEP);
 
-    blade(mem, 46, 46, spin);
+    bonesaw_x(mem, 46, 46, spin);
 
     let f_title = font(28, true, "Segoe UI");
     let f_sub = font(11, true, "Segoe UI");
@@ -688,6 +699,18 @@ unsafe fn paint(hwnd: HWND) {
         f_sub,
         DT_RIGHT | DT_SINGLELINE,
     );
+    if let Some(n) = launch_in {
+        text(
+            mem,
+            &format!("starting in {n}"),
+            W - 190,
+            42,
+            130,
+            BLOOD_HOT,
+            f_sub,
+            DT_RIGHT | DT_SINGLELINE,
+        );
+    }
     text(
         mem,
         "\u{00D7}",
