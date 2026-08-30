@@ -3758,7 +3758,24 @@ public:
     void OnStartup() override
     {
         LoadPerkConfig();
-        LOG_INFO("server.loading", "Living Gear perks module loaded (zone scale, auto-mount, Subtlety, poisons)");
+        // Report #186: allow flight in Dalaran. The no-fly restriction is the
+        // AREA_FLAG_NO_FLY_ZONE bit on the Dalaran area rows (15 rows on
+        // map 571, city + every interior), which SpellMgr's flight check
+        // consults before applying the anti-flight aura. Clear the bit on
+        // the loaded store -- data-driven, no core patch, and untouched for
+        // every other continent (Wintergrasp keeps its own handling).
+        uint32 cleared = 0;
+        for (uint32 i = 0; i < sAreaTableStore.GetNumRows(); ++i)
+        {
+            // The store owns non-const rows at load time; SpellInfoCorrections
+            // sets the precedent for patching loaded entries in place.
+            auto* area = const_cast<AreaTableEntry*>(sAreaTableStore.LookupEntry(i));
+            if (!area || area->mapid != 571 || !(area->flags & AREA_FLAG_NO_FLY_ZONE))
+                continue;
+            area->flags &= ~AREA_FLAG_NO_FLY_ZONE;
+            ++cleared;
+        }
+        LOG_INFO("server.loading", "Living Gear: flight allowed in Dalaran (cleared no-fly flag on {} area(s))", cleared);
     }
 };
 
