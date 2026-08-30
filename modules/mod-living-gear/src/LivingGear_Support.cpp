@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -175,6 +176,74 @@ enum LgReportKind { LG_REPORT_BUG = 0, LG_REPORT_FEATURE = 1, LG_REPORT_OTHER = 
 // [item:12345] in the report text -> a real clickable item link.
 std::string ExpandItemLinks(std::string text);
 
+// Readback state for one filed report. Kept alive across the async verify by
+// shared_ptr, because the player may log out before the query returns -- the
+// guid is resolved fresh in the callback instead of holding a Player*.
+struct ReportDelivery
+{
+    ObjectGuid playerGuid;
+    uint32 accountId;
+    std::string playerName;
+    uint32 reportedAt;
+    std::string text;
+    bool critical;
+    uint8 attempts = 0;
+};
+
+// Owns the report readback callbacks. World.cpp ticks its own processor the
+// same way every update; this one exists so confirmations do not depend on
+// any particular script object staying alive.
+QueryCallbackProcessor& ReportQueryProcessor()
+{
+    static QueryCallbackProcessor processor;
+    return processor;
+}
+
+// The insert is fire-and-forget: the database layer logs failures where no
+// player will ever see them (that is how every report filed between the
+// 2026-08-29 intake redesign and its fix was silently lost while the player
+// read "Reported, thank you"). Read the row back before confirming anything;
+// if it never shows up, say so in chat and shout in the log so the text can
+// be recovered from either place.
+void VerifyReportRow(std::shared_ptr<ReportDelivery> state)
+{
+    CharacterDatabasePreparedStatement* stmt =
+        CharacterDatabase.GetPreparedStatement(CHAR_SEL_LG_BUG_REPORT_VERIFY);
+    stmt->SetData(0, state->accountId);
+    stmt->SetData(1, state->reportedAt);
+    stmt->SetData(2, state->text);
+    ReportQueryProcessor().AddCallback(
+        CharacterDatabase.AsyncQuery(stmt).WithPreparedCallback([state](PreparedQueryResult result)
+        {
+            if (result)
+            {
+                if (Player* player = ObjectAccessor::FindPlayer(state->playerGuid))
+                    ChatHandler(player->GetSession()).SendSysMessage(
+                        state->critical
+                            ? "|cffff3333[CRITICAL]|r Reported, thank you. Your location and target were included."
+                            : "|cff66ccff[Report]|r Reported, thank you. Your location and target were included.");
+                return;
+            }
+
+            // A miss can also mean the readback raced ahead of the insert on a
+            // multi-worker database pool. Look once more before declaring the
+            // write lost: the retry lands a world tick later, by which time the
+            // insert has certainly run.
+            if (state->attempts++ < 1)
+            {
+                VerifyReportRow(state);
+                return;
+            }
+
+            LOG_ERROR("module.livinggear", "report DB write LOST from {} (account {}): {}",
+                state->playerName, state->accountId, state->text);
+            if (Player* player = ObjectAccessor::FindPlayer(state->playerGuid))
+                ChatHandler(player->GetSession()).SendSysMessage(
+                    "|cffff3333[Report]|r Your report could not be saved just now. "
+                    "It was captured in the server log and will be recovered by hand -- no need to resend.");
+        }));
+}
+
 // Context is the whole point. "The chest in Uldaman does not open" is close
 // to unactionable; the same sentence with a map, a zone, exact coordinates,
 // the reporter's level and the entry id of whatever they had targeted
@@ -224,16 +293,29 @@ bool RecordSupportReport(Player* player, std::string const& description, uint8 k
             targetEntry = creature->GetEntry();
     }
 
-    CharacterDatabase.Execute(
-        "INSERT INTO `lg_bug_report` "
-        "(`report_type`, `is_critical`, `is_recurring`, `account_id`, `character_guid`, `character_name`, `reported_at`, `map_id`, `zone_id`, "
-        "`zone_name`, `pos_x`, `pos_y`, `pos_z`, `player_level`, `target_entry`, `target_name`, `description`) "
-        "VALUES ('{}', {}, {}, {}, {}, '{}', {}, {}, {}, '{}', {}, {}, {}, {}, {}, '{}', '{}')",
-        KIND_TYPE[kind], critical ? 1 : 0, recurring ? 1 : 0,
-        accountId, player->GetGUID().GetCounter(), Escape(player->GetName()), now,
-        player->GetMapId(), player->GetZoneId(), Escape(ZoneName(player)),
-        player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(),
-        uint32(player->GetLevel()), targetEntry, Escape(targetName), Escape(text));
+    // Filed as a prepared statement: every value is bound by index, so the
+    // column list can never drift out of sync with the arguments the way the
+    // old fmt-string INSERT did (2026-08-30: one placeholder too many ate
+    // every report silently).
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_LG_BUG_REPORT);
+    stmt->SetData(0, std::string(KIND_TYPE[kind]));
+    stmt->SetData(1, uint8(critical ? 1 : 0));
+    stmt->SetData(2, uint8(recurring ? 1 : 0));
+    stmt->SetData(3, accountId);
+    stmt->SetData(4, player->GetGUID().GetCounter());
+    stmt->SetData(5, player->GetName());
+    stmt->SetData(6, now);
+    stmt->SetData(7, player->GetMapId());
+    stmt->SetData(8, player->GetZoneId());
+    stmt->SetData(9, ZoneName(player));
+    stmt->SetData(10, player->GetPositionX());
+    stmt->SetData(11, player->GetPositionY());
+    stmt->SetData(12, player->GetPositionZ());
+    stmt->SetData(13, uint8(player->GetLevel()));
+    stmt->SetData(14, targetEntry);
+    stmt->SetData(15, targetName);
+    stmt->SetData(16, text);
+    CharacterDatabase.Execute(stmt);
 
     // Also written to the worldserver log, so a report survives the digest
     // script being broken or the characters DB being rolled back.
@@ -242,9 +324,10 @@ bool RecordSupportReport(Player* player, std::string const& description, uint8 k
         player->GetName(), accountId, text, player->GetMapId(), player->GetZoneId(),
         player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
 
-    ChatHandler(player->GetSession()).SendSysMessage(
-        critical ? "|cffff3333[CRITICAL]|r Reported, thank you. Your location and target were included."
-                  : "|cff66ccff[Report]|r Reported, thank you. Your location and target were included.");
+    // Confirmation waits for the readback in VerifyReportRow -- the insert
+    // alone proves nothing.
+    VerifyReportRow(std::make_shared<ReportDelivery>(ReportDelivery{
+        player->GetGUID(), accountId, player->GetName(), now, text, critical, 0}));
     return true;
 }
 
@@ -865,6 +948,19 @@ public:
     }
 };
 
+// Ticks the readback processor that confirms report inserts actually landed
+// (see VerifyReportRow).
+class SupportReportDelivery : public WorldScript
+{
+public:
+    SupportReportDelivery() : WorldScript("LivingGearSupportReportDelivery") { }
+
+    void OnUpdate(uint32 /*diff*/) override
+    {
+        ReportQueryProcessor().ProcessReadyCallbacks();
+    }
+};
+
 } // namespace LivingGearSupport
 
 // Addon-command entry point, called by the dispatcher in LivingGear.cpp.
@@ -999,4 +1095,5 @@ void AddSC_LivingGearSupport()
     new LivingGearSupport::SupportKillXp();
     new LivingGearSupport::SupportLoot();
     new LivingGearSupport::SupportCommands();
+    new LivingGearSupport::SupportReportDelivery();
 }
