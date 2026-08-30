@@ -19,7 +19,7 @@ use util::R;
 const VERSION: &str = env!("BONESAW_VERSION");
 
 fn main() {
-    let ui = Ui::create();
+    let ui = Ui::create(VERSION);
     let worker = ui.clone();
     std::thread::spawn(move || {
         if let Err(e) = run(&worker) {

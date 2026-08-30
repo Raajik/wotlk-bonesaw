@@ -1,6 +1,11 @@
 //! A small native Win32 progress window. No GUI framework: one window class,
 //! one double-buffered WM_PAINT, and a shared state struct the worker thread
 //! updates. Everything the player sees during a launch is drawn here.
+//!
+//! The look is lifted from assets/bonesaw.ico: a charcoal disc, a white steel
+//! sawblade and deep blood. The blade in the header is drawn here rather than
+//! blitted from the icon so it can turn -- slowly while the launcher idles,
+//! and visibly faster whenever something is actually downloading.
 
 use std::sync::{Arc, Mutex};
 use windows_sys::core::PCWSTR;
@@ -10,16 +15,20 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const W: i32 = 512;
-const H: i32 = 341;
+const H: i32 = 352;
 
 // COLORREF is 0x00BBGGRR.
-const BG: COLORREF = 0x000A0E0A;
-const GREEN: COLORREF = 0x004AD93F;
-const GREEN_DIM: COLORREF = 0x002E7A28;
-const TEXT: COLORREF = 0x00D8E8D8;
-const TEXT_DIM: COLORREF = 0x00708070;
-const TRACK: COLORREF = 0x0018220E;
-const RULE: COLORREF = 0x001E2A1E;
+const BG: COLORREF = 0x00141113; // near-black with a plum hint
+const BLADE_BG: COLORREF = 0x001A1518; // inside the blade ring
+const BLOOD: COLORREF = 0x001C169E; // arterial red, the accent
+const BLOOD_DEEP: COLORREF = 0x0001016E; // the icon's own blood, top edge
+const BLOOD_HOT: COLORREF = 0x002C40D8; // bright red: hover, percent, bar edge
+const STEEL: COLORREF = 0x00F0F2F2; // blade teeth, straight from the icon
+const BONE: COLORREF = 0x00D2DEE4; // primary text, warm bone white
+const BONE_DIM: COLORREF = 0x007E888F; // secondary text
+const TRACK: COLORREF = 0x0019171E; // progress track
+const RULE: COLORREF = 0x00242127;
+const FRAME: COLORREF = 0x0027242A;
 
 const WM_UI_REFRESH: u32 = WM_APP + 1;
 
@@ -29,6 +38,8 @@ struct State {
     file: String,
     percent: Option<f64>,
     hover_close: bool,
+    spin: f64, // blade angle, degrees
+    version: String,
 }
 
 #[derive(Clone)]
@@ -45,9 +56,10 @@ unsafe impl Sync for Ui {}
 static mut STATE_PTR: *const Mutex<State> = std::ptr::null();
 
 impl Ui {
-    pub fn create() -> Ui {
+    pub fn create(version: &str) -> Ui {
         let state = Arc::new(Mutex::new(State {
             status: "Starting...".into(),
+            version: version.to_string(),
             ..Default::default()
         }));
         unsafe {
@@ -171,6 +183,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             InvalidateRect(hwnd, std::ptr::null(), 0);
             0
         }
+        WM_CREATE => {
+            // The blade never stops turning; the timer drives it at ~30 fps.
+            SetTimer(hwnd, 1, 33, None);
+            0
+        }
+        WM_TIMER => {
+            if let Some(st) = state() {
+                let mut s = st.lock().unwrap();
+                // Chewing on a download turns the blade much faster.
+                let speed = if s.percent.is_some() { 7.0 } else { 1.6 };
+                s.spin = (s.spin + speed) % 360.0;
+                drop(s);
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            0
+        }
         WM_PAINT => {
             paint(hwnd);
             0
@@ -185,7 +213,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             ScreenToClient(hwnd, &mut pt);
             if in_close_box(pt.x, pt.y) {
                 HTCLIENT as LRESULT
-            } else if pt.y < 96 {
+            } else if pt.y < 100 {
                 HTCAPTION as LRESULT
             } else {
                 HTCLIENT as LRESULT
@@ -218,6 +246,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_DESTROY => {
+            KillTimer(hwnd, 1);
             PostQuitMessage(0);
             0
         }
@@ -270,6 +299,154 @@ unsafe fn fill(dc: HDC, x: i32, y: i32, w: i32, h: i32, color: COLORREF) {
     DeleteObject(b as _);
 }
 
+/// Filled shape with no outline: NULL_PEN in, brush in, both restored.
+unsafe fn fill_shape(dc: HDC, pts: &[POINT], color: COLORREF) {
+    let b = CreateSolidBrush(color);
+    let open_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    let open_brush = SelectObject(dc, b as _);
+    Polygon(dc, pts.as_ptr(), pts.len() as i32);
+    SelectObject(dc, open_pen);
+    SelectObject(dc, open_brush);
+    DeleteObject(b as _);
+}
+
+unsafe fn fill_disc(dc: HDC, cx: i32, cy: i32, r: f64, color: COLORREF) {
+    let b = CreateSolidBrush(color);
+    let open_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    let open_brush = SelectObject(dc, b as _);
+    let ri = r.round() as i32;
+    Ellipse(dc, cx - ri, cy - ri, cx + ri, cy + ri);
+    SelectObject(dc, open_pen);
+    SelectObject(dc, open_brush);
+    DeleteObject(b as _);
+}
+
+unsafe fn fill_ellipse(dc: HDC, x0: i32, y0: i32, x1: i32, y1: i32, color: COLORREF) {
+    let b = CreateSolidBrush(color);
+    let open_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    let open_brush = SelectObject(dc, b as _);
+    Ellipse(dc, x0, y0, x1, y1);
+    SelectObject(dc, open_pen);
+    SelectObject(dc, open_brush);
+    DeleteObject(b as _);
+}
+
+fn pt(cx: f64, cy: f64, r: f64, a: f64) -> POINT {
+    POINT {
+        x: (cx + r * a.cos()).round() as i32,
+        y: (cy + r * a.sin()).round() as i32,
+    }
+}
+
+/// The mark from the icon, redrawn as vector shapes so it can spin: a ring of
+/// steel teeth with a blood sector, bolt holes, and two drips falling from the
+/// underside. `spin_deg` is the blade angle.
+unsafe fn blade(mem: HDC, cx: i32, cy: i32, spin_deg: f64) {
+    let cx = cx as f64;
+    let cy = cy as f64;
+    let r_out = 27.0; // tooth tips
+    let r_in = 20.0; // gullets
+    let r_hole = 12.5; // bolt-hole ring
+    let a0 = spin_deg.to_radians();
+
+    // Ten teeth; the gullets are the chords between them.
+    let teeth = 10;
+    let span = std::f64::consts::TAU / teeth as f64;
+    let mut pts: Vec<POINT> = Vec::with_capacity(teeth * 4);
+    for k in 0..teeth {
+        let base = a0 + k as f64 * span;
+        for (t, r) in [(0.0, r_in), (0.32, r_out), (0.62, r_out), (1.0, r_in)] {
+            pts.push(pt(cx, cy, r, base + t * span));
+        }
+    }
+    fill_shape(mem, &pts, STEEL);
+
+    // One arc of blood riding the ring, like the icon's stained edge.
+    let sweep = 100.0_f64.to_radians();
+    let steps = 16;
+    let mut seg: Vec<POINT> = Vec::with_capacity(steps * 2 + 2);
+    for i in 0..=steps {
+        seg.push(pt(cx, cy, r_out, a0 + sweep * i as f64 / steps as f64));
+    }
+    for i in (0..=steps).rev() {
+        seg.push(pt(cx, cy, r_in, a0 + sweep * i as f64 / steps as f64));
+    }
+    fill_shape(mem, &seg, BLOOD);
+
+    // Hollow the middle back out, then the hub and the bolt holes.
+    fill_disc(mem, cx.round() as i32, cy.round() as i32, r_in - 2.0, BLADE_BG);
+    fill_disc(mem, cx.round() as i32, cy.round() as i32, 5.5, BONE);
+    let holes = 3;
+    for k in 0..holes {
+        let a = a0 + k as f64 * std::f64::consts::TAU / holes as f64;
+        fill_disc(
+            mem,
+            (cx + r_hole * a.cos()).round() as i32,
+            (cy + r_hole * a.sin()).round() as i32,
+            2.4,
+            BLADE_BG,
+        );
+    }
+
+    // Two drips fall from the underside of the blade.
+    let bx = cx.round() as i32;
+    let by = (cy + r_out).round() as i32; // bottom of the blade
+    fill(mem, bx + 2, by, 2, 8, BLOOD);
+    fill_ellipse(mem, bx - 1, by + 7, bx + 7, by + 15, BLOOD);
+    fill(mem, bx - 13, by, 2, 5, BLOOD);
+    fill_ellipse(mem, bx - 16, by + 4, bx - 9, by + 11, BLOOD);
+}
+
+/// Sawtooth progress bar: the fill is cut into teeth along its top edge, with
+/// a hot leading edge like the side of the blade doing the cutting.
+unsafe fn saw_bar(mem: HDC, x0: i32, y0: i32, w: i32, h: i32, p: f64) {
+    fill(mem, x0, y0, w, h, TRACK);
+    let filled = (w as f64 * p).round() as i32;
+    if filled < 2 {
+        return;
+    }
+    let per = 14.0; // tooth pitch
+    let valley = 6.0; // tooth depth
+    let x0 = x0 as f64;
+    let y0 = y0 as f64;
+    let x1 = x0 + filled as f64;
+
+    let mut pts: Vec<POINT> = Vec::with_capacity(70);
+    pts.push(POINT {
+        x: x0 as i32,
+        y: (y0 + h as f64) as i32,
+    });
+    pts.push(POINT {
+        x: x0 as i32,
+        y: (y0 + valley) as i32,
+    });
+    // Top edge, left to right: ramp up to a peak, drop back into the valley.
+    let mut edge = x0;
+    while edge + per <= x1 {
+        pts.push(POINT {
+            x: (edge + per) as i32,
+            y: y0 as i32,
+        });
+        pts.push(POINT {
+            x: (edge + per) as i32,
+            y: (y0 + valley) as i32,
+        });
+        edge += per;
+    }
+    // The last, partial tooth rises with the same slope.
+    let frac = ((x1 - edge) / per).clamp(0.0, 1.0);
+    pts.push(POINT {
+        x: x1 as i32,
+        y: (y0 + valley * (1.0 - frac)) as i32,
+    });
+    pts.push(POINT {
+        x: x1 as i32,
+        y: (y0 + h as f64) as i32,
+    });
+    fill_shape(mem, &pts, BLOOD);
+    fill(mem, x1 as i32 - 2, y0 as i32, 2, h as i32, BLOOD_HOT);
+}
+
 unsafe fn text(dc: HDC, s: &str, x: i32, y: i32, w: i32, color: COLORREF, f: HFONT, flags: u32) {
     let old = SelectObject(dc, f as _);
     SetTextColor(dc, color);
@@ -290,63 +467,71 @@ unsafe fn paint(hwnd: HWND) {
     let mut ps: PAINTSTRUCT = std::mem::zeroed();
     let dc = BeginPaint(hwnd, &mut ps);
 
-    // Double buffered so the progress bar does not flicker.
+    // Double buffered so the turning blade does not flicker.
     let mem = CreateCompatibleDC(dc);
     let bmp = CreateCompatibleBitmap(dc, W, H);
     let old_bmp = SelectObject(mem, bmp as _);
 
-    let (status, file, percent, hover) = match state() {
+    let (status, file, percent, hover, spin, version) = match state() {
         Some(st) => {
             let s = st.lock().unwrap();
-            (s.status.clone(), s.file.clone(), s.percent, s.hover_close)
+            (
+                s.status.clone(),
+                s.file.clone(),
+                s.percent,
+                s.hover_close,
+                s.spin,
+                s.version.clone(),
+            )
         }
-        None => (String::new(), String::new(), None, false),
+        None => (String::new(), String::new(), None, false, 0.0, String::new()),
     };
 
     fill(mem, 0, 0, W, H, BG);
-    fill(mem, 0, 0, W, 1, GREEN_DIM);
-    fill(mem, 0, H - 1, W, 1, GREEN_DIM);
-    fill(mem, 0, 0, 1, H, GREEN_DIM);
-    fill(mem, W - 1, 0, 1, H, GREEN_DIM);
+    fill(mem, 0, 0, W, 1, FRAME);
+    fill(mem, 0, H - 1, W, 1, FRAME);
+    fill(mem, 0, 0, 1, H, FRAME);
+    fill(mem, W - 1, 0, 1, H, FRAME);
+    fill(mem, 0, 0, W, 2, BLOOD_DEEP);
 
-    let pen = CreatePen(PS_SOLID, 2, GREEN);
-    let brush = CreateSolidBrush(TRACK);
-    let op = SelectObject(mem, pen as _);
-    let ob = SelectObject(mem, brush as _);
-    Ellipse(mem, 24, 22, 68, 66);
-    SelectObject(mem, op);
-    SelectObject(mem, ob);
-    DeleteObject(pen as _);
-    DeleteObject(brush as _);
+    blade(mem, 46, 46, spin);
 
-    let f_mark = font(24, true, "Segoe UI");
     let f_title = font(28, true, "Segoe UI");
-    let f_sub = font(11, false, "Segoe UI");
+    let f_sub = font(11, true, "Segoe UI");
     let f_body = font(15, false, "Segoe UI");
     let f_small = font(13, false, "Segoe UI");
     let f_foot = font(12, false, "Segoe UI");
     let f_close = font(18, false, "Segoe UI");
 
-    text(mem, "B", 24, 31, 44, GREEN, f_mark, DT_CENTER | DT_SINGLELINE);
     text(
         mem,
         "BONESAW",
-        82,
-        22,
+        88,
+        20,
         320,
-        GREEN,
+        BONE,
         f_title,
         DT_LEFT | DT_SINGLELINE,
     );
     text(
         mem,
-        "L A U N C H E R",
-        84,
+        "CLIENT UPDATER",
+        90,
         58,
         320,
-        TEXT_DIM,
+        BLOOD,
         f_sub,
         DT_LEFT | DT_SINGLELINE,
+    );
+    text(
+        mem,
+        &format!("v{version}"),
+        W - 190,
+        26,
+        130,
+        BONE_DIM,
+        f_sub,
+        DT_RIGHT | DT_SINGLELINE,
     );
     text(
         mem,
@@ -354,30 +539,28 @@ unsafe fn paint(hwnd: HWND) {
         W - 44,
         12,
         32,
-        if hover { GREEN } else { TEXT_DIM },
+        if hover { BLOOD_HOT } else { BONE_DIM },
         f_close,
         DT_CENTER | DT_SINGLELINE,
     );
 
-    fill(mem, 24, 88, W - 48, 1, RULE);
+    fill(mem, 24, 100, W - 48, 1, RULE);
 
     text(
         mem,
         &status,
         24,
-        108,
+        118,
         W - 48,
-        TEXT,
+        BONE,
         f_body,
         DT_LEFT | DT_SINGLELINE,
     );
 
-    fill(mem, 24, 140, W - 48, 14, TRACK);
     if let Some(p) = percent {
-        let w = (((W - 48) as f64) * p).round() as i32;
-        if w > 0 {
-            fill(mem, 24, 140, w, 14, GREEN);
-        }
+        saw_bar(mem, 24, 148, W - 48, 18, p);
+    } else {
+        fill(mem, 24, 148, W - 48, 18, TRACK);
     }
 
     if !file.is_empty() {
@@ -385,9 +568,9 @@ unsafe fn paint(hwnd: HWND) {
             mem,
             &file,
             24,
-            166,
+            176,
             W - 140,
-            TEXT_DIM,
+            BONE_DIM,
             f_small,
             DT_LEFT | DT_SINGLELINE,
         );
@@ -397,9 +580,9 @@ unsafe fn paint(hwnd: HWND) {
                 mem,
                 &pct,
                 W - 120,
-                166,
+                176,
                 96,
-                GREEN,
+                BLOOD_HOT,
                 f_small,
                 DT_RIGHT | DT_SINGLELINE,
             );
@@ -410,14 +593,14 @@ unsafe fn paint(hwnd: HWND) {
         mem,
         "Bonesaw  \u{00B7}  github.com/Raajik/wotlk-bonesaw",
         0,
-        H - 34,
+        H - 32,
         W,
-        TEXT_DIM,
+        BONE_DIM,
         f_foot,
         DT_CENTER | DT_SINGLELINE,
     );
 
-    for f in [f_mark, f_title, f_sub, f_body, f_small, f_foot, f_close] {
+    for f in [f_title, f_sub, f_body, f_small, f_foot, f_close] {
         DeleteObject(f as _);
     }
 
