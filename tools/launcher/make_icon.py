@@ -32,23 +32,24 @@ def rot(x: float, y: float, deg: float) -> tuple[float, float]:
 
 
 def saw_inside(lx: float, ly: float) -> bool:
-    """The saw silhouette (blade + teeth + grip + ring + drip), saw-local."""
-    if -24.0 <= lx <= 14.0 and -3.2 <= ly <= 4.2:
+    """The saw silhouette (blade + teeth + grip + ring + drip), saw-local,
+    scaled so the ring's outer edge (34.6) stays inside the r=36 disc."""
+    if -21.1 <= lx <= 12.3 and -2.8 <= ly <= 3.7:
         return True
-    if -23.0 <= lx <= 14.0 and -6.4 <= ly < -3.2:
-        tw = 34.0 / 8.0
-        k = int((lx + 23.0) // tw)
-        bx = -23.0 + k * tw
-        frac = (ly + 6.4) / 3.2
+    if -20.2 <= lx <= 12.3 and -5.6 <= ly < -2.8:
+        tw = 29.4 / 8.0
+        k = int((lx + 21.1) // tw)
+        bx = -21.1 + k * tw
+        frac = (ly + 5.6) / 2.8
         half = (tw / 2.0) * frac
         if abs(lx - (bx + tw / 2.0)) <= half:
             return True
-    if 14.0 <= lx <= 30.0 and abs(ly) <= 3.4:
+    if 12.3 <= lx <= 26.4 and abs(ly) <= 3.0:
         return True
-    if math.hypot(lx - 33.0, ly) <= 4.6:
+    if math.hypot(lx - 29.0, ly) <= 5.6:
         return True
-    if (abs(lx - 2.0) <= 1.1 and 4.0 <= ly <= 9.0) or (
-        (lx - 2.0) ** 2 + ((ly - 11.5) * 1.3) ** 2 <= 9.0
+    if (abs(lx - 1.8) <= 1.0 and 3.5 <= ly <= 7.9) or (
+        (lx - 1.8) ** 2 + ((ly - 10.1) * 1.3) ** 2 <= 8.0
     ):
         return True
     return False

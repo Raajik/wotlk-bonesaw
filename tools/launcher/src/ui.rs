@@ -479,33 +479,33 @@ unsafe fn bonesaw_x(mem: HDC, cx: i32, cy: i32, phase: f64) {
     };
 
     // Blade: bottom edge out, toothed top edge back, closed.
-    let mut p: Vec<POINT> = vec![sp(-24.0, 4.2), sp(14.0, 4.2), sp(14.0, -3.2)];
+    let mut p: Vec<POINT> = vec![sp(-21.1, 3.8), sp(12.6, 3.8), sp(12.6, -2.8)];
     let teeth = 8;
-    let tw = 34.0 / teeth as f64;
+    let tw = 29.4 / teeth as f64;
     for i in (0..teeth).rev() {
-        let bx = -23.0 + i as f64 * tw;
-        p.push(sp(bx + tw * 0.5, -6.4));
-        p.push(sp(bx, -3.2));
+        let bx = -20.2 + i as f64 * tw;
+        p.push(sp(bx + tw * 0.5, -5.8));
+        p.push(sp(bx, -2.8));
     }
-    p.push(sp(-24.0, 4.2));
+    p.push(sp(-21.1, 3.8));
     stroke(mem, &p, STEEL, 2);
 
     // Grip and the ring at its end.
-    let grip = [sp(14.0, -3.4), sp(30.0, -3.4), sp(30.0, 3.4), sp(14.0, 3.4), sp(14.0, -3.4)];
+    let grip = [sp(12.3, -3.0), sp(26.4, -3.0), sp(26.4, 3.0), sp(12.3, 3.0), sp(12.3, -3.0)];
     stroke(mem, &grip, STEEL, 2);
     let mut ring_pts: Vec<POINT> = Vec::with_capacity(21);
     for i in 0..=20 {
         let a = std::f64::consts::TAU * i as f64 / 20.0;
-        ring_pts.push(sp(33.0 + 4.6 * a.cos(), 4.6 * a.sin()));
+        ring_pts.push(sp(29.0 + 5.6 * a.cos(), 5.6 * a.sin()));
     }
     stroke(mem, &ring_pts, STEEL, 2);
 
     // Drip: a short run off the low edge and a hanging drop, outlined.
-    line(mem, sp(2.0, 5.0), sp(2.0, 9.0), STEEL, 2);
+    line(mem, sp(1.8, 3.6), sp(1.8, 7.9), STEEL, 2);
     let mut e: Vec<POINT> = Vec::with_capacity(17);
     for i in 0..=16 {
         let a = std::f64::consts::TAU * i as f64 / 16.0;
-        e.push(sp(2.0 + 3.0 * a.cos(), 11.5 + 3.4 * a.sin()));
+        e.push(sp(1.8 + 2.7 * a.cos(), 10.1 + 2.9 * a.sin()));
     }
     stroke(mem, &e, STEEL, 2);
 }
