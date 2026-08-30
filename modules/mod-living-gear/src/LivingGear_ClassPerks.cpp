@@ -5151,9 +5151,12 @@ void TryPaladinProtOnCast(Player* player, Spell* spell)
         if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
             if (p->HasSpell(spellId))
             {
-                // needSendToClient=true: without the SMSG_SPELL_COOLDOWN the
-                // client still displayed whatever the engine's 30s packet said
-                // (AddSpellCooldown defaults to false and sends nothing).
+                // Report #207: the 6s server state is correct (verified by the
+                // log line below), but the client kept displaying the engine's
+                // 30s category entry from the cast packet. Wipe the client's
+                // stale entry first, then re-arm -- otherwise the icon shows
+                // 30s while the server is already ready.
+                p->SendClearCooldown(spellId, p);
                 p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS, true);
                 // Report #187: the 30s cooldown came back anyway. Log the
                 // cooldown state 1ms after the override lands so the next
