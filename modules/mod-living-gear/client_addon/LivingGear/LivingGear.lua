@@ -7708,13 +7708,18 @@ end
 
 function ReportUI.SetKind(idx)
     ReportUI.kind = idx
-    for i = 1, #REPORT_KINDS do
+    -- Kind list lives on ReportUI.KINDS since the main-chunk-local trim;
+    -- the old REPORT_KINDS global is gone and #nil crashed every open and
+    -- every Type click. StyleBtnColor takes a color TABLE, not r,g,b (the
+    -- old r,g,b call here indexed a number -- the crash moved one line down
+    -- once the loop bound was fixed, so both are fixed together).
+    for i = 1, #ReportUI.KINDS do
         local btn = ReportUI.kindBtns[i]
         if btn then
             if i == idx then
                 StyleBtnColor(btn, COLOR_ON)
             else
-                StyleBtnColor(btn, COLOR_BTN[1], COLOR_BTN[2], COLOR_BTN[3])
+                StyleBtnColor(btn, COLOR_BTN)
             end
         end
     end
