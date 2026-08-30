@@ -7921,7 +7921,7 @@ function ReportUI.Build()
         local origInsert = ChatEdit_InsertLink
         ChatEdit_InsertLink = function(text, ...)
             if ReportUI.frame and ReportUI.frame:IsShown()
-                and ReportUI.body and ReportUI.body:IsFocused() then
+                and ReportUI.body and ReportUI.body:HasFocus() then
                 ReportUI.body:Insert(text)
                 return true
             end
