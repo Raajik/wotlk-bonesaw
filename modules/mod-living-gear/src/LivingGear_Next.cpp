@@ -52,6 +52,7 @@ namespace LivingGearNext
 {
 uint32 const SPELL_CLASS_BUFFS = 910106;
 uint32 const SPELL_RIDING_SHARE = 910107;
+uint32 const SPELL_COLD_WEATHER_FLYING = 54197;
 uint32 const SPELL_AUTO_ACCEPT = 910108;
 uint32 const SPELL_AUTOLOOT = 910008;
 uint32 const SPELL_PALADIN_HOLY = 910069;
@@ -752,6 +753,13 @@ void NoteRiding(Player* player)
 // copying onto alts.
 bool IsCollectionSpell(uint32 spellId)
 {
+    // Cold Weather Flying (54197) is taught by Hira Snowdawn in Dalaran and is
+    // as account-wide as the riding skill itself is -- report #185. It is not
+    // a Mounts/Companions skill-line spell, so it joins the pool explicitly.
+    // The Tome of Cold Weather Flight (item 44221, spell 55097) teaches the
+    // same spell, so both purchase paths funnel into this one id.
+    if (spellId == SPELL_COLD_WEATHER_FLYING)
+        return true;
     SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
     for (auto itr = bounds.first; itr != bounds.second; ++itr)
         if (itr->second->SkillLine == SKILL_MOUNTS || itr->second->SkillLine == SKILL_COMPANIONS)
