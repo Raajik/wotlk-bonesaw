@@ -6505,10 +6505,6 @@ if LG2._origTradeSkillInfo then
         -- Headers have no reagents; asking about them returns nothing useful
         -- and would poison the cache.
         if name and skillType ~= "header" and GetTradeSkillNumReagents then
-            LG2._lastCraftDiag = { name = name, index = index,
-                numReagents = GetTradeSkillNumReagents(index),
-                reagentInfo = GetTradeSkillReagentInfo,
-                reagentLink = GetTradeSkillReagentItemLink }
             local ok, n = pcall(LG2.CraftableWithVault, index,
                 GetTradeSkillNumReagents(index), GetTradeSkillReagentInfo)
             if ok and n and n > (numAvailable or 0) then
@@ -6519,16 +6515,45 @@ if LG2._origTradeSkillInfo then
     end
 end
 
+-- Report #197: the diag used to capture whatever recipe the UI last QUERIED
+-- (GetTradeSkillInfo fires for every list redraw), so a craft-all of Heavy
+-- Runecloth Bandage reported "Anti-Venom (index 13)". Capture at the actual
+-- craft call: the index passed to DoTradeSkill/DoCraft IS what the server is
+-- asked to make.
+LG2._origDoTradeSkill = DoTradeSkill
+if LG2._origDoTradeSkill then
+    DoTradeSkill = function(index, repeatCount)
+        if index and GetTradeSkillNumReagents then
+            local name = LG2._origTradeSkillInfo and LG2._origTradeSkillInfo(index) or nil
+            LG2._lastCraftDiag = { name = name, index = index,
+                numReagents = GetTradeSkillNumReagents(index),
+                reagentInfo = GetTradeSkillReagentInfo,
+                reagentLink = GetTradeSkillReagentItemLink }
+        end
+        return LG2._origDoTradeSkill(index, repeatCount)
+    end
+end
+
+LG2._origDoCraft = DoCraft
+if LG2._origDoCraft then
+    DoCraft = function(index, repeatCount)
+        if index and GetCraftNumReagents then
+            local name = LG2._origCraftInfo and LG2._origCraftInfo(index) or nil
+            LG2._lastCraftDiag = { name = name, index = index,
+                numReagents = GetCraftNumReagents(index),
+                reagentInfo = GetCraftReagentInfo,
+                reagentLink = GetCraftReagentItemLink }
+        end
+        return LG2._origDoCraft(index, repeatCount)
+    end
+end
+
 LG2._origCraftInfo = GetCraftInfo
 if LG2._origCraftInfo then
     GetCraftInfo = function(index)
         local name, subName, craftType, numAvailable, isExpanded, cost, level =
             LG2._origCraftInfo(index)
         if name and craftType ~= "header" and GetCraftNumReagents then
-            LG2._lastCraftDiag = { name = name, index = index,
-                numReagents = GetCraftNumReagents(index),
-                reagentInfo = GetCraftReagentInfo,
-                reagentLink = GetCraftReagentItemLink }
             local ok, n = pcall(LG2.CraftableWithVault, index,
                 GetCraftNumReagents(index), GetCraftReagentInfo)
             if ok and n and n > (numAvailable or 0) then
