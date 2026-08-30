@@ -4391,7 +4391,11 @@ void TickDruidBalanceInsectContagion(Player* player, TickState& st, uint32 diff)
             if (!target->IsWithinDist(carrier, float(DRUID_BALANCE_INSECT_RANGE)))
                 continue;
             ++spread;
-            player->CastSpell(target, swarm, true);
+            // Report #156 parity: cast BY the carrier so the swarm visibly
+            // creeps bug to bug; originalCaster stays the druid so swarmOn
+            // (caster-guid keyed) keeps recognizing the fresh carriers.
+            carrier->CastSpell(target, swarm, true, nullptr, nullptr,
+                player->GetGUID());
             break; // one fresh application per clean target is enough
         }
     }
