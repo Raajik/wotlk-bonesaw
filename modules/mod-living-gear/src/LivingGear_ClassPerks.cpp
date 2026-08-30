@@ -3689,7 +3689,14 @@ void TickWarlockAffliction(Player* player, TickState& st, uint32 diff)
                 if (!target->HasAura(id, player->GetGUID()))
                 {
                     ++spread;
-                    player->CastSpell(target, id, true);
+                    // Report #156: the new infection is cast BY the carrier so
+                    // the plague visibly creeps mob to mob instead of streaming
+                    // out of the warlock. originalCaster stays the warlock --
+                    // the aura must keep the player's GUID or dotsOn() stops
+                    // seeing it as a carrier next tick and the haste/damage
+                    // multiplier (which keys off the owning player) falls off.
+                    carrier.unit->CastSpell(target, id, true, nullptr, nullptr,
+                        player->GetGUID());
                 }
         }
     }
