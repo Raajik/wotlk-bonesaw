@@ -130,27 +130,55 @@ fn unprotect(blob: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Types into whatever has keyboard focus -- the caller has just brought the
-/// Wow login screen to the front. Both fields are cleared first: 3.3.5
-/// remembers the last account name via Config.wtf and pre-fills it, and the
-/// typed account would otherwise append to what is already there.
-pub fn type_login(account: &str, password: &str) {
-    thread::sleep(Duration::from_millis(1500)); // login screen finishing load
+/// Types the saved login into the Wow login screen. `hwnd` is the game
+/// window; typing only begins once it verifiably holds the keyboard focus.
+///
+/// The client pre-fills the account field from WTF/Config.wtf when the
+/// player ticked "remember account name", so the account keystrokes are
+/// skipped entirely in that case (`account_prefilled`) -- and with them, the
+/// fragile Tab hop from the account field: the login screen focuses the
+/// account field by default, one TAB lands in the password field, and the
+/// password is the only thing we type. When the account must be typed, both
+/// fields are cleared first (the client pre-fills the account name, and the
+/// typed account would otherwise append to what is already there).
+pub fn type_login(hwnd: isize, account: &str, password: &str, account_prefilled: bool) {
+    if !wait_foreground(hwnd, Duration::from_secs(3)) {
+        return; // not frontmost: type nothing rather than type somewhere else
+    }
+    // Login screen still finishing load after the window exists.
+    thread::sleep(Duration::from_millis(if account_prefilled { 1200 } else { 1500 }));
 
-    clear_field();
-    for c in account.chars() {
-        type_char(c);
-        thread::sleep(Duration::from_millis(10));
+    if !account_prefilled {
+        clear_field();
+        for c in account.chars() {
+            type_char(c);
+            thread::sleep(Duration::from_millis(10));
+        }
     }
     press(VK_TAB);
     thread::sleep(Duration::from_millis(150));
-
-    clear_field();
     for c in password.chars() {
         type_char(c);
         thread::sleep(Duration::from_millis(10));
     }
+    thread::sleep(Duration::from_millis(50));
     press(VK_RETURN);
+}
+
+/// True once the game window really owns the keyboard. Typing into a window
+/// that lost the foreground race would put a password somewhere else.
+fn wait_foreground(hwnd: isize, timeout: Duration) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        unsafe {
+            if GetForegroundWindow() == hwnd as _ {
+                return true;
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
 }
 
 fn clear_field() {

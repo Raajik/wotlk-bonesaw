@@ -195,7 +195,12 @@ fn launch(client: &Path) -> R<()> {
         Some(hwnd) => {
             login::focus(hwnd);
             if let Some((account, password)) = login::load(client) {
-                login::type_login(&account, &password);
+                // The client pre-fills the account field from Config.wtf when
+                // "remember name" is ticked; typing over it is both redundant
+                // and how the password once landed in the account field.
+                let prefilled =
+                    login::saved_account_name(client).as_deref() == Some(account.as_str());
+                login::type_login(hwnd, &account, &password, prefilled);
                 log("typed saved login into the Wow login screen");
             }
         }
