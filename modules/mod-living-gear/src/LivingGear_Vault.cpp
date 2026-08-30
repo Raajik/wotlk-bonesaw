@@ -23,6 +23,8 @@
 #include "DBCStores.h"
 #include "Group.h"
 #include "Item.h"
+#include "SpellInfo.h"
+#include "WorldSessionMgr.h"
 #include "ItemTemplate.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -156,9 +158,38 @@ void DetectAccountKeySchema()
         g_hasAccountKeyTable = (*tables)[0].Get<uint64>() > 0;
 }
 
+uint32 VaultCount(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEntry);
+void BroadcastVaultLine(uint32 accountId, uint32 itemEntry);
+
 void SendLine(Player* player, std::string const& line)
 {
     ::LivingGear_SendAddonLine(player, line);
+}
+
+// Broadcast one VLT| line to every online character of the account.
+//
+// Bug report #178 (recurring; also #137): the reagent vault is account-wide,
+// but every VLT| sync line was sent only to the player who caused the
+// change. A second character on the same account (a playerbot crafting
+// First Aid, say) can drain the vault while someone else is online, and
+// that client's db.vault keeps the pre-craft counts -- the profession
+// window keeps saying "enough to make 124" while the server truthfully
+// answers "missing reagent: runecloth" on every cast. The counts only
+// corrected themselves on relog.
+//
+// Only the reagent vault is broadcast: it is the kind with owner 0 that
+// every character of the account shares. The quest vault is per-owner, and
+// its callers already know exactly which player to update.
+void BroadcastVaultLine(uint32 accountId, uint32 itemEntry)
+{
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemEntry);
+    if (!proto)
+        return;
+    std::string const line = Acore::StringFormat("VLT|{}|{}|{}|{}",
+        uint32(VAULT_REAGENT), itemEntry, VaultCount(accountId, 0, VAULT_REAGENT, itemEntry), proto->Name1);
+    for (auto const& [guid, session] : sWorldSessionMgr->GetAllSessions())
+        if (session && session->GetPlayer() && session->GetAccountId() == accountId)
+            SendLine(session->GetPlayer(), line);
 }
 
 void LoadVault(uint32 accountId)
@@ -249,6 +280,8 @@ void VaultAdd(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEntry, 
         "INSERT INTO `lg_vault` (`account_id`, `owner_guid`, `kind`, `item_entry`, `item_count`) "
         "VALUES ({}, {}, {}, {}, {}) ON DUPLICATE KEY UPDATE `item_count` = `item_count` + {}",
         accountId, ownerGuid, kind, itemEntry, count, count);
+    if (kind == VAULT_REAGENT && ownerGuid == 0)
+        BroadcastVaultLine(accountId, itemEntry);
 }
 
 // Removes up to `count` from the vault, capped to what's actually there.
@@ -268,6 +301,8 @@ uint32 VaultRemove(uint32 accountId, uint32 ownerGuid, uint8 kind, uint32 itemEn
         "UPDATE `lg_vault` SET `item_count` = `item_count` - {} "
         "WHERE `account_id` = {} AND `owner_guid` = {} AND `kind` = {} AND `item_entry` = {}",
         take, accountId, ownerGuid, kind, itemEntry);
+    if (kind == VAULT_REAGENT && ownerGuid == 0)
+        BroadcastVaultLine(accountId, itemEntry);
     return take;
 }
 
