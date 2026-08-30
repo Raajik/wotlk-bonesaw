@@ -5125,16 +5125,30 @@ void TryPaladinProtOnCast(Player* player, Spell* spell)
     // entry), then a 6s cooldown is applied in the same deferred tick so the
     // pacing the report asks for is real and not just a free button.
     ClearCooldownAfterCast(player, info->Id, info->GetCategory());
+    LOG_INFO("module.livinggear",
+        "avenger shield: cast {} (category {}) by {} -- scheduling deferred 30s clear + 6s",
+        info->Id, info->GetCategory(), player->GetName());
     ObjectGuid const playerGuid = player->GetGUID();
     uint32 const spellId = info->Id;
     player->m_Events.AddEventAtOffset([playerGuid, spellId]()
     {
         if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
             if (p->HasSpell(spellId))
+            {
                 // needSendToClient=true: without the SMSG_SPELL_COOLDOWN the
                 // client still displayed whatever the engine's 30s packet said
                 // (AddSpellCooldown defaults to false and sends nothing).
                 p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS, true);
+                // Report #187: the 30s cooldown came back anyway. Log the
+                // cooldown state 1ms after the override lands so the next
+                // re-report tells us whether something re-writes it later.
+                auto const& cds = p->GetSpellCooldownMap();
+                for (auto const& [cdSpell, cd] : cds)
+                    if (cdSpell == spellId || cd.category)
+                        LOG_INFO("module.livinggear",
+                            "avenger shield: cooldown after override -- spell {} end {} category {} maxduration {}",
+                            cdSpell, cd.end, cd.category, cd.maxduration);
+            }
     }, std::chrono::milliseconds(1));
     ScheduleAvengerBounces(player, spell);
 }
