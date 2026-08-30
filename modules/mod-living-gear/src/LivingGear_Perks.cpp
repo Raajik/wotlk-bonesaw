@@ -1214,8 +1214,16 @@ uint32 EffectiveCreatureLevel(Creature const* creature, Player* viewer)
     bool const dungeon = !openWorld && g_cfg.dungeonScale && ScalableDungeon(viewer);
     if (!openWorld && !dungeon)
         return 0;
+    // Pets/totems/guardians/summons are excluded -- but only PLAYER-owned
+    // ones (report #190): an enemy caster's pet or guardian is part of the
+    // fight and should scale with its master, or you meet a level 58 mob
+    // with a level 30 pet. A pet owned by another PLAYER is somebody's
+    // character and never scales.
     if (creature->IsPet() || creature->IsTotem() || creature->IsGuardian() || creature->IsSummon())
-        return 0;
+    {
+        if (!creature->GetCharmerOrOwnerGUID() || creature->GetCharmerOrOwnerGUID().IsPlayer())
+            return 0;
+    }
     if (CreatureTemplate const* tmpl = creature->GetCreatureTemplate())
         if (tmpl->type == CREATURE_TYPE_CRITTER)
             return 0;
