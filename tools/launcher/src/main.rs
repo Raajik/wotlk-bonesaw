@@ -181,6 +181,13 @@ fn launch(client: &Path) -> R<()> {
     if !wow.is_file() {
         return Err("Wow.exe is missing from this folder.".into());
     }
+    // Pre-fill the account field before Wow reads Config.wtf: the launcher
+    // writes SET accountName itself, so it never types into that field.
+    if let Some((account, _)) = login::load(client) {
+        if !login::ensure_account_prefilled(client, &account) {
+            log("could not write the account name into Config.wtf; the account field pre-fills only if the client already remembers it");
+        }
+    }
     let child = std::process::Command::new(&wow)
         .current_dir(client)
         .spawn()
@@ -194,14 +201,15 @@ fn launch(client: &Path) -> R<()> {
     match login::wait_for_window(child.id(), login::WINDOW_TIMEOUT) {
         Some(hwnd) => {
             login::focus(hwnd);
-            if let Some((account, password)) = login::load(client) {
-                // The client pre-fills the account field from Config.wtf when
-                // "remember name" is ticked; typing over it is both redundant
-                // and how the password once landed in the account field.
-                let prefilled =
-                    login::saved_account_name(client).as_deref() == Some(account.as_str());
-                login::type_login(hwnd, &account, &password, prefilled);
-                log("typed saved login into the Wow login screen");
+            if let Some((_, password)) = login::load(client) {
+                // The launcher never types into the game: the account field
+                // is pre-filled by the client itself (Config.wtf, written
+                // before Wow.exe starts) and the password rides one clipboard
+                // paste. A dropped paste leaves the box empty for a manual
+                // login -- the password can no longer land in the account
+                // field, because nothing ever targets that field.
+                login::paste_login(hwnd, &password);
+                log("pasted saved password into the Wow login screen");
             }
         }
         None => log("Wow window did not appear in time; no focus or auto-login"),
