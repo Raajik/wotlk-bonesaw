@@ -1,0 +1,31 @@
+Dalaran flight rejection diagnostics (report #218, SpellInfo.cpp half).
+
+Touches: src/server/game/Spells/SpellInfo.cpp -- SpellInfo::CheckLocation's
+SPELL_ATTR4_ONLY_FLYING_AREAS branch now LOG_INFOs spell id, area id, zone id,
+AreaTable flags and the IsFlyable() verdict right before returning
+SPELL_FAILED_INCORRECT_AREA. This file is not tracked in this repo; the
+companion Spell::CheckCast instrumentation (no-fly NOT_HERE path) is committed
+on Playerbot and the pair makes the next Dalaran mount test decidable: if
+neither line appears in Server.log, the client rejected the cast locally and
+no packet reached the server.
+
+Verified before instrumenting: the server-side AreaTable correction
+(b793974dc, clears AREA_FLAG_NO_FLY_ZONE across the Dalaran 4395 tree) and the
+client-side patch-Y AreaTable.dbc (19495fc47; staging DBFilesClient/AreaTable.dbc
+has ZERO map-571 rows carrying the no-fly flag) are both present, yet a
+post-0.1.119 in-game mount attempt was still refused with
+"You can't use that here."
+
+diff --git a/src/server/game/Spells/SpellInfo.cpp b/src/server/game/Spells/SpellInfo.cpp
+--- a/src/server/game/Spells/SpellInfo.cpp
++++ b/src/server/game/Spells/SpellInfo.cpp
+@@ -1537,6 +1537,9 @@
+ 
+         if (!areaEntry || !areaEntry->IsFlyable() || (strict && (areaEntry->flags & AREA_FLAG_NO_FLY_ZONE) != 0) || !player->canFlyInZone(map_id, zone_id, this))
+         {
++            // Report #218 diagnostics: see the twin counter in Spell::CheckCast (FLY aura case).
++            LOG_INFO("spells", "fly-area cast refused: spell {} area {} zone {} flags {} flyable {}",
++                Id, area_id, zone_id, areaEntry ? areaEntry->flags : 0u, areaEntry ? areaEntry->IsFlyable() : false);
+             return SPELL_FAILED_INCORRECT_AREA;
+         }
+     }
