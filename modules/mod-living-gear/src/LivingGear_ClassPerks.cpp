@@ -5627,9 +5627,16 @@ public:
                 break;
         }
 
-        if (!isTankSpec)
+        if (isTankSpec)
+        {
+            threat *= 100.0f;
             return;
-        threat *= 100.0f;
+        }
+
+        // Report #211: everyone else generates 99% less threat, so dps and
+        // healers stop ripping mobs off the tank the moment burst damage or
+        // a big heal lands. Tank specs above keep their x100.
+        threat *= 0.01f;
     }
 
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
