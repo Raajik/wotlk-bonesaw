@@ -6537,8 +6537,8 @@ if LG2._origDoTradeSkill then
         end
         if index and numReagents and LG2.StageVaultCraft
             and LG2.StageVaultCraft(index, numReagents, GetTradeSkillReagentInfo,
-                GetTradeSkillReagentItemLink, repeatCount, LG2._origDoTradeSkill) then
-            return -- shortfall staged out of the vault; the retry fires the craft
+                GetTradeSkillReagentItemLink, repeatCount, GetTradeSkillItemLink) then
+            return -- the server is crafting it straight from the vault
         end
         return LG2._origDoTradeSkill(index, repeatCount)
     end
@@ -6557,8 +6557,8 @@ if LG2._origDoCraft then
         end
         if index and numReagents and LG2.StageVaultCraft
             and LG2.StageVaultCraft(index, numReagents, GetCraftReagentInfo,
-                GetCraftReagentItemLink, repeatCount, LG2._origDoCraft) then
-            return
+                GetCraftReagentItemLink, repeatCount, GetCraftItemLink) then
+            return -- the server is crafting it straight from the vault
         end
         return LG2._origDoCraft(index, repeatCount)
     end
@@ -6578,7 +6578,7 @@ end
 -- and re-fires the craft the moment the withdrawal lands in the bags. A
 -- craft the bags can already pay for stages nothing; a craft that is short
 -- even with the vault stages nothing and lets the native refusal speak.
-function LG2.StageVaultCraft(index, numReagents, reagentInfo, reagentLink, repeatCount, castFn)
+function LG2.StageVaultCraft(index, numReagents, reagentInfo, reagentLink, repeatCount, itemLinkFn)
     if not (index and numReagents and numReagents > 0 and reagentInfo and reagentLink
         and LG2.RawItemCount and SendLine) then
         return false
@@ -6610,70 +6610,24 @@ function LG2.StageVaultCraft(index, numReagents, reagentInfo, reagentLink, repea
     if covered then
         return false -- bags pay in full; nothing to stage, craft normally
     end
-    local pending = { castFn = castFn, index = index, repeatCount = repeatCount,
-        need = need, at = GetTime(), started = GetTime(), tries = 0 }
-    LG2._pendingCraft = pending
-    LG2.TakeFromVaultFor(pending)
-    if not LG2._craftRetryFrame then
-        LG2._craftRetryFrame = CreateFrame("Frame")
-        LG2._craftRetryFrame:SetScript("OnUpdate", function() LG2.TickVaultCraft() end)
+    -- Report #219 (reopened): staging the shortfall into the backpack was
+    -- the old fix, and it defeats the entire point of the reagent bank --
+    -- nothing should ever have to ride in the bags. The server's own cast
+    -- gate already counts the vault (Spell::CheckItems) and pays
+    -- bags-then-vault in place, so ask the server to run the craft itself.
+    -- CRAFTCAST casts the recipe through the normal server path: nothing is
+    -- withdrawn, and the crafted item still lands in the bags like any
+    -- other craft. The recipe's spell id rides in its item link
+    -- (enchant:...).
+    local itemLink = itemLinkFn and itemLinkFn(index) or nil
+    local spellId = itemLink and tonumber(string.match(itemLink, "enchant:(%d+)")) or nil
+    if not spellId then
+        -- No spell id could be parsed: fall back to the native refusal
+        -- rather than staging reagents into the bags.
+        return false
     end
+    SendLine("CRAFTCAST|" .. tostring(spellId) .. "|" .. tostring(want))
     return true
-end
-
--- Send one TAKE per short reagent for exactly what is missing right now.
--- The server takes min(count, stock, one stack) per message, so a shortfall
--- wider than a stack re-runs this -- TickVaultCraft retries up to three
--- times as partial withdrawals land.
-function LG2.TakeFromVaultFor(pending)
-    for i = 1, #pending.need do
-        local r = pending.need[i]
-        local bags = tonumber(LG2.RawItemCount(r.id)) or 0
-        local short = r.total - bags
-        if short > 0 then
-            local vault = VaultCountOf(r.id) or 0
-            if vault > 0 then
-                SendLine("TAKE|2|" .. tostring(r.id) .. "|" .. tostring(math.min(short, vault)))
-            end
-        end
-    end
-end
-
--- Fires the queued craft as soon as the bags can pay its first craft; the
--- server pays the rest of a batch out of the vault in place (Spell::
--- TakeReagents). Re-TAKEs up to three times while partial withdrawals land,
--- and gives up with a plain-language reason instead of a silent nothing.
-function LG2.TickVaultCraft()
-    local pending = LG2._pendingCraft
-    if not pending then
-        return
-    end
-    local now = GetTime()
-    if now - pending.at < 0.30 then
-        return
-    end
-    local payable = true
-    for i = 1, #pending.need do
-        local r = pending.need[i]
-        if (tonumber(LG2.RawItemCount and LG2.RawItemCount(r.id)) or 0) < r.req then
-            payable = false
-            break
-        end
-    end
-    if payable and pending.castFn then
-        LG2._pendingCraft = nil
-        pcall(pending.castFn, pending.index, pending.repeatCount)
-        return
-    end
-    if now - pending.started > 6 or pending.tries >= 3 then
-        LG2._pendingCraft = nil
-        DEFAULT_CHAT_FRAME:AddMessage(
-            "|cffff3333[Reagent bank]|r could not stage reagents for that craft (bags full, or the vault ran short).")
-        return
-    end
-    pending.tries = pending.tries + 1
-    pending.at = now
-    LG2.TakeFromVaultFor(pending)
 end
 
 LG2._origCraftInfo = GetCraftInfo

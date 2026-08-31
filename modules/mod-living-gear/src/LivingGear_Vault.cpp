@@ -1701,6 +1701,63 @@ void DrainLegacyQuestVault(Player* player)
 // pulled out of the bank for no reason -- the exact behaviour the reagent
 // bank exists to prevent.
 
+// Report #219 (reopened): crafts whose reagents sit only in the account
+// reagent vault must run server-side and pay the vault DIRECTLY. The old
+// staging path pulled the shortfall into the backpack first -- exactly the
+// carrying-around the reagent bank exists to prevent. A CRAFTCAST runs the
+// recipe through the player's own normal cast path: the Spell::CheckItems
+// gate already counts the vault, and TakeReagents pays bags-then-vault in
+// place, so nothing is ever withdrawn into the bags. The crafted item still
+// lands in the bags like any other craft.
+//
+// Guards: the spell must be known to this character, create an item, and
+// actually list reagents, so the channel cannot become a generic "cast
+// anything" primitive. Batches are staggered (longer than a craft's cast
+// time) so each cast's reagent payment lands before the next one checks
+// stock -- that is what keeps a wide batch from overdrawing a thin vault.
+// A failed cast (stock ran dry) zeroes the batch so the staggered tail is
+// skipped instead of spamming refusals.
+std::unordered_map<uint32, uint32> g_craftCastRemaining; // char guid counter -> casts left
+
+void HandleCraftCast(Player* player, uint32 spellId, uint32 count)
+{
+    if (!player || !player->IsInWorld())
+        return;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info || count == 0)
+        return;
+    if (count > 200)
+        count = 200;
+    if (!player->HasSpell(spellId) || info->Reagent[0] == 0 ||
+        !info->HasEffect(SPELL_EFFECT_CREATE_ITEM))
+    {
+        LOG_INFO("module.livinggear",
+            "craft cast refused: spell {} is not a known craft of this character", spellId);
+        return;
+    }
+    ObjectGuid const ownerGuid = player->GetGUID();
+    uint32 const staggerMs = info->CastTimeEntry ? 600u : 50u;
+    g_craftCastRemaining[ownerGuid.GetCounter()] = count;
+    for (uint32 i = 0; i < count; ++i)
+    {
+        player->m_Events.AddEventAtOffset([ownerGuid, spellId]()
+        {
+            auto found = g_craftCastRemaining.find(ownerGuid.GetCounter());
+            if (found == g_craftCastRemaining.end())
+                return;
+            Player* p = ObjectAccessor::FindPlayer(ownerGuid);
+            if (!p || !p->IsInWorld())
+            {
+                g_craftCastRemaining.erase(ownerGuid.GetCounter());
+                return;
+            }
+            --found->second;
+            if (!p->CastSpell(p, spellId, false))
+                g_craftCastRemaining.erase(ownerGuid.GetCounter());
+        }, std::chrono::milliseconds(staggerMs * i));
+    }
+}
+
 bool HandleVaultChat(Player* player, std::string msg)
 {
     // The "is this actually our own outgoing sync line coming back around"
@@ -1717,6 +1774,13 @@ bool HandleVaultChat(Player* player, std::string msg)
     if (msg == "DEPOSITALL")
     {
         DepositAll(player);
+        return true;
+    }
+    uint32 craftSpell = 0;
+    uint32 craftCount = 0;
+    if (sscanf(msg.c_str(), "CRAFTCAST|%u|%u", &craftSpell, &craftCount) == 2)
+    {
+        HandleCraftCast(player, craftSpell, craftCount);
         return true;
     }
     uint32 takeKind = 0;
