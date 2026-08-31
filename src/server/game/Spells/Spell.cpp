@@ -6842,7 +6842,16 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* /*param1*/, uint32* /*para
                         Battlefield* Bf = sBattlefieldMgr->GetBattlefieldToZoneId(m_originalCaster->GetZoneId());
                         if (AreaTableEntry const* pArea = sAreaTableStore.LookupEntry(m_originalCaster->GetAreaId()))
                             if ((pArea->flags & AREA_FLAG_NO_FLY_ZONE) || (Bf && !Bf->CanFlyIn()))
+                            {
+                                // Report #218: flying mounts still refused in Dalaran after both the
+                                // server AreaTable correction and the client patch-Y AreaTable.dbc were
+                                // verified clean. This line decides the next test: if it never appears,
+                                // the client rejects the cast locally and no packet reaches the server.
+                                LOG_INFO("spells", "mount flight refused: spell {} area {} zone {} flags {} bfCanFly={}",
+                                    m_spellInfo->Id, m_originalCaster->GetAreaId(), m_originalCaster->GetZoneId(),
+                                    pArea->flags, Bf ? Bf->CanFlyIn() : 1);
                                 return SPELL_FAILED_NOT_HERE;
+                            }
                     }
                     break;
                 }
