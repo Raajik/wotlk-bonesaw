@@ -2870,7 +2870,20 @@ local ITEM_FILTERS = {
     { key = "armor", label = "Armor" },
     { key = "weapon", label = "Weapons" },
 }
--- Subtype filter, fed by GetItemInfo's 13th return (equip/subtype "InventoryType-
+-- Quality filter (report #158): a cycling pill next to the equipment-type
+-- one. A picked quality paints the pill's label in that quality's real
+-- colour, so the filter state reads at a glance the same way the rows
+-- themselves do. Uncached rows only survive "All", the same rule the
+-- equipment-type filter applies.
+local ITEM_QUALITY_FILTERS = {
+    { key = -1, label = "All" },
+    { key = 0, label = "Poor" },
+    { key = 1, label = "Common" },
+    { key = 2, label = "Uncommon" },
+    { key = 3, label = "Rare" },
+    { key = 4, label = "Epic" },
+    { key = 5, label = "Legendary" },
+}-- Subtype filter, fed by GetItemInfo's 13th return (equip/subtype "InventoryType-
 -- adjacent" wording: for weapons it is the weapon skill subtype name, for armor
 -- the armor class). Populated lazily from the rows actually present so the list
 -- never shows an empty pick.
@@ -2991,7 +3004,16 @@ function LG2.ItemRowMatches(row)
             return false
         end
     end
-    local q = db.itemSearch
+    -- Quality filter (report #158). GetItemInfo's 3rd return is the item's
+    -- quality; a row the client has never cached carries none and only
+    -- survives "All", exactly like the subtype filter above.
+    local qf = db.itemQuality
+    if qf and qf >= 0 then
+        local _, _, itemQual = GetItemInfo(row.entry)
+        if itemQual == nil or itemQual ~= qf then
+            return false
+        end
+    end    local q = db.itemSearch
     if q and q ~= "" then
         if not string.find(string.lower(row.name or ""), string.lower(q), 1, true) then
             return false
@@ -3008,7 +3030,7 @@ function LG2.BuildItemsPanel(parent)
 
     db.itemFilter = db.itemFilter or "all"
     db.itemSearch = db.itemSearch or ""
-
+    db.itemQuality = db.itemQuality or -1
     p.filters = {}
     for i = 1, #ITEM_FILTERS do
         local f = ITEM_FILTERS[i]
@@ -3065,6 +3087,39 @@ function LG2.BuildItemsPanel(parent)
     end)
     p.subBtn = subBtn
 
+    -- Quality pill (report #158): sits right of the equipment-type pill and
+    -- cycles All -> Poor -> ... -> Legendary like the type pill cycles its
+    -- list.
+    local qualityBtn = CreateFrame("Button", nil, p)
+    qualityBtn:SetSize(130, 18)
+    qualityBtn:SetPoint("TOPLEFT", 10 + #ITEM_FILTERS * 88 + 136, -4)
+    StyleBtn(qualityBtn, 0.10, 0.10, 0.10)
+    qualityBtn.label = Font(qualityBtn, 10, 0.75, 0.75, 0.75)
+    qualityBtn.label:SetPoint("CENTER", 0, 0)
+    qualityBtn.label:SetJustifyH("CENTER")
+    qualityBtn:SetScript("OnClick", function(self)
+        local cur = db.itemQuality or -1
+        local nextIdx = 1
+        for i = 1, #ITEM_QUALITY_FILTERS do
+            if ITEM_QUALITY_FILTERS[i].key == cur then
+                nextIdx = i % #ITEM_QUALITY_FILTERS + 1
+                break
+            end
+        end
+        db.itemQuality = ITEM_QUALITY_FILTERS[nextIdx].key
+        db.itemOff = 0
+        LG2.RefreshItems()
+    end)
+    qualityBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("Quality")
+        GameTooltip:AddLine("Click to cycle through item qualities.", 0.7, 0.7, 0.7, true)
+        GameTooltip:Show()
+    end)
+    qualityBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    p.qualityBtn = qualityBtn
     local wrap = CreateFrame("Frame", nil, p)
     wrap:SetSize(150, 18)
     wrap:SetPoint("TOPRIGHT", -10, -4)
@@ -3168,6 +3223,44 @@ function LG2.BuildItemsPanel(parent)
     end)
     ui.attuneAllBtn = attuneAll
 
+    -- Auto-Attune toggle (report #158). The toggle used to live on the Attune
+    -- panel, which was retired into this tab -- so the master switch became
+    -- unreachable while the per-quality switches died with the panel. This
+    -- puts the toggle back beside Attune All, sending the same AASET message
+    -- the old toggle sent, and it stays inert until the Auto-Attune perk is
+    -- known (same gating the old panel had).
+    local autoAttune = CreateFrame("Button", nil, p)
+    autoAttune:SetSize(120, 20)
+    autoAttune:SetPoint("RIGHT", attuneAll, "LEFT", -8, 0)
+    StyleBtn(autoAttune, COLOR_ON[1], COLOR_ON[2], COLOR_ON[3])
+    autoAttune.label = Font(autoAttune, 10, 0.9, 0.95, 0.9)
+    autoAttune.label:SetPoint("CENTER", 0, 0)
+    autoAttune.label:SetJustifyH("CENTER")
+    autoAttune.label:SetText("Auto-Attune: ON")
+    autoAttune:SetScript("OnClick", function()
+        if not PerkKnown(910041) then
+            return
+        end
+        if tonumber(db.attune.on) == 1 then
+            SendLine("AASET|on|0")
+        else
+            SendLine("AASET|on|1")
+        end
+    end)
+    autoAttune:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("Auto-Attune")
+        if not PerkKnown(910041) then
+            GameTooltip:AddLine("Level a Living Gear item to 10 to unlock Auto-Attune. Poor starts on.", 0.7, 0.7, 0.7, true)
+        else
+            GameTooltip:AddLine("Qualifying items attune themselves as they come in. This is the master switch; per-quality switches live on the old Attune panel's rows.", 0.7, 0.7, 0.7, true)
+        end
+        GameTooltip:Show()
+    end)
+    autoAttune:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    ui.itemsAutoAttune = autoAttune
     p.empty = Font(p, 11, 0.6, 0.6, 0.6)
     p.empty:SetPoint("TOPLEFT", 10, -46)
     p.empty:SetText("Nothing matches these filters.")
@@ -3352,6 +3445,42 @@ function LG2.RefreshItems()
         return
     end
 
+    if ui.itemsAutoAttune then
+        local unlocked = PerkKnown(910041)
+        local on = tonumber(db.attune.on) == 1
+        if not unlocked then
+            ui.itemsAutoAttune.label:SetText("Auto-Attune: LOCKED")
+            StyleBtn(ui.itemsAutoAttune, COLOR_OFF[1], COLOR_OFF[2], COLOR_OFF[3])
+            ui.itemsAutoAttune.label:SetTextColor(0.55, 0.55, 0.55, 1)
+        else
+            ui.itemsAutoAttune.label:SetText(on and "Auto-Attune: ON" or "Auto-Attune: OFF")
+            if on then
+                StyleBtn(ui.itemsAutoAttune, COLOR_ON[1], COLOR_ON[2], COLOR_ON[3])
+                ui.itemsAutoAttune.label:SetTextColor(0.90, 0.95, 0.90, 1)
+            else
+                StyleBtn(ui.itemsAutoAttune, COLOR_OFF[1], COLOR_OFF[2], COLOR_OFF[3])
+                ui.itemsAutoAttune.label:SetTextColor(0.95, 0.90, 0.90, 1)
+            end
+        end
+    end
+    if p.qualityBtn then
+        local q = db.itemQuality or -1
+        local label = "Quality: All"
+        for i = 1, #ITEM_QUALITY_FILTERS do
+            if ITEM_QUALITY_FILTERS[i].key == q then
+                label = "Quality: " .. ITEM_QUALITY_FILTERS[i].label
+            end
+        end
+        p.qualityBtn.label:SetText(label)
+        if q >= 0 then
+            local qr, qg, qb = GetItemQualityColor(q)
+            p.qualityBtn.label:SetTextColor(qr, qg, qb, 1)
+            StyleBtn(p.qualityBtn, 0.14, 0.22, 0.28)
+        else
+            p.qualityBtn.label:SetTextColor(0.72, 0.72, 0.72, 1)
+            StyleBtn(p.qualityBtn, 0.10, 0.10, 0.10)
+        end
+    end
     for i = 1, #p.filters do
         local btn = p.filters[i]
         local on = btn.key == (db.itemFilter or "all")
@@ -5772,9 +5901,11 @@ function LG2.HandleAddon(prefix, message)
         db.attune.on = tonumber(p[2]) or 0
         db.attune.count = tonumber(p[3]) or 0
         db.attune.off = tonumber(p[4]) or 0
+        -- The armory toggle (report #158) reads this state directly; repaint
+        -- it so a flip from the old panel's path is not shown stale.
+        LG2.RefreshItems()
         return
-    end
-    if p[1] == "ATL" then
+    end    if p[1] == "ATL" then
         for id in string.gmatch(p[2] or "", "[^,]+") do
             local n = tonumber(id)
             if n then
