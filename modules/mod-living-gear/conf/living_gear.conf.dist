@@ -211,3 +211,8 @@ LivingGear.WGBots.PerRealPlayer = 3
 LivingGear.WGBots.MaxPerSide = 15
 LivingGear.WGBots.SweepSeconds = 5
 
+
+# Perk tuning defaults (documented so fresh installs do not warn)
+LivingGear.Perks.SkillPointDivisor = 10
+LivingGear.Perks.RespecCooldown = 300
+LivingGear.Perks.CostEpoch = 1
