@@ -143,3 +143,10 @@ tools/client-update/soap.env
 # build transcripts kept for a single session
 /build-*.txt
 /build-*.log
+
+# planning-with-files session state (SOP per AGENTS.md; never commit)
+/task_plan.md
+/findings.md
+/progress.md
+/.planning/
+/HANDOFF.md

@@ -15,19 +15,31 @@ AzerothCore is a C++ MMORPG server emulator for World of Warcraft 3.3.5a (WotLK)
 - Append durable learnings (crashes, UI rules, deploy, spell IDs, do-not-repeat mistakes) to `A:\obsidian\jeremy\wiki\Bonesaw.md` as part of shipping, not after. Client-facing strings are ASCII only.
 - **When shipping: never restart/replace worldserver without warning players, then saving.** Run `powershell tools/restart_worldserver.ps1` before `docker compose up` / `restart` / `kill` of `ac-worldserver`. (Not before `build` -- building only writes an image and is deliberately done first, so a broken compile never reaches the warn.) That announces in-game, waits **45 seconds**, then `saveall`. Skip only if the container is not running. Do not use AzerothCore `server shutdown` for docker replace. Do not start this sequence unless the user asked to ship or restart.
 
-## Session handoff protocol
+## Session planning protocol (planning-with-files SOP)
 
-- `HANDOFF.md` (repo root, untracked) is a session-to-session handoff. **At the
-  start of a session: if `HANDOFF.md` exists, read it before anything else,
-  absorb it, then delete it.** Do not commit it, do not ship it.
+- Session state lives in three planning files at repo root (skill
+  `planning-with-files` v3, installed at `~/.agents/skills/planning-with-files`):
+  `task_plan.md` (goal, phases, ship backlog), `findings.md` (gotchas,
+  mechanisms, DB semantics), `progress.md` (session log). All three are
+  gitignored. There is no `HANDOFF.md` anymore — do not create one.
+- **At session start, before anything else:** read `task_plan.md`,
+  `findings.md`, and `progress.md` (load the `planning-with-files` skill first
+  if its conventions are not already in context), then run
+  `git log ship/<latest-tag>..HEAD --oneline` for the unshipped list and
+  `python tools/bug_resolve.py --all` for the live queue. No manual invocation
+  from the user is needed — this instruction is the trigger.
+- **Update continuously:** after each meaningful unit, append a line to
+  `progress.md`; new discoveries/gotchas go to `findings.md` (permanent
+  learnings still go to the Obsidian `Bonesaw.md` wiki at ship time); mark
+  phase `**Status:**` in `task_plan.md`. Re-read the plan before decisions;
+  after any 2 search/research actions, write findings down before moving on.
 - **When closing in on the context cap (roughly under 15% remaining):** stop
-  starting new multi-step work. Write the current state to `HANDOFF.md` — open
-  threads with exact file/line pointers, unshipped commits, gotchas — then tell
-  the user to start a fresh session. Finish or commit whatever is already
-  mid-flight first; never leave an edit half-applied across the handoff.
-- The budget countdown is visible in the per-turn context; treat it as the
-  trigger, not a suggestion. Long sessions lose fine detail before they lose
-  coarse intent — record exact line numbers, not vibes.
+  starting new multi-step work. Finish or commit whatever is already
+  mid-flight, bring the planning files up to date (open threads with exact
+  file/line pointers, unshipped commits), then tell the user to start a fresh
+  session. Never leave an edit half-applied across sessions. Long sessions
+  lose fine detail before they lose coarse intent — record exact line numbers,
+  not vibes.
 
 ## Build
 
