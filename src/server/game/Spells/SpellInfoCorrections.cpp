@@ -5368,7 +5368,10 @@ void SpellMgr::LoadSpellInfoCorrections()
         for (uint32 pass = 0; pass < 4; ++pass)
             for (uint32 i = 0; i < sAreaTableStore.GetNumRows(); ++i)
                 if (AreaTableEntry* areaEntry = const_cast<AreaTableEntry*>(sAreaTableStore.LookupEntry(i)))
-                    if (areaEntry->mapid == 571 && dalaranAreas.count(areaEntry->zone))
+                    // Dalaran City (4395) is a top-level zone, so its own
+                    // parent id is 0 -- it must be cleared explicitly or the
+                    // streets themselves still reject mount casts (report #218).
+                    if (areaEntry->mapid == 571 && (areaEntry->ID == 4395 || dalaranAreas.count(areaEntry->zone)))
                     {
                         areaEntry->flags &= ~AREA_FLAG_NO_FLY_ZONE;
                         dalaranAreas.insert(areaEntry->ID);
