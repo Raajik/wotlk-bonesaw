@@ -19,6 +19,8 @@
 #include "BattlegroundIC.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundSA.h"
+#include "Battlefield.h"
+#include "BattlefieldMgr.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "Common.h"
@@ -3921,6 +3923,7 @@ void Spell::EffectScriptEffect(SpellEffIndex effIndex)
                     case 54640:
                         {
                             if (Player* player = unitTarget->ToPlayer())
+                            {
                                 if (player->GetBattleground() && player->GetBattleground()->GetBgTypeID(true) == BATTLEGROUND_SA)
                                 {
                                     if (GameObject* dportal = player->FindNearestGameObject(192819, 10.0f))
@@ -3929,9 +3932,25 @@ void Spell::EffectScriptEffect(SpellEffIndex effIndex)
                                         bg->DefendersPortalTeleport(dportal, player);
                                     }
                                 }
+                                // Wintergrasp defender teleport (report #163): the
+                                // spell_linked_spell row 54640 -> 54643 used to fire
+                                // here, and 54643 only ever teleported the user to
+                                // their own feet (its TARGET_DEST_DEST resolves to the
+                                // caster position when the chain has no destination)
+                                // before stacking a 30s [Teleport] dummy aura on them.
+                                // That row is deleted in pending SQL; the WG case is
+                                // handled here instead, the same rule
+                                // spell_wintergrasp_portal (58622) applies: defenders
+                                // level 75+ are teleported to the fortress (59096,
+                                // coords in spell_target_position) with no aura.
+                                else if (Battlefield* wintergrasp = sBattlefieldMgr->GetBattlefieldByBattleId(BATTLEFIELD_BATTLEID_WG))
+                                {
+                                    if (wintergrasp->GetDefenderTeam() == player->GetTeamId() && player->GetLevel() >= 75)
+                                        player->CastSpell(player, 59096, true);
+                                }
+                            }
                             return;
-                        }
-                    /*// Mug Transformation
+                        }                    /*// Mug Transformation
                     case 41931:
                     {
                         if (!m_caster->IsPlayer())
