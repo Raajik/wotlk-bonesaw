@@ -1615,49 +1615,63 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
     if (!g_reentryGuard.insert(guid).second)
         return;
 
-    std::vector<Unit*> carriers;
-    std::vector<Unit*> clean;
-    ForEachHostileInRange(player, MAGE_FIRE_CONTAGION_RANGE, [player, &carriers, &clean](Unit* target)
-    {
-        if (HasLivingBombFrom(target, player))
-            carriers.push_back(target);
-        else
-            clean.push_back(target);
-    });
-
+    // Report #217: one hop per second made a big pull crawl outward one ring
+    // at a time. Keep sweeping within the same tick -- every target infected
+    // this pass joins the carrier set for the next pass, so the reaction
+    // chain-reacts to its natural edge instead of waiting for the next tick.
     uint32 spread = 0, failed = 0;
     SpellCastResult lastResult = SPELL_CAST_OK;
-    for (Unit* target : clean)
+    for (uint32 hop = 0; hop < 16; ++hop)
     {
-        Unit* nearCarrier = nullptr;
-        for (Unit* carrier : carriers)
-            if (target->IsWithinDist(carrier, MAGE_FIRE_SPREAD_RANGE))
-            {
-                nearCarrier = carrier;
-                break;
-            }
-
-        if (!nearCarrier)
-            continue;
-
-        // Report #52 instrumentation kept: count cast results per tick instead
-        // of trusting the silent CastSpell. BestOwnedOrFirst guarantees a spell
-        // ID, so a failure is a Spell::cast rejection (range, facing, target
-        // invalid) that would otherwise be swallowed.
-        // Report #156 parity with the affliction spread: the new infection is
-        // cast BY the carrier so it visibly jumps bomb to bomb, while
-        // originalCaster stays the mage so HasLivingBombFrom (caster-guid
-        // keyed) and the explosion damage keep keying off the player.
-        SpellCastResult const res =
-            nearCarrier->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true,
-                nullptr, nullptr, player->GetGUID());
-        if (res == SPELL_CAST_OK)
-            ++spread;
-        else
+        std::vector<Unit*> carriers;
+        std::vector<Unit*> clean;
+        ForEachHostileInRange(player, MAGE_FIRE_CONTAGION_RANGE, [player, &carriers, &clean](Unit* target)
         {
-            ++failed;
-            lastResult = res;
+            if (HasLivingBombFrom(target, player))
+                carriers.push_back(target);
+            else
+                clean.push_back(target);
+        });
+
+        uint32 thisHop = 0;
+        for (Unit* target : clean)
+        {
+            Unit* nearCarrier = nullptr;
+            for (Unit* carrier : carriers)
+                if (target->IsWithinDist(carrier, MAGE_FIRE_SPREAD_RANGE))
+                {
+                    nearCarrier = carrier;
+                    break;
+                }
+
+            if (!nearCarrier)
+                continue;
+
+            // Report #52 instrumentation kept: count cast results per tick instead
+            // of trusting the silent CastSpell. BestOwnedOrFirst guarantees a spell
+            // ID, so a failure is a Spell::cast rejection (range, facing, target
+            // invalid) that would otherwise be swallowed.
+            // Report #156 parity with the affliction spread: the new infection is
+            // cast BY the carrier so it visibly jumps bomb to bomb, while
+            // originalCaster stays the mage so HasLivingBombFrom (caster-guid
+            // keyed) and the explosion damage keep keying off the player.
+            SpellCastResult const res =
+                nearCarrier->CastSpell(target, BestOwnedOrFirst(player, SPELL_LIVING_BOMB), true,
+                    nullptr, nullptr, player->GetGUID());
+            if (res == SPELL_CAST_OK)
+            {
+                ++spread;
+                ++thisHop;
+            }
+            else
+            {
+                ++failed;
+                lastResult = res;
+            }
         }
+
+        if (!thisHop)
+            break;
     }
 
     // Reports #145/#146 (Bonesaw #147/#148): this counter was LOG_DEBUG on
@@ -1666,8 +1680,8 @@ void TickMageFire(Player* player, MageState& st, uint32 diff)
     // cycles that cast -- a zero-carrier tick is the input-side signature
     // (auto-apply never landed) and must be visible, not folded into silence.
     LOG_INFO("module.livinggear",
-        "living bomb spread: {} carrier(s), {} clean, {} cast, {} failed (last result {})",
-        carriers.size(), clean.size(), spread, failed, uint32(lastResult));
+        "living bomb spread: {} cast, {} failed (last result {})",
+        spread, failed, uint32(lastResult));
     g_reentryGuard.erase(guid);
 }
 
