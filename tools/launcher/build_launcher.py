@@ -105,12 +105,24 @@ def main() -> None:
             print(f"payload  {name}  {src.stat().st_size:,} bytes")
 
     print("building Bonesaw.exe ...")
-    subprocess.run(["cargo", "build", "--release"], cwd=HERE, check=True)
+    # The msvc toolchain needs link.exe, which left this machine with Visual
+    # Studio; the container cross-build (tools/_launcher_build.cmd, mingw-w64
+    # inside rust:latest) produces the same Windows exe without it.
+    try:
+        subprocess.run(["cargo", "build", "--release"], cwd=HERE, check=True)
+        built = BUILT
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        print(f"msvc build unavailable ({exc.__class__.__name__}); cross-building in a container ...")
+        subprocess.run([str(ROOT / "tools" / "_launcher_build.cmd")], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        built = HERE / "target" / "x86_64-pc-windows-gnu" / "release" / "Bonesaw.exe"
+        if not built.exists():
+            raise SystemExit("cross-build produced no exe")
 
     # The release artifact is a stable copy, so re-running this script cannot
     # quietly replace the file whose hash went into the manifest.
     DIST.parent.mkdir(exist_ok=True)
-    shutil.copy2(BUILT, DIST)
+    shutil.copy2(built, DIST)
 
     size = DIST.stat().st_size
     digest = sha256(DIST)
