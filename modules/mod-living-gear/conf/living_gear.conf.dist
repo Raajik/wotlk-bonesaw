@@ -200,3 +200,14 @@ LivingGear.Wintergrasp.VehicleDamageMult = 10.0
 # freed from the 25-per-day slot cap as each reward releases its slot.
 # = 0 restores the normal daily/weekly reset schedule.
 LivingGear.Quests.InfiniteDailyWeekly = 1
+
+# Playerbots fill Wintergrasp when real players are in the war (report #170).
+# A war real players are fighting gains bots on both sides -- PerRealPlayer x
+# the real players engaged on either side, capped by MaxPerSide -- teleporting
+# in at their faction home graveyard and joining through the normal war path.
+# A war with no real players in it stays bot-free.
+LivingGear.WGBots.Enable = 1
+LivingGear.WGBots.PerRealPlayer = 3
+LivingGear.WGBots.MaxPerSide = 15
+LivingGear.WGBots.SweepSeconds = 5
+

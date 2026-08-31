@@ -20,12 +20,20 @@
  * the calendar with it and there is no second copy of the schedule to drift.
  */
 
+#include "Battlefield.h"
+#include "BattlefieldMgr.h"
 #include "Chat.h"
+#include "Config.h"
 #include "DBCStores.h"
 #include "GameEventMgr.h"
 #include "GameTime.h"
 #include "Log.h"
+#include "ObjectAccessor.h"
+#include "Random.h"
+#include "RandomPlayerbotMgr.h"
 #include "ScriptMgr.h"
+#include "World.h"
+#include "WorldConfig.h"
 
 #include <ctime>
 
@@ -147,7 +155,211 @@ namespace
     };
 }
 
+// ###############################################################################
+//
+// Wintergrasp bot fill (report #170): "can we start having playerbots join
+// Wintergrasp when there's real players in it?"
+//
+// Wintergrasp is a Battlefield (BattlefieldMgr), not a Battleground, and
+// playerbots only ever join Battlegrounds (BattleGroundJoinAction.cpp) --
+// the two pipelines share nothing, so bots never showed up no matter how
+// many real players queued. WG wars also start on a timer whether or not
+// anyone queued, so the queue phase can be skipped entirely: once the war
+// is live, a bot joins through the exact same calls the client accept
+// button makes -- Battlefield::InvitePlayerToWar (registers the war
+// invite) then Battlefield::PlayerAcceptInviteToWar (BF raid group,
+// SendBfEntered, PlayersInWar insert). Both are public; no core patch.
+//
+// A world sweep every few seconds tops each faction up to PerRealPlayer x
+// the number of REAL players engaged on either side, capped by MaxPerSide
+// and the battlefield's own vacancy gate, so a war with real players in it
+// becomes a war and an empty zone stays quiet. Bots materialize at their
+// faction's home graveyard (coords from WGGraveyard[] in BattlefieldWG.h)
+// and fight whatever their AI finds in front of them; the war-end kick
+// hands them back to the bot manager like any other participant.
+//
+// ###############################################################################
+namespace
+{
+    bool g_wgBotsEnable = true;
+    uint32 g_wgBotsPerReal = 3;
+    uint32 g_wgBotsMaxPerSide = 15;
+    uint32 g_wgBotsSweepSecs = 5;
+    time_t g_wgBotsLastSweep = 0;
+
+    // Faction landing graveyards, copied from WGGraveyard[] in
+    // src/server/game/Battlefield/Zones/BattlefieldWG.h (map 571): inside
+    // the zone, next to the faction's spirit healer, facing the right half
+    // of the map. Indexed by TeamId.
+    constexpr uint32 WG_MAP_ID = 571;
+    Position const WgBotSpawn[2] =
+    {
+        { 5140.790f, 2179.120f, 390.950f, 1.972220f }, // TEAM_ALLIANCE
+        { 5032.454f, 3711.382f, 372.468f, 3.971623f }, // TEAM_HORDE
+    };
+
+    Battlefield* WgBattlefield()
+    {
+        return sBattlefieldMgr->GetBattlefieldByBattleId(BATTLEFIELD_BATTLEID_WG);
+    }
+
+    // War participants on one team (accepted plus still-pending invites),
+    // counted separately for real players and bots.
+    uint32 WgSideCount(Battlefield* bf, TeamId team, bool real)
+    {
+        uint32 count = 0;
+        for (ObjectGuid const& guid : bf->GetPlayersInWarSet(team))
+        {
+            Player const* player = ObjectAccessor::FindConnectedPlayer(guid);
+            if (player && player->GetSession()->IsBot() != real)
+            {
+                ++count;
+            }
+        }
+        for (auto const& invite : bf->GetInvitedPlayersMap(team))
+        {
+            Player const* player = ObjectAccessor::FindConnectedPlayer(invite.first);
+            if (player && player->GetSession()->IsBot() != real)
+            {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    // Bots eligible to be pulled into the war: alive, out of instances and
+    // battlegrounds, ungrouped (never yank a bot out of a dungeon run), and
+    // at or above the WG minimum level. A random slice of the matching pool,
+    // so the same handful does not fight every war.
+    std::vector<Player*> WgBotCandidates(TeamId team, uint32 need, uint32 minLevel)
+    {
+        std::vector<Player*> pool;
+        pool.reserve(need * 8);
+        for (auto const& [guid, bot] : sRandomPlayerbotMgr.GetAllBots())
+        {
+            if (pool.size() >= need * 8)
+            {
+                break;
+            }
+            if (!bot || !bot->IsInWorld() || bot->GetTeamId() != team)
+            {
+                continue;
+            }
+            if (bot->GetLevel() < minLevel || bot->isDead() || bot->IsInFlight())
+            {
+                continue;
+            }
+            if (bot->InBattleground() || bot->GetGroup())
+            {
+                continue;
+            }
+            Map* botMap = bot->GetMap();
+            if (!botMap || botMap->IsDungeon() || botMap->IsRaid())
+            {
+                continue;
+            }
+            pool.push_back(bot);
+        }
+
+        std::vector<Player*> picked;
+        picked.reserve(need);
+        while (!pool.empty() && picked.size() < need)
+        {
+            uint32 const idx = urand(0, uint32(pool.size() - 1));
+            picked.push_back(pool[idx]);
+            pool.erase(pool.begin() + idx);
+        }
+        return picked;
+    }
+
+    void WgBotJoinWar(Battlefield* bf, Player* bot)
+    {
+        Position const& dest = WgBotSpawn[bot->GetTeamId()];
+        bot->TeleportTo(WG_MAP_ID, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetOrientation());
+        bf->InvitePlayerToWar(bot);
+        bf->PlayerAcceptInviteToWar(bot);
+    }
+
+    void WgBotSweep()
+    {
+        Battlefield* bf = WgBattlefield();
+        if (!bf || !bf->IsEnabled() || !bf->IsWarTime())
+        {
+            return;
+        }
+
+        uint32 real[2];
+        uint32 bots[2];
+        for (uint8 team = 0; team < 2; ++team)
+        {
+            real[team] = WgSideCount(bf, TeamId(team), true);
+            bots[team] = WgSideCount(bf, TeamId(team), false);
+        }
+
+        // Bots only join a war a real player is fighting; both sides fill to
+        // the same target so an attacker never faces an empty fortress, and
+        // Wintergrasp's own tenacity absorbs whatever imbalance remains.
+        uint32 const engaged = std::max(real[0], real[1]);
+        if (!engaged)
+        {
+            return;
+        }
+
+        uint32 const target = std::min(g_wgBotsMaxPerSide, g_wgBotsPerReal * engaged);
+        uint32 const minLevel = sWorld->getIntConfig(CONFIG_WINTERGRASP_PLR_MIN_LVL);
+
+        for (uint8 team = 0; team < 2; ++team)
+        {
+            if (bots[team] >= target)
+            {
+                continue;
+            }
+
+            for (Player* bot : WgBotCandidates(TeamId(team), target - bots[team], minLevel))
+            {
+                if (!bf->HasWarVacancy(TeamId(team)))
+                {
+                    break;
+                }
+                WgBotJoinWar(bf, bot);
+                LOG_INFO("module.livinggear.wgbots", "Wintergrasp fill: {} joins the war ({})",
+                    bot->GetName(), team ? "Horde" : "Alliance");
+            }
+        }
+    }
+
+    class LivingGearWgBotsWorld : public WorldScript
+    {
+    public:
+        LivingGearWgBotsWorld() : WorldScript("LivingGearWgBotsWorld") { }
+
+        void OnAfterConfigLoad(bool /*reload*/) override
+        {
+            g_wgBotsEnable = sConfigMgr->GetOption<bool>("LivingGear.WGBots.Enable", true);
+            g_wgBotsPerReal = sConfigMgr->GetOption<uint32>("LivingGear.WGBots.PerRealPlayer", 3);
+            g_wgBotsMaxPerSide = sConfigMgr->GetOption<uint32>("LivingGear.WGBots.MaxPerSide", 15);
+            g_wgBotsSweepSecs = std::max<uint32>(1u, sConfigMgr->GetOption<uint32>("LivingGear.WGBots.SweepSeconds", 5));
+        }
+
+        void OnUpdate(uint32 /*diff*/) override
+        {
+            if (!g_wgBotsEnable)
+            {
+                return;
+            }
+            time_t const now = GameTime::GetGameTime().count();
+            if (now - g_wgBotsLastSweep < g_wgBotsSweepSecs)
+            {
+                return;
+            }
+            g_wgBotsLastSweep = now;
+            WgBotSweep();
+        }
+    };
+}
+
 void AddSC_LivingGearEvents()
 {
     new LivingGearEventsWorld();
+    new LivingGearWgBotsWorld();
 }
