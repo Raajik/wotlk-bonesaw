@@ -82,6 +82,20 @@ uint32 g_questBypassWindow = 3600;      // window length, seconds
 // Bug report #12: quest items always drop. Bug report #11: every kill is worth
 // something. Both are config-gated so they can be turned off without a rebuild.
 bool g_questDropAlways = true;
+
+// Bug report #175: "scaled mobs in instances seem to not drop green items as
+// often as they should." Measured per-kill green (Uncommon) chances straight
+// from the live creature_loot_template: open world ~7.5% (Hellfire) to ~9.7%
+// (Northrend) per trash kill, TBC dungeons 2.0-2.2%, Utgarde Keep 3.7%, ICC
+// trash 0.7%, classic dungeons 0.4-0.9%. Nothing in the code reduces the roll
+// (quality drop rates are 1.0, the module only ever boosts), the tables are
+// simply authored stingy -- and zone scaling displaying every instance mob at
+// viewer+1 made the gap read as broken. Uncommon-quality chances from
+// creature loot are therefore multiplied on dungeon and raid maps so instance
+// trash lands at open-world parity. Classic dungeons still sit below parity:
+// their trash tables contain almost no green entries at all, and a
+// multiplier cannot invent items that are not listed. Config-gated.
+float g_dungeonUncommonMult = 4.0f;
 bool g_killXpFloorEnabled = true;
 // Percent of the CURRENT level's XP bar that a PLAYER kill is worth at
 // minimum. Creature kills are floored by KillXpFor in LivingGear_Perks.cpp
@@ -795,12 +809,29 @@ public:
     }) { }
 
     bool OnItemRoll(Player const* player, LootStoreItem const* lootStoreItem, float& chance,
-        Loot& /*loot*/, LootStore const& /*store*/) override
+        Loot& /*loot*/, LootStore const& store) override
     {
-        if (!g_questDropAlways || !player || !lootStoreItem || chance >= 100.0f)
+        if (!player || !lootStoreItem || chance >= 100.0f)
             return true;
-        if (lootStoreItem->needs_quest || LivingGear_PlayerNeedsItemForQuest(player, lootStoreItem->itemid))
+
+        if (g_questDropAlways
+            && (lootStoreItem->needs_quest || LivingGear_PlayerNeedsItemForQuest(player, lootStoreItem->itemid)))
             chance = 100.0f;
+
+        // Bug report #175: dungeon and raid trash drop greens 3-25x less often
+        // than same-level open world; multiply Uncommon creature-loot chances
+        // there so instance trash lands at open-world parity (measured numbers
+        // on the g_dungeonUncommonMult declaration). Grouped entries roll the
+        // same count of items as before -- the multiplier only biases which
+        // side of a weighted group comes out.
+        if (g_dungeonUncommonMult > 1.0f && &store == &LootTemplates_Creature
+            && (player->GetMap()->IsDungeon() || player->GetMap()->IsRaid()))
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(lootStoreItem->itemid);
+            if (proto && proto->Quality == ITEM_QUALITY_UNCOMMON)
+                chance *= g_dungeonUncommonMult;
+        }
+
         return true;
     }
 };
@@ -1082,6 +1113,11 @@ void AddSC_LivingGearSupport()
         sConfigMgr->GetOption<uint32>("LivingGear.KillXpFloor.Pct", 2);
     if (LivingGearSupport::g_killXpFloorPct > 100)
         LivingGearSupport::g_killXpFloorPct = 100;
+
+    LivingGearSupport::g_dungeonUncommonMult =
+        sConfigMgr->GetOption<float>("LivingGear.DungeonLoot.UncommonMult", 4.0f);
+    if (LivingGearSupport::g_dungeonUncommonMult < 1.0f)
+        LivingGearSupport::g_dungeonUncommonMult = 1.0f;
 
     LivingGearSupport::g_wgSiegeScale =
         sConfigMgr->GetOption<bool>("LivingGear.Wintergrasp.SiegeScale", true);
