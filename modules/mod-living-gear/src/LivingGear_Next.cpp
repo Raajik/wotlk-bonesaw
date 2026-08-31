@@ -607,6 +607,48 @@ void RecastSelfBuffs(Player* player)
     }
 }
 
+// ---------------------------------------------------------------------
+// Affliction warlock DoTs last until the target dies (report #174: "make
+// affliction warlock debuffs/dots last until the target dies
+// (indefinitely)").
+//
+// Gated on the Affliction class perk -- "affliction warlock" is that perk
+// on this realm -- and scoped to the four debuffs the perk is built
+// around (the same chains its auto-apply feeds). Everything a dispel can
+// remove stays removable, and the target's own death clears the rest; a
+// stronger rank replacing a weaker one re-fires the apply hook below, so
+// rank upgrades stay permanent too. Recasts land on the live aura as a
+// stack/refresh and the hook runs after that refresh, so the -1 sticks.
+uint32 const SPELL_WARLOCK_AFFLICTION = 910157;
+uint32 const WARLOCK_AFFLICTION_DOT_R1S[] = {
+    172,   // Corruption
+    980,   // Curse of Agony
+    30108, // Unstable Affliction
+    1490,  // Curse of the Elements
+};
+
+// Called from NextUnit::OnAuraApply, which fires after the aura is fully
+// applied (or its stack refreshed), so touching the duration here is data
+// mutation only -- none of the mid-cast reentrancy the deferred casts work
+// around.
+void KeepAfflictionDots(Unit* target, Aura* aura)
+{
+    if (!target || !aura || aura->IsPermanent())
+        return;
+    Player* caster = ObjectAccessor::FindPlayer(aura->GetCasterGUID());
+    if (!caster || GetClassPerk(caster) != SPELL_WARLOCK_AFFLICTION)
+        return;
+    uint32 const chain = sSpellMgr->GetFirstSpellInChain(aura->GetId());
+    for (uint32 first : WARLOCK_AFFLICTION_DOT_R1S)
+    {
+        if (chain != sSpellMgr->GetFirstSpellInChain(first))
+            continue;
+        aura->SetMaxDuration(-1);
+        aura->SetDuration(-1);
+        return;
+    }
+}
+
 void SendLine(Player* player, std::string const& line)
 {
     ::LivingGear_SendAddonLine(player, line);
@@ -2116,12 +2158,18 @@ public:
 
     void OnAuraApply(Unit* unit, Aura* aura) override
     {
-        if (!unit || !aura || aura->GetId() != SPELL_HAND_OF_FREEDOM)
+        if (!unit || !aura)
             return;
-        Unit* caster = aura->GetCaster();
-        if (!caster || !caster->IsPlayer())
-            return;
-        KeepHofOneTarget(caster->ToPlayer(), unit);
+        if (aura->GetId() == SPELL_HAND_OF_FREEDOM)
+        {
+            Unit* caster = aura->GetCaster();
+            if (caster && caster->IsPlayer())
+                KeepHofOneTarget(caster->ToPlayer(), unit);
+        }
+        // Report #174: an Affliction warlock's DoTs stop ticking down the
+        // moment they land and hold until the target dies or a dispel takes
+        // them off.
+        KeepAfflictionDots(unit, aura);
     }
 };
 
