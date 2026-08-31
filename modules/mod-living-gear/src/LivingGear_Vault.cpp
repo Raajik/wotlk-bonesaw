@@ -27,6 +27,7 @@
 #include "WorldSessionMgr.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "CellImpl.h"
 #include "ItemTemplate.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -1471,6 +1472,12 @@ bool TryAutolootPickpocket(Player* player, Unit* target)
 // right after and redirects them to the vault/vendor/etc from there. That
 // keeps this function from needing to touch Loot's internal quest-item/
 // free-for-all slot bookkeeping directly, which is easy to get subtly wrong.
+// Auto-skins a freshly-killed, still-skinnable corpse if the player has
+// enough of the required gathering skill, using the same skill-check math
+// AzerothCore's own skinning-loot handler uses (see LootMgr/SmartAI usage
+// of GetRequiredLootSkill/UpdateGatherSkill elsewhere in core code) so the
+// skill-up chance and requirement match normal (manual) skinning exactly.
+void AutolootSkinKill(Player* player, Creature* creature);
 void AutolootCreatureKill(Player* player, Creature* creature)
 {
     if (!player || !creature || !player->IsAlive() || !player->GetSession() || !LivingGear_HasPerk(player, SPELL_AUTOLOOT)
@@ -1500,8 +1507,58 @@ void AutolootCreatureKill(Player* player, Creature* creature)
         // Comparing against the stored method refused corpse autoloot for
         // every grouped player with autoloot on. Same fix the personal-loot
         // core patch (0029) applied to LootHandler's permission switch.
-        if (group->GetEffectiveLootMethod() != FREE_FOR_ALL)
+        LootMethod const effectiveMethod = group->GetEffectiveLootMethod();
+        // Bug report #155: PERSONAL_LOOT survives GetEffectiveLootMethod()
+        // unchanged, so groups explicitly set to personal loot had autoloot
+        // stand down on every normal mob even though the engine treats those
+        // corpses as plain shared looting (no rolls, no master looter). Boss-
+        // type corpses under personal loot are granted directly at kill by
+        // Group::PersonalLoot and carry no lootable flag at all, so nothing
+        // is being double-taken by allowing it here.
+        if (effectiveMethod != FREE_FOR_ALL && effectiveMethod != PERSONAL_LOOT)
             return;
+        // Bug report #155: in a bot party the bots land most of the kills, and
+        // their own autoloot sweeps the corpse into bot bags a millisecond
+        // after the kill, so the real player standing beside them gets nothing
+        // and reads that as "missing certain items". When the killer is a bot,
+        // route the corpse through the nearest real player in the group with
+        // autoloot enabled instead; if none is at loot reward distance the bot
+        // keeps its own grab, so loot is never lost either way.
+        if (player->GetSession()->IsBot())
+        {
+            Player* realLooter = nullptr;
+            float bestDistance = 0.0f;
+            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+            {
+                Player* member = itr->GetSource();
+                if (!member || member == player || !member->GetSession() || member->GetSession()->IsBot())
+                    continue;
+                if (!member->IsAlive() || !LivingGear_HasPerk(member, SPELL_AUTOLOOT)
+                    || !AutolootOn(member->GetSession()->GetAccountId()))
+                    continue;
+                if (!member->IsAtLootRewardDistance(creature))
+                    continue;
+                float const distance = member->GetDistance(creature);
+                if (!realLooter || distance < bestDistance)
+                {
+                    realLooter = member;
+                    bestDistance = distance;
+                }
+            }
+            if (realLooter)
+            {
+                AutolootCreatureKill(realLooter, creature);
+                // The corpse was handed to the real player, including its
+                // loot-removed decay path; run the real player's auto-skin now
+                // so hides and leather land with their owner too. If the skin
+                // already happened or the player lacks the skill, the flag
+                // check below no-ops safely. The outer bot's own skin call
+                // then sees the flag gone and skips, so there is no double
+                // skin.
+                AutolootSkinKill(realLooter, creature);
+                return;
+            }
+        }
     }
     else if (creature->GetLootRecipient() != player)
         return;
@@ -1509,14 +1566,95 @@ void AutolootCreatureKill(Player* player, Creature* creature)
     Loot* loot = &creature->loot;
     loot->FillNotNormalLootFor(player);
     uint32 const maxSlot = loot->GetMaxSlotInLootFor(player);
-    uint32 granted = 0, refused = 0;
+    uint32 granted = 0, mailed = 0, refused = 0;
     for (uint32 slot = 0; slot < maxSlot; ++slot)
     {
         InventoryResult msg = EQUIP_ERR_OK;
-        if (player->StoreLootItem(uint8(slot), loot, msg))
-            ++granted;
-        else
+        LootItem* lootItem = player->StoreLootItem(uint8(slot), loot, msg);
+        if (!lootItem)
+        {
             ++refused;
+            LOG_DEBUG("module.livinggear",
+                "corpse autoloot: slot {} of '{}' not takeable by {}, skipped",
+                slot, creature->GetName(), player->GetName());
+            continue;
+        }
+        if (msg == EQUIP_ERR_OK)
+        {
+            ++granted;
+            continue;
+        }
+
+        // StoreLootItem hands back the slot's item pointer even when storage
+        // failed, and the old loop counted that as granted -- the item stayed
+        // on the corpse while the summary claimed it landed. Bug report #155
+        // saw exactly that as "sometimes have a single item remaining on
+        // them".
+        ++refused;
+        LOG_DEBUG("module.livinggear",
+            "corpse autoloot: slot {} failed to store item {} for '{}' (msg {})",
+            slot, lootItem->itemid, creature->GetName(), uint32(msg));
+        if (msg != EQUIP_ERR_INVENTORY_FULL)
+            continue;
+
+        // Bags full is the one failure autoloot never leaves behind: mail the
+        // item the way roll winners and Group::PersonalLoot do, marking the
+        // slot taken exactly the way a successful StoreLootItem would have.
+        QuestItem* qitem = nullptr;
+        QuestItem* ffaitem = nullptr;
+        QuestItem* conditem = nullptr;
+        loot->LootItemInSlot(uint32(slot), player, &qitem, &ffaitem, &conditem);
+        if (Item* mailItem = Item::CreateItem(lootItem->itemid, lootItem->count, player, false, lootItem->randomPropertyId))
+        {
+            AllowedLooterSet looters = lootItem->GetAllowedLooters();
+            ItemTemplate const* mailProto = mailItem->GetTemplate();
+            if (looters.size() > 1 && mailProto->GetMaxStackSize() == 1
+                && (mailProto->Bonding == BIND_WHEN_PICKED_UP || mailProto->Bonding == BIND_QUEST_ITEM)
+                && sWorld->getBoolConfig(CONFIG_SET_BOP_ITEM_TRADEABLE))
+            {
+                // Keep the same 2-hour group trade window a picked-up BoP
+                // would have had (mirrors the core's roll-winner mail path).
+                mailItem->SetBinding(true);
+                mailItem->SetSoulboundTradeable(looters);
+                mailItem->SetUInt32Value(ITEM_FIELD_CREATE_PLAYED_TIME, player->GetTotalPlayedTime());
+                std::string lootersStr;
+                for (ObjectGuid const& guid : looters)
+                {
+                    if (!lootersStr.empty())
+                        lootersStr += ' ';
+                    lootersStr += std::to_string(guid.GetCounter());
+                }
+                CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_ITEM_BOP_TRADE);
+                stmt->SetData(0, mailItem->GetGUID().GetCounter());
+                stmt->SetData(1, lootersStr);
+                CharacterDatabase.Execute(stmt);
+            }
+
+            player->SendItemRetrievalMail(mailItem);
+            if (qitem)
+            {
+                qitem->is_looted = true;
+                if (lootItem->freeforall || loot->GetPlayerQuestItems().size() == 1)
+                    player->SendNotifyLootItemRemoved(uint8(slot));
+                else
+                    loot->NotifyQuestItemRemoved(qitem->index);
+            }
+            else if (ffaitem)
+            {
+                ffaitem->is_looted = true;
+                player->SendNotifyLootItemRemoved(uint8(slot));
+            }
+            else
+            {
+                if (conditem)
+                    conditem->is_looted = true;
+                loot->NotifyItemRemoved(uint8(slot));
+            }
+            if (!lootItem->freeforall)
+                lootItem->is_looted = true;
+            --loot->unlootedCount;
+            ++mailed;
+        }
     }
     uint32 const gold = loot->gold;
     if (loot->gold)
@@ -1528,8 +1666,75 @@ void AutolootCreatureKill(Player* player, Creature* creature)
     // "did anything land" are different questions (#139/#150 had no line here
     // at all, so a silent early return was indistinguishable from a grant).
     LOG_INFO("module.livinggear",
-        "corpse autoloot: '{}' -- {} slot(s), granted {}, refused {}, {} copper",
-        creature->GetName(), maxSlot, granted, refused, gold);
+        "corpse autoloot: '{}' -- {} slot(s), granted {}, mailed {}, refused {}, {} copper",
+        creature->GetName(), maxSlot, granted, mailed, refused, gold);
+
+    // Bug report #155: slots left behind that nobody allowed to loot this
+    // corpse can take -- quest items for quests nobody in the party has,
+    // condition-gated drops, faction-locked items -- used to keep the corpse
+    // flagged lootable forever, so "empty" corpses kept sparkling while their
+    // loot window showed nothing. When no eligible looter can take anything
+    // that remains and there is no gold either, treat the corpse as fully
+    // looted: drop the flag, hand the corpse to the normal decay path and
+    // despawn it on the same 30s window the fully-looted path uses.
+    if (!loot->isLooted())
+    {
+        bool lootableByAnyone = loot->gold != 0;
+        if (!lootableByAnyone)
+        {
+            std::vector<Player const*> eligible;
+            if (Group* recipientGroup = creature->GetLootRecipientGroup())
+            {
+                for (GroupReference* itr = recipientGroup->GetFirstMember(); itr; itr = itr->next())
+                {
+                    Player* member = itr->GetSource();
+                    if (!member || !member->IsInWorld())
+                        continue;
+                    if (!creature->GetAllowedLooters().empty() && !creature->HasAllowedLooter(member->GetGUID()))
+                        continue;
+                    eligible.push_back(member);
+                }
+            }
+            else if (Player* recipient = ObjectAccessor::FindPlayer(creature->GetLootRecipientGUID()))
+                eligible.push_back(recipient);
+
+            auto const anyoneCanTake = [&eligible, &loot](LootItem const& item) -> bool
+            {
+                if (item.is_looted)
+                    return false;
+                for (Player const* looter : eligible)
+                    if (item.AllowedForPlayer(looter, loot->sourceWorldObjectGUID))
+                        return true;
+                return false;
+            };
+
+            for (LootItem const& item : loot->items)
+                if (anyoneCanTake(item))
+                {
+                    lootableByAnyone = true;
+                    break;
+                }
+            if (!lootableByAnyone)
+                for (LootItem const& item : loot->quest_items)
+                    if (anyoneCanTake(item))
+                    {
+                        lootableByAnyone = true;
+                        break;
+                    }
+        }
+
+        if (!lootableByAnyone)
+        {
+            LOG_INFO("module.livinggear",
+                "corpse autoloot: '{}' -- leftover slot(s) takeable by nobody eligible, clearing lootable corpse",
+                creature->GetName());
+            creature->RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
+            if (!creature->IsAlive())
+                creature->AllLootRemovedFromCorpse();
+            if (!creature->IsAlive())
+                creature->DespawnOrUnsummon(std::chrono::seconds(30));
+        }
+    }
     if (loot->isLooted())
     {
         creature->RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
@@ -1894,6 +2099,23 @@ bool HandleVaultChat(Player* player, std::string msg)
 // Report #191: proximity re-poll cadence and scratch list for the 5s sweep.
 uint32 const AUTOLOOT_POLL_MS = 5000;
 float const AUTLOOT_POLL_RANGE = 30.0f;
+
+// Report #155: the corpse sweep needs a checker that matches lootable
+// CORPSES; the stock AnyUnitInObjectRangeCheck hard-requires IsAlive(), so
+// even a correct outer loop could never receive a corpse from it.
+struct LootableCorpseInRange
+{
+    LootableCorpseInRange(WorldObject const* obj, float range) : i_obj(obj), i_range(range) {}
+    bool operator()(Unit* u) const
+    {
+        return u->IsCreature() && u->ToCreature()->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE)
+            && i_obj->IsWithinDistInMap(u, i_range);
+    }
+
+private:
+    WorldObject const* i_obj;
+    float i_range;
+};
 std::unordered_map<uint32, uint32> g_autolootPollAcc;
 
 class VaultPlayer : public PlayerScript
@@ -2034,14 +2256,24 @@ public:
             return;
         acc = 0;
 
+        // The stock AnyUnitInObjectRangeCheck also requires u->IsAlive(), so
+        // even without the loop guard it could never return a corpse; use the
+        // local flag-based check instead (bug report #155 -- the #191 sweep
+        // could not actually see lootable corpses).
         std::list<Unit*> nearby;
-        Acore::AnyUnitInObjectRangeCheck check(player, AUTLOOT_POLL_RANGE);
-        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(player, nearby, check);
+        LootableCorpseInRange check(player, AUTLOOT_POLL_RANGE);
+        Acore::UnitListSearcher<LootableCorpseInRange> searcher(player, nearby, check);
         Cell::VisitObjects(player, searcher, AUTLOOT_POLL_RANGE);
         for (Unit* unit : nearby)
             if (Creature* c = unit->ToCreature())
-                if (c->IsAlive() && c->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE))
-                    AutolootCreatureKill(player, c);
+            {
+                AutolootCreatureKill(player, c);
+                // The sweep can fully loot a corpse (or clear a junk one),
+                // which arms UNIT_FLAG_SKINNABLE through
+                // AllLootRemovedFromCorpse -- mirror the kill hook and try the
+                // auto-skin here too, so hides do not die with the corpse.
+                AutolootSkinKill(player, c);
+            }
     }
 };
 
