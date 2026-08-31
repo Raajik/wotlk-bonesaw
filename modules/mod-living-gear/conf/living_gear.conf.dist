@@ -216,3 +216,6 @@ LivingGear.WGBots.SweepSeconds = 5
 LivingGear.Perks.SkillPointDivisor = 10
 LivingGear.Perks.RespecCooldown = 300
 LivingGear.Perks.CostEpoch = 1
+
+# Dungeon loot tuning (documented so fresh installs do not warn)
+LivingGear.DungeonLoot.UncommonMult = 4
