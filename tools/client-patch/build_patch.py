@@ -25,6 +25,23 @@ SPELL_DBC = DBC_DIR / "Spell.dbc"
 SPELL_DBC_BASE = ROOT / "cache" / "Spell.dbc.base"
 SLA_DBC = DBC_DIR / "SkillLineAbility.dbc"
 SLA_DBC_BASE = ROOT / "cache" / "SkillLineAbility.dbc.base"
+AREATABLE_DBC = DBC_DIR / "AreaTable.dbc"
+AREATABLE_DBC_BASE = ROOT / "cache" / "AreaTable.dbc.base"
+# Report #218: the client refuses flying mounts in Dalaran with "You can't
+# use that here." because its own AreaTable.dbc (the 3.3.5a patch-enUS-3
+# copy) still carries AREA_FLAG_NO_FLY_ZONE (0x20000000, raw column 4) on
+# Dalaran City (4395) and fourteen sub-areas. The server clears the flag at
+# startup (SpellInfoCorrections, shipped 0.1.118), but the client checks its
+# own DBC before the mount cast is even sent, so the fix must ride the
+# client patch. The 3.3.5a client has no SpellArea.dbc at all (verified:
+# no candidate MPQ carries one), so the area flags are the only client
+# gate. Wintergrasp keeps its battlefield flight gate server-side and its
+# own area rows are left untouched. AreaTable.dbc ships in patch-Y.MPQ and
+# in both locale patch-<locale>-4.MPQ archives: the locale patch-4 outranks
+# blizzard's locale patch-3, which is where the pristine copy lives.
+AREA_FLAG_NO_FLY_ZONE = 0x20000000
+DALARAN_CITY = 4395
+DALARAN_MAP = 571
 OUT_MPQ = ROOT / "dist" / "patch-Y.MPQ"
 LOCALES = ("enUS", "enGB")
 FRAME_TOC_BASE = ROOT / "cache" / "FrameXML.toc.base"
@@ -601,6 +618,43 @@ def patch_spell_dbc():
     print(f"Wrote {SPELL_DBC} ({new_count} records)")
 
 
+def patch_areatable():
+    if not AREATABLE_DBC_BASE.exists():
+        raise SystemExit(
+            f"Missing {AREATABLE_DBC_BASE} -- run python tools/client-patch/extract_areatable.py first"
+        )
+    data = bytearray(AREATABLE_DBC_BASE.read_bytes())
+    magic, records, fields, recsize, strsize = struct.unpack_from("<4sIIII", data, 0)
+    if magic != b"WDBC" or fields != 36 or recsize != 144:
+        raise SystemExit(f"Unexpected AreaTable.dbc header: {magic} {fields} {recsize}")
+
+    MAP_COL, PARENT_COL, FLAGS_COL = 1, 2, 4
+    dalaran = {DALARAN_CITY}
+    for _ in range(4):
+        for i in range(records):
+            rec = struct.unpack_from("<" + "I" * fields, data, 20 + i * recsize)
+            if rec[MAP_COL] == DALARAN_MAP and rec[PARENT_COL] in dalaran:
+                dalaran.add(rec[0])
+    cleared = 0
+    for i in range(records):
+        rec = struct.unpack_from("<" + "I" * fields, data, 20 + i * recsize)
+        if rec[MAP_COL] == DALARAN_MAP and rec[0] in dalaran and rec[FLAGS_COL] & AREA_FLAG_NO_FLY_ZONE:
+            off = 20 + i * recsize + FLAGS_COL * 4
+            data[off : off + 4] = struct.pack("<I", rec[FLAGS_COL] & ~AREA_FLAG_NO_FLY_ZONE)
+            cleared += 1
+    for i in range(records):
+        rec = struct.unpack_from("<" + "I" * fields, data, 20 + i * recsize)
+        if rec[MAP_COL] == DALARAN_MAP and rec[0] in dalaran:
+            assert not rec[FLAGS_COL] & AREA_FLAG_NO_FLY_ZONE, f"row {rec[0]} still no-fly"
+    if cleared != 15:
+        raise SystemExit(
+            f"patch_areatable cleared {cleared} rows, expected 15 -- base drifted, re-extract"
+        )
+    DBC_DIR.mkdir(parents=True, exist_ok=True)
+    AREATABLE_DBC.write_bytes(data)
+    print(f"Dalaran flight: cleared AREA_FLAG_NO_FLY_ZONE on {cleared} of {len(dalaran)} tree areas")
+
+
 def verify_dbc():
     data = SPELL_DBC.read_bytes()
     magic, records, fields, recsize, strsize = struct.unpack_from("<4sIIII", data, 0)
@@ -933,6 +987,7 @@ def build_mpq():
         [
             (SPELL_DBC, b"DBFilesClient\\Spell.dbc"),
             (SLA_DBC, b"DBFilesClient\\SkillLineAbility.dbc"),
+            (AREATABLE_DBC, b"DBFilesClient\\AreaTable.dbc"),
             (DBC_DIR / "LFGDungeons.dbc", b"DBFilesClient\\LFGDungeons.dbc"),
             (DBC_DIR / "LFGDungeonGroup.dbc", b"DBFilesClient\\LFGDungeonGroup.dbc"),
         ],
@@ -941,6 +996,7 @@ def build_mpq():
         (FRAME_TOC, b"Interface\\FrameXML\\FrameXML.toc"),
         (UI_LUA, b"Interface\\FrameXML\\LivingGear.lua"),
         (AURA_LUA, b"Interface\\FrameXML\\BonesawAuras.lua"),
+        (AREATABLE_DBC, b"DBFilesClient\\AreaTable.dbc"),
     ]
     for locale in LOCALES:
         _create_mpq(storm, ROOT / "dist" / f"patch-{locale}-4.MPQ", locale_files)
@@ -951,6 +1007,7 @@ def main():
     patch_spell_dbc()
     verify_dbc()
     patch_skill_line_ability()
+    patch_areatable()
     patch_framexml()
     sys.path.insert(0, str(ROOT))
     from patch_lfg_raids import patch as patch_lfg
