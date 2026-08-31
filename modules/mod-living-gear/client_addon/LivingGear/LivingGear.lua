@@ -6835,7 +6835,7 @@ function LG2.BuildCraftNameMap()
     end
 end
 
-local function CraftSpellFromBookItem(index, bookType)
+function LG2.CraftSpellFromBookItem(index, bookType)
     if not (index and GetSpellBookItemName) then
         return nil
     end
@@ -6846,20 +6846,23 @@ local function CraftSpellFromBookItem(index, bookType)
     return nil
 end
 
-local origCastSpell = CastSpell
-if origCastSpell then
+-- The three originals ride on LG2 (not top-level locals) so the main chunk
+-- does not spend local slots on them -- see the Bonesaw.md note on the
+-- 60-upvalue / main-chunk-local budget.
+LG2._origCastSpell = CastSpell
+if LG2._origCastSpell then
     CastSpell = function(index, bookType, ...)
-        local id = CraftSpellFromBookItem(index, bookType)
+        local id = LG2.CraftSpellFromBookItem(index, bookType)
         if id and SendLine then
             SendLine("CRAFTCAST|" .. tostring(id) .. "|1")
             return
         end
-        return origCastSpell(index, bookType, ...)
+        return LG2._origCastSpell(index, bookType, ...)
     end
 end
 
-local origCastSpellByName = CastSpellByName
-if origCastSpellByName then
+LG2._origCastSpellByName = CastSpellByName
+if LG2._origCastSpellByName then
     CastSpellByName = function(name, target)
         local base = name and string.match(name, "^[^%(]+") or nil
         local id = base and LG2.craftNames[base] or nil
@@ -6867,12 +6870,12 @@ if origCastSpellByName then
             SendLine("CRAFTCAST|" .. tostring(id) .. "|1")
             return
         end
-        return origCastSpellByName(name, target)
+        return LG2._origCastSpellByName(name, target)
     end
 end
 
-local origUseAction = UseAction
-if origUseAction then
+LG2._origUseAction = UseAction
+if LG2._origUseAction then
     UseAction = function(slot, target, button)
         if GetActionInfo and LG2.craftSpellIds and next(LG2.craftSpellIds) then
             local ok, atype, aid = pcall(GetActionInfo, slot)
@@ -6881,7 +6884,7 @@ if origUseAction then
                 return
             end
         end
-        return origUseAction(slot, target, button)
+        return LG2._origUseAction(slot, target, button)
     end
 end
 
