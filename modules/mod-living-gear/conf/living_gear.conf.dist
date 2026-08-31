@@ -193,3 +193,10 @@ LivingGear.AutoTrainClassSpells = 1
 # and permanent; SiegeScale = 0 turns the whole thing off.
 LivingGear.Wintergrasp.SiegeScale = 1
 LivingGear.Wintergrasp.VehicleDamageMult = 10.0
+
+# Daily and weekly quests are infinitely repeatable (bug report #164). A
+# daily or weekly can be accepted again the moment it is turned in -- no
+# reset wait, no hourly rotation boundary to sit through. Dailies are also
+# freed from the 25-per-day slot cap as each reward releases its slot.
+# = 0 restores the normal daily/weekly reset schedule.
+LivingGear.Quests.InfiniteDailyWeekly = 1

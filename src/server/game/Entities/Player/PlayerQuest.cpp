@@ -15,6 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "Config.h"
 #include "CreatureAI.h"
 #include "DisableMgr.h"
 #include "GameEventMgr.h"
@@ -855,6 +856,32 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
         SetMonthlyQuestStatus(quest_id);
     else if (quest->IsSeasonal())
         SetSeasonalQuestStatus(quest_id);
+
+    // Dailies and weeklies are infinitely repeatable (report #164). The
+    // bookkeeping above stays intact for saves and achievement criteria,
+    // but the take-gates it feeds -- the daily slot field, the DF quest
+    // set and the weekly set -- are released immediately, so the quest can
+    // be accepted again without waiting for the next reset. The single
+    // SaveToDB below then persists the released state, so a relog cannot
+    // resurrect the lockout. Daily/weekly templates are auto-flagged
+    // QUEST_SPECIAL_FLAGS_REPEATABLE at load, so turn-ins and rewards run
+    // the normal path every cycle.
+    if (sConfigMgr->GetOption<bool>("LivingGear.Quests.InfiniteDailyWeekly", true))
+    {
+        if (quest->IsDaily() || quest->IsDFQuest())
+        {
+            for (uint32 quest_daily_idx = 0; quest_daily_idx < PLAYER_MAX_DAILY_QUESTS; ++quest_daily_idx)
+                if (GetUInt32Value(PLAYER_FIELD_DAILY_QUESTS_1 + quest_daily_idx) == quest_id)
+                    SetUInt32Value(PLAYER_FIELD_DAILY_QUESTS_1 + quest_daily_idx, 0);
+            m_DFQuests.erase(quest_id);
+        }
+
+        if (quest->IsWeekly())
+        {
+            m_weeklyquests.erase(quest_id);
+            m_WeeklyQuestChanged = true;
+        }
+    }
 
     RemoveActiveQuest(quest_id, false);
     SetRewardedQuest(quest_id);
