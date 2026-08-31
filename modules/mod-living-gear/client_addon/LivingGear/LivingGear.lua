@@ -6511,6 +6511,9 @@ if LG2._origTradeSkillInfo then
         if name and skillType ~= "header" and GetTradeSkillNumReagents then
             local ok, n = pcall(LG2.CraftableWithVault, index,
                 GetTradeSkillNumReagents(index), GetTradeSkillReagentInfo)
+            if not ok and n then
+                DEFAULT_CHAT_FRAME:AddMessage("|cffff3333[LG]|r vault count error: " .. tostring(n))
+            end
             if ok and n and n > (numAvailable or 0) then
                 numAvailable = n
             end
@@ -6638,6 +6641,9 @@ if LG2._origCraftInfo then
         if name and craftType ~= "header" and GetCraftNumReagents then
             local ok, n = pcall(LG2.CraftableWithVault, index,
                 GetCraftNumReagents(index), GetCraftReagentInfo)
+            if not ok and n then
+                DEFAULT_CHAT_FRAME:AddMessage("|cffff3333[LG]|r vault count error: " .. tostring(n))
+            end
             if ok and n and n > (numAvailable or 0) then
                 numAvailable = n
             end
@@ -6682,7 +6688,7 @@ evCraftErr:SetScript("OnEvent", function(_, _, a1, a2)
             -- heal right below, un-doing the #137/#138 fix it sits next to.
             -- Diagnostics must never be able to re-break the bug they
             -- diagnose: pcall the whole block.
-            pcall(function()
+            local okDiag, errDiag = pcall(function()
                 local d = LG2._lastCraftDiag
                 -- RawItemCount is the pristine, pre-hook count: the hooked
                 -- GetItemCount adds the vault, which is why the old diag
@@ -6705,6 +6711,9 @@ evCraftErr:SetScript("OnEvent", function(_, _, a1, a2)
                     "|cffff3333[LG diag]|r craft blocked: %s (index %s) needs %s",
                     tostring(d.name), tostring(d.index), table.concat(parts, ", ")))
             end)
+            if not okDiag then
+                DEFAULT_CHAT_FRAME:AddMessage("|cffff3333[LG]|r craft diag error: " .. tostring(errDiag))
+            end
         end
         LG2._craftAvail, LG2._craftAvailGen = {}, nil
         LG2._bagGen = (LG2._bagGen or 0) + 1
