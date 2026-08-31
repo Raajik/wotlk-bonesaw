@@ -94,16 +94,24 @@ bool g_killXpFloorEnabled = true;
 // makes BG levelling viable at all.
 uint32 g_killXpFloorPct = 2;
 
-// Bug report #3: Wintergrasp siege damage scales with how many people are
-// actually there. WG_FULL_ROSTER is the population the stock building health
-// is balanced around -- at or above it nothing changes at all. Below it,
-// damage is divided by the shortfall, capped at WG_MAX_SIEGE_MULT.
-//
-// 20 and 10 together give exactly what was asked for: "if there's only a couple
-// of players, make them do 10x normal damage" -- two players hit 20/2 = 10x.
+// Bug reports #3 and #162: siege vehicle damage. #3 asked for a Wintergrasp
+// attendance scale; #162 replaced that with a flat, permanent multiplier:
+// "make the 10x damage bonus on siege vehicles game-wide (wintergrasp, strand
+// of the ancients, isle of conquest, ulduar, etc) and apply permanently
+// instead of being squad-size-based". g_wgVehicleMult is that multiplier --
+// every hit from a siege vehicle (the vehicle itself or its rider) to a
+// destructible wall or any other unit carries it, on every map.
 bool g_wgSiegeScale = true;
-uint32 g_wgFullRoster = 20;
-float g_wgMaxSiegeMult = 10.0f;
+float g_wgVehicleMult = 10.0f;
+
+// A unit is siege-vehicle damage when it rides a vehicle (the player in the
+// siege engine seat, casting its spells) or is itself a vehicle (the siege
+// engine creature firing its own AI or accessory spells). Ordinary mounts are
+// not vehicles -- they never have a kit and the rider's GetVehicle() is null.
+bool IsSiegeVehicleDamage(Unit const* unit)
+{
+    return unit && (unit->GetVehicle() || unit->GetVehicleKit());
+}
 
 // ---------------------------------------------------------------------
 // Live diagnostics (.lg diag)
@@ -799,17 +807,15 @@ public:
 
 // Bug report #3, 2026-08-22: "make wintergrasp siege damage scale with the
 // number of players -- if there's only a couple of players, make them do 10x
-// normal damage."
+// normal damage." Report #162 then replaced the attendance scale: the 10x is
+// now flat and permanent, and it follows the vehicle to every map -- the
+// destructible gates of Strand of the Ancients and Isle of Conquest, Ulduar's
+// towers, not just the Wintergrasp keep.
 //
 // Wintergrasp's walls and towers are destructible GameObjects, so their damage
 // does not go through any of the Unit damage hooks -- it arrives here, at
 // GameObject::ModifyHealth. `change` is negative for damage and positive for
 // repair; only damage is touched, so repairing is unaffected.
-//
-// Scoped to the Wintergrasp area, and counts only players actually in that
-// area rather than everyone on the Northrend map, which would otherwise let
-// half of Dalaran suppress the multiplier without ever setting foot in the
-// battle.
 class SupportWintergrasp : public AllGameObjectScript
 {
 public:
@@ -820,29 +826,32 @@ public:
     {
         if (!g_wgSiegeScale || !go || change >= 0 || !attackerOrHealer)
             return;
-        if (go->GetAreaId() != AREA_WINTERGRASP && go->GetZoneId() != AREA_WINTERGRASP)
+        if (!IsSiegeVehicleDamage(attackerOrHealer))
             return;
-        Map* map = go->GetMap();
-        if (!map)
-            return;
-
-        uint32 present = 0;
-        for (auto const& pair : map->GetPlayers())
-            if (Player* p = pair.GetSource())
-                if (p->IsInWorld() && (p->GetZoneId() == AREA_WINTERGRASP || p->GetAreaId() == AREA_WINTERGRASP))
-                    ++present;
-
-        if (present >= g_wgFullRoster)
-            return;
-        float mult = float(g_wgFullRoster) / float(std::max<uint32>(present, 1));
-        if (mult > g_wgMaxSiegeMult)
-            mult = g_wgMaxSiegeMult;
-        if (mult <= 1.0f)
-            return;
-
-        double const scaled = double(change) * double(mult);
+        double const scaled = double(change) * double(g_wgVehicleMult);
         change = scaled <= double(std::numeric_limits<int32>::min())
             ? std::numeric_limits<int32>::min() : int32(scaled);
+    }
+};
+
+// The other half of #162: the same flat multiplier on a siege vehicle's
+// damage to units, so the Ulduar vehicle fights and Wintergrasp's defenders
+// fall at siege pace too. OnDamage is the one funnel every direct damage
+// number passes through (melee, spell hits and periodic ticks alike), so one
+// hook covers cannon fire, boulders and ram hits; the GO hook above is the
+// separate path for destructible buildings.
+class SupportVehicles : public UnitScript
+{
+public:
+    SupportVehicles() : UnitScript("LivingGearSupportVehicles", true, { UNITHOOK_ON_DAMAGE }) { }
+
+    void OnDamage(Unit* attacker, Unit* /*victim*/, uint32& damage) override
+    {
+        if (!g_wgSiegeScale || !damage || !IsSiegeVehicleDamage(attacker))
+            return;
+        uint64 const scaled = uint64(damage) * uint64(g_wgVehicleMult);
+        damage = scaled > uint64(std::numeric_limits<uint32>::max())
+            ? std::numeric_limits<uint32>::max() : uint32(scaled);
     }
 };
 
@@ -1076,13 +1085,13 @@ void AddSC_LivingGearSupport()
 
     LivingGearSupport::g_wgSiegeScale =
         sConfigMgr->GetOption<bool>("LivingGear.Wintergrasp.SiegeScale", true);
-    LivingGearSupport::g_wgFullRoster =
-        std::max<uint32>(1, sConfigMgr->GetOption<uint32>("LivingGear.Wintergrasp.FullRoster", 20));
-    LivingGearSupport::g_wgMaxSiegeMult =
-        sConfigMgr->GetOption<float>("LivingGear.Wintergrasp.MaxSiegeMult", 10.0f);
+
+    LivingGearSupport::g_wgVehicleMult =
+        sConfigMgr->GetOption<float>("LivingGear.Wintergrasp.VehicleDamageMult", 10.0f);
 
     new LivingGearSupport::SupportPlayer();
     new LivingGearSupport::SupportWintergrasp();
+    new LivingGearSupport::SupportVehicles();
     new LivingGearSupport::SupportKillXp();
     new LivingGearSupport::SupportLoot();
     new LivingGearSupport::SupportCommands();

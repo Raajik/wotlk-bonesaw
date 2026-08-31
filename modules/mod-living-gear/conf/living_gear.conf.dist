@@ -186,9 +186,10 @@ LivingGear.ZoneScale.Dungeons = 1
 # (bug report #1).
 LivingGear.AutoTrainClassSpells = 1
 
-# Wintergrasp siege damage scales up when the zone is underpopulated
-# (bug report #3). At or above FullRoster nothing changes; below it, damage is
-# multiplied by FullRoster/present, capped at MaxSiegeMult.
+# Siege vehicle damage (bug reports #3 and #162). Every hit a siege vehicle
+# (or its rider) lands -- on destructible walls and towers, and on anything
+# else -- is multiplied by VehicleDamageMult on every map: Wintergrasp,
+# Strand of the Ancients, Isle of Conquest, the Ulduar vehicle fights. Flat
+# and permanent; SiegeScale = 0 turns the whole thing off.
 LivingGear.Wintergrasp.SiegeScale = 1
-LivingGear.Wintergrasp.FullRoster = 20
-LivingGear.Wintergrasp.MaxSiegeMult = 10.0
+LivingGear.Wintergrasp.VehicleDamageMult = 10.0

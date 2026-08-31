@@ -939,6 +939,25 @@ bool IsToolItem(ItemTemplate const* proto)
     return proto->TotemCategory != 0 && proto->Class == ITEM_CLASS_TRADE_GOODS;
 }
 
+// Report #160: the classic spell-teaching books -- [Book: Gift of the Wild
+// II], [Tome of Frost Nova], [Codex of Renew], [Tablet of Lightning Shield],
+// [Libram: Divine Favor], [Grimoire of ...] -- are class RECIPE / subclass
+// BOOK, and on a realm where class spells auto-train they are pure vendor
+// trash. Matched by first word so profession recipes (also class RECIPE, but
+// a real subclass like Cooking or Enchanting) and teaching journals that
+// matter ([Weather-Beaten Journal]) are untouched.
+bool IsSpellBookName(std::string const& name)
+{
+    static constexpr std::string_view prefixes[] = { "Book", "Tome", "Tablet", "Codex", "Libram", "Grimoire" };
+    for (std::string_view prefix : prefixes)
+        if (name.rfind(prefix, 0) == 0)
+        {
+            char const next = name.size() > prefix.size() ? name[prefix.size()] : '\0';
+            return next == ' ' || next == ':';
+        }
+    return false;
+}
+
 // Item ids the class check cannot reach, from lg_vault_reagent.
 //
 // The repeatable turn-in currencies -- Dark Iron Residue, Core of Elements,
@@ -1157,6 +1176,14 @@ uint8 DefaultLootAction(ItemTemplate const* proto, Player* player = nullptr)
         return ACT_REAGENT_VAULT;
     if (proto->Quality == ITEM_QUALITY_POOR)
         return ACT_VENDOR;
+    // Report #160: obsolete class-spell books vendor automatically. An
+    // explicit autoloot rule still wins -- ResolveLootAction only falls
+    // through to this function when no stored rule matched, so a collector
+    // keeps theirs with a matching rule. A book with no sell price would be
+    // destroyed with no coin by the vendor path (the #31 conjured-food trap),
+    // so those stay in the bag instead.
+    if (proto->Class == ITEM_CLASS_RECIPE && proto->SubClass == ITEM_SUBCLASS_BOOK && IsSpellBookName(proto->Name1))
+        return proto->SellPrice ? ACT_VENDOR : ACT_BAG;
     // Bug report #13, 2026-08-22: "still looting food/potions/consumables --
     // automatically vendor/destroy please."
     //
