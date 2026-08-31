@@ -345,6 +345,69 @@ bool RepSyncEligible(Player* player)
     return player && player->GetSession() && !player->GetSession()->IsBot();
 }
 
+// Team-scoped reputation (bug report #220).
+//
+// Faction.dbc gives every faction race-dependent base reputation, and every
+// faction that belongs to one team (the nine cities, the BG teams, the
+// expedition factions, Kurenai vs The Mag'har, ...) puts each character of
+// the OPPOSITE team at Hated (-42000) through a base-reputation slot
+// covering that team's races. A standing captured from one team carries
+// that team's base inside the displayed total, so replaying it onto a
+// character of the other team writes raw = total - base(other team). That
+// is how a Horde alt ended up Hated with its own faction cities and exalted
+// with enemy ones, and every round trip ratcheted the pool further.
+//
+// A faction therefore syncs only between characters of a team whose
+// races/classes do not START it at Hated. Teams are the DBC race masks
+// (1101 alliance, 690 horde); legality is the worst base reputation any
+// race/class of that team receives, matched exactly like
+// ReputationMgr::GetBaseReputation (first matching slot, wildcards
+// included). Factions that start EVERYONE at Hated (Netherwing, Brood of
+// Nozdormu, Sons of Hodir) have a team-independent base and stay shareable.
+constexpr uint32 REP_RACEMASK_ALLIANCE = 1101;  // human, dwarf, night elf, gnome, draenei
+constexpr uint32 REP_RACEMASK_HORDE = 690;      // orc, undead, tauren, troll, blood elf
+constexpr int32 REP_HATED_BASE = -42000;
+
+int32 RepWorstBaseFor(FactionEntry const* factionEntry, uint32 raceMask)
+{
+    int32 worst = 0;
+    for (uint32 raceBit = 1; raceBit <= (1u << 10); raceBit <<= 1)
+    {
+        if (!(raceMask & raceBit))
+            continue;
+        for (uint32 classBit = 1; classBit <= (1u << 10); classBit <<= 1)
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                bool const raceMatch = (factionEntry->BaseRepRaceMask[i] & raceBit)
+                    || (factionEntry->BaseRepRaceMask[i] == 0 && factionEntry->BaseRepClassMask[i] != 0);
+                bool const classMatch = (factionEntry->BaseRepClassMask[i] & classBit)
+                    || factionEntry->BaseRepClassMask[i] == 0;
+                if (raceMatch && classMatch)
+                {
+                    worst = std::min(worst, factionEntry->BaseRepValue[i]);
+                    break;
+                }
+            }
+        }
+    }
+    return worst;
+}
+
+// Bit 1 = alliance characters may sync this faction, bit 2 = horde.
+uint8 RepTeamLegalTeams(FactionEntry const* factionEntry)
+{
+    if (!factionEntry || factionEntry->reputationListID < 0)
+        return 0;
+    return (RepWorstBaseFor(factionEntry, REP_RACEMASK_ALLIANCE) > REP_HATED_BASE ? 1u : 0u)
+        | (RepWorstBaseFor(factionEntry, REP_RACEMASK_HORDE) > REP_HATED_BASE ? 2u : 0u);
+}
+
+uint8 RepTeamBitFor(Player const* player)
+{
+    return (player->getRaceMask() & REP_RACEMASK_ALLIANCE) ? 1 : 2;
+}
+
 void LoadAccountReputation(uint32 accountId)
 {
     if (!g_accountReputationLoaded.insert(accountId).second)
@@ -370,6 +433,7 @@ void PropagateAccountReputation(Player* source, uint32 factionId, int32 standing
     FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
     if (!factionEntry)
         return;
+    uint8 const legalTeams = RepTeamLegalTeams(factionEntry);
     uint32 const accountId = source->GetSession()->GetAccountId();
     g_syncingReputation.insert(accountId);
     ObjectGuid const sourceGuid = source->GetGUID();
@@ -379,6 +443,8 @@ void PropagateAccountReputation(Player* source, uint32 factionId, int32 standing
         if (!alt || alt->GetGUID() == sourceGuid || !RepSyncEligible(alt))
             continue;
         if (alt->GetSession()->GetAccountId() != accountId)
+            continue;
+        if (!(legalTeams & RepTeamBitFor(alt)))
             continue;
         if (FactionState const* state = alt->GetReputationMgr().GetState(factionEntry))
         {
@@ -397,6 +463,9 @@ void PushAccountReputation(Player* source, uint32 factionId, int32 standing)
         return;
     uint32 const accountId = source->GetSession()->GetAccountId();
     if (g_syncingReputation.count(accountId))
+        return;
+    FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
+    if (!factionEntry || !(RepTeamLegalTeams(factionEntry) & RepTeamBitFor(source)))
         return;
     LoadAccountReputation(accountId);
     int32& stored = g_accountReputation[accountId][factionId];
@@ -419,6 +488,7 @@ void EnsureAccountReputation(Player* player)
     uint32 const accountId = player->GetSession()->GetAccountId();
     LoadAccountReputation(accountId);
     auto& factions = g_accountReputation[accountId];
+    uint8 const teamBit = RepTeamBitFor(player);
 
     // Backfill first, so the replay below sees freshly seeded rows too. Any
     // faction any character of this account has a saved reputation row for,
@@ -449,7 +519,7 @@ void EnsureAccountReputation(Player* player)
         if (found == accountMaxSaved.end())
             continue;
         FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
-        if (!factionEntry)
+        if (!factionEntry || !(RepTeamLegalTeams(factionEntry) & teamBit))
             continue;
         int32 const total = std::max(
             player->GetReputationMgr().GetReputation(factionEntry),
@@ -467,7 +537,7 @@ void EnsureAccountReputation(Player* player)
     for (auto const& [factionId, storedStanding] : factions)
     {
         FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
-        if (!factionEntry)
+        if (!factionEntry || !(RepTeamLegalTeams(factionEntry) & teamBit))
             continue;
         if (FactionState const* state = player->GetReputationMgr().GetState(factionEntry))
         {
