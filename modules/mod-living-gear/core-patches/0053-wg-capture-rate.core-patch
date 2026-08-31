@@ -1,0 +1,23 @@
+Report #206: Wintergrasp objective conversion ignored the capture-rate
+multiplier entirely.
+
+The 25x capture speed shipped as two halves: rev_pvp_capture_25x.sql set
+GO Data16 (= capturePoint.minTime) on every data-driven capture point, and
+core-patch 0051 multiplied Eye of the Storm's code-driven bar. But
+OutdoorPvPCaptureRate (the config that actually multiplies the per-tick
+capture delta, live at 10.0) is only read by OutdoorPvP.cpp. Battlefield
+capture points -- the four Wintergrasp workshop banners -- went through
+BfCapturePoint::Update, which has no rate term at all: a lone capturer
+converts at 1 value/sec regardless of Data16, because Data16 only raises
+the MaxSpeed clamp ceiling (MaxValue/minTime) that a single capturer never
+reaches. That is why WG read as unchanged while EP/Halaa/EY sped up.
+
+Change: BfCapturePoint::Update multiplies both factDiff and the per-tick
+clamp by sWorld->getFloatConfig(CONFIG_OUTDOOR_PVP_CAPTURE_RATE), exactly
+the shape of OPvPCapturePoint::Update (which multiplies factDiff and
+maxDiff by the same config). At the live rate (10.0) a solo workshop flip
+takes ~24s instead of ~4 minutes; the Data16=2 ceiling still governs large
+groups. Raising OutdoorPvPCaptureRate scales WG identically to every other
+capture point -- there is no separate knob.
+
+Touches: src/server/game/Battlefield/Battlefield.cpp (BfCapturePoint::Update)
