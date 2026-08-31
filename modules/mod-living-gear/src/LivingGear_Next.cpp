@@ -269,6 +269,7 @@ bool g_hasSpeedCapCol = false;
 bool g_hasRidingCol = false;
 bool g_hasClassBuffTable = false;
 bool g_hasAccountMountTable = false;
+bool g_hasAccountReputationTable = false;
 
 void DetectNextSchema()
 {
@@ -296,6 +297,192 @@ void DetectNextSchema()
         "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
         "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_mount'"))
         g_hasAccountMountTable = (*tables)[0].Get<uint64>() > 0;
+    if (QueryResult tables = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_reputation'"))
+        g_hasAccountReputationTable = (*tables)[0].Get<uint64>() > 0;
+}
+
+// ---------------------------------------------------------------------
+// Account-wide reputation (bug reports #203/#216, 2026-08-30).
+//
+// Reputation was strictly per-character: an exalted main left every alt
+// grinding from neutral. This gives reputation the same treatment the shared
+// gold/honor pool above gets, per faction, backed by lg_account_reputation
+// (account_id, faction_id, standing):
+//
+//   * OnPlayerReputationChange (ReputationMgr::SetOneFactionReputation, the
+//     single choke point every reputation path -- kills, quests, turn-in
+//     tokens, spillover -- funnels through) records the new standing and sets
+//     every OTHER online character of the account to it (bidirectional: a
+//     city-guard kill drops the whole account's standing too).
+//   * EnsureAccountReputation (OnPlayerLogin) replays stored values onto the
+//     logging-in character, then backfills rows the table is missing with
+//     MAX(standing) across the account's saved characters -- one-time seeding
+//     so an existing exalted alt lifts everyone without a grind.
+//
+// The stored number is the DISPLAYED total (base reputation included), which
+// is exactly what this hook and GetReputation() speak, so
+// SetOneFactionReputation applies it verbatim to any character. Race-differing
+// base reputation is absorbed: applying a total T to a character whose base is
+// B writes Standing = T - B, and both characters display T.
+//
+// Playerbots are excluded -- the SharedEligible() rule above, restated because
+// the namespaces do not share helpers: ~90 bot accounts sit in
+// lg_account_meta and a bot grinding reputation would trash the shared pool it
+// landed in. g_syncingReputation is the recursion guard: setting standing on
+// an alt fires that alt's own OnPlayerReputationChange, which would push
+// straight back -- and re-push the earning character while the engine has not
+// applied its value yet, double-counting the original gain.
+
+std::unordered_map<uint32, std::unordered_map<uint32, int32>> g_accountReputation;
+std::unordered_set<uint32> g_accountReputationLoaded;
+std::unordered_set<uint32> g_syncingReputation;
+
+bool RepSyncEligible(Player* player)
+{
+    return player && player->GetSession() && !player->GetSession()->IsBot();
+}
+
+void LoadAccountReputation(uint32 accountId)
+{
+    if (!g_accountReputationLoaded.insert(accountId).second)
+        return;
+    if (!g_hasAccountReputationTable)
+        return;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `faction_id`, `standing` FROM `lg_account_reputation` WHERE `account_id` = {}", accountId))
+    {
+        do
+            g_accountReputation[accountId][(*result)[0].Get<uint32>()] = (*result)[1].Get<int32>();
+        while (result->NextRow());
+    }
+}
+
+// Sets one faction's standing on every OTHER online character of the account.
+// SetOneFactionReputation marks the row for logout save and the guard keeps
+// the alt's own hook from pushing straight back; SendState flushes the packet
+// immediately (it also carries every other pending needSend faction for that
+// player, which is fine -- earned values are flushed the same way).
+void PropagateAccountReputation(Player* source, uint32 factionId, int32 standing)
+{
+    FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
+    if (!factionEntry)
+        return;
+    uint32 const accountId = source->GetSession()->GetAccountId();
+    g_syncingReputation.insert(accountId);
+    ObjectGuid const sourceGuid = source->GetGUID();
+    for (auto const& pair : ObjectAccessor::GetPlayers())
+    {
+        Player* alt = pair.second;
+        if (!alt || alt->GetGUID() == sourceGuid || !RepSyncEligible(alt))
+            continue;
+        if (alt->GetSession()->GetAccountId() != accountId)
+            continue;
+        if (FactionState const* state = alt->GetReputationMgr().GetState(factionEntry))
+        {
+            if (alt->GetReputationMgr().GetReputation(factionEntry) != standing
+                && alt->GetReputationMgr().SetOneFactionReputation(factionEntry, standing, false))
+                alt->GetReputationMgr().SendState(state);
+        }
+    }
+    g_syncingReputation.erase(accountId);
+}
+
+// One reputation change earned: record it account-wide, then push it out.
+void PushAccountReputation(Player* source, uint32 factionId, int32 standing)
+{
+    if (!RepSyncEligible(source) || !g_hasAccountReputationTable)
+        return;
+    uint32 const accountId = source->GetSession()->GetAccountId();
+    if (g_syncingReputation.count(accountId))
+        return;
+    LoadAccountReputation(accountId);
+    int32& stored = g_accountReputation[accountId][factionId];
+    if (stored == standing)
+        return;
+    stored = standing;
+    CharacterDatabase.Execute(
+        "INSERT INTO `lg_account_reputation` (`account_id`, `faction_id`, `standing`) "
+        "VALUES ({}, {}, {}) ON DUPLICATE KEY UPDATE `standing` = {}",
+        accountId, factionId, standing, standing);
+    PropagateAccountReputation(source, factionId, standing);
+}
+
+// Login replay + backfill, guarded the whole way: the SetOneFactionReputation
+// calls below must not re-enter the hook.
+void EnsureAccountReputation(Player* player)
+{
+    if (!RepSyncEligible(player) || !g_hasAccountReputationTable)
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountReputation(accountId);
+    auto& factions = g_accountReputation[accountId];
+
+    // Backfill first, so the replay below sees freshly seeded rows too. Any
+    // faction any character of this account has a saved reputation row for,
+    // but the table does not, seeds MAX(standing) across the account converted
+    // to a displayed total with THIS character's base reputation (the join
+    // cannot know each alt's base; equal-base races are exact, and the seed
+    // never lands below what this character itself saved with).
+    std::unordered_map<uint32, int32> accountMaxSaved;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `r`.`faction`, MAX(`r`.`standing`) FROM `character_reputation` `r` "
+        "JOIN `characters` `c` ON `c`.`guid` = `r`.`guid` "
+        "WHERE `c`.`account` = {} GROUP BY `r`.`faction`", accountId))
+    {
+        do
+            accountMaxSaved[(*result)[0].Get<uint32>()] = (*result)[1].Get<int32>();
+        while (result->NextRow());
+    }
+
+    g_syncingReputation.insert(accountId);
+
+    std::vector<uint32> seeded;
+    for (auto const& pair : player->GetReputationMgr().GetStateList())
+    {
+        uint32 const factionId = pair.second.ID;
+        if (factions.count(factionId))
+            continue;
+        auto const found = accountMaxSaved.find(factionId);
+        if (found == accountMaxSaved.end())
+            continue;
+        FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
+        if (!factionEntry)
+            continue;
+        int32 const total = std::max(
+            player->GetReputationMgr().GetReputation(factionEntry),
+            found->second + player->GetReputationMgr().GetBaseReputation(factionEntry));
+        factions[factionId] = total;
+        CharacterDatabase.Execute(
+            "INSERT INTO `lg_account_reputation` (`account_id`, `faction_id`, `standing`) "
+            "VALUES ({}, {}, {}) ON DUPLICATE KEY UPDATE `standing` = {}",
+            accountId, factionId, total, total);
+        seeded.push_back(factionId);
+    }
+
+    // Replay: the stored value wins wherever this character differs. The
+    // packet only goes out when the value actually moved.
+    for (auto const& [factionId, storedStanding] : factions)
+    {
+        FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
+        if (!factionEntry)
+            continue;
+        if (FactionState const* state = player->GetReputationMgr().GetState(factionEntry))
+        {
+            if (player->GetReputationMgr().GetReputation(factionEntry) != storedStanding
+                && player->GetReputationMgr().SetOneFactionReputation(factionEntry, storedStanding, false))
+                player->GetReputationMgr().SendState(state);
+        }
+    }
+
+    g_syncingReputation.erase(accountId);
+
+    // Seeded rows may sit above what the other online characters hold (an
+    // offline alt had more); lift them now, with the guard down so the usual
+    // push path runs.
+    for (uint32 factionId : seeded)
+        PropagateAccountReputation(player, factionId, factions[factionId]);
 }
 
 void SendLine(Player* player, std::string const& line)
@@ -1406,6 +1593,7 @@ public:
         PLAYERHOOK_ON_LOGOUT,
         PLAYERHOOK_ON_UPDATE,
         PLAYERHOOK_ON_MONEY_CHANGED,
+        PLAYERHOOK_ON_REPUTATION_CHANGE,
         PLAYERHOOK_ON_SPELL_CAST,
         PLAYERHOOK_ON_MAP_CHANGED,
         PLAYERHOOK_ON_CREATURE_KILL,
@@ -1427,6 +1615,7 @@ public:
         LoadClassBuffUnlock(accountId);
         LoadAccountRiding(accountId);
         EnsureSharedCurrencies(player);
+        EnsureAccountReputation(player);
         // Paladin Retribution promises "Learn Crusader Strike" (bug report
         // #25). Granted here rather than on selection so an existing
         // Retribution Paladin picks it up on their next login instead of
@@ -1462,6 +1651,16 @@ public:
             UnlockPerk(player, SPELL_CLASS_BUFFS);
         ApplyWeaponPeak(player);
         SendLine(player, Acore::StringFormat("SCAP|{}", SpeedCapPct(player)));
+    }
+
+    // Account-wide reputation (bug reports #203/#216): observe the change,
+    // record it account-wide and push it onto the other online characters.
+    // Always true -- this hook observes, it never vetoes a standing change.
+    bool OnPlayerReputationChange(Player* player, uint32 factionId, int32& standing, bool /*incremental*/) override
+    {
+        if (player)
+            PushAccountReputation(player, factionId, standing);
+        return true;
     }
 
     // Report #195: death drops the blessing; bring it straight back up.
