@@ -3282,6 +3282,25 @@ void SpellMgr::LoadSpellInfoCorrections()
         spellInfo->AuraInterruptFlags |= AURA_INTERRUPT_FLAG_CHANGE_MAP;
     });
 
+    // Report #212: Putricide's trap gauntlet (the corridor between the
+    // Festergut and Rotface doors) casts Giant Insect Swarm, whose periodic
+    // damage wipes bot-filled raids because bots never heal through it.
+    // Keep the swarm's cosmetic/summon behavior; gut only its damage so the
+    // gauntlet is survivable (ticks drop to effectively zero).
+    ApplySpellFix({ 70475 }, [](SpellInfo* spellInfo)
+    {
+        for (uint8 i = 0; i < 3; ++i)
+        {
+            if (spellInfo->Effects[i].IsEffect(SPELL_EFFECT_SCHOOL_DAMAGE) ||
+                spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE_PERCENT)
+            {
+                spellInfo->Effects[i].BasePoints = 0;
+                spellInfo->Effects[i].DieSides = 0;
+            }
+        }
+    });
+
     // Leap to a Random Location
     ApplySpellFix({ 70485 }, [](SpellInfo* spellInfo)
     {
