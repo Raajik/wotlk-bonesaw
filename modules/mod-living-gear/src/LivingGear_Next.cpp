@@ -486,6 +486,127 @@ void EnsureAccountReputation(Player* player)
         PropagateAccountReputation(player, factionId, factions[factionId]);
 }
 
+// ---------------------------------------------------------------------
+// Self-cast buffs are permanent and come back on death (report #172:
+// "make class buffs permanent on self when cast, automatically reapply
+// same buffs on death").
+//
+// Scope, decided deliberately: a buff the player CAST on themselves. Not
+// whatever a proc, trinket or totem handed them -- procs are triggered
+// casts and are skipped by the IsTriggered guard in OnPlayerSpellCast,
+// trinkets cast through an item so their auras carry a cast-item guid,
+// and totem or pet auras name someone else as caster. Defensive
+// immunities (Divine Shield, Ice Block, Cloak of Shadows, ...) are
+// excluded as well: an infinite immunity is not a buff, it is a wall.
+//
+// Death strips every aura with AURA_REMOVE_BY_DEATH before
+// OnPlayerJustDied can observe anything, so "which buffs to bring back"
+// cannot be captured at death -- the set is maintained continuously: a
+// spell joins when its aura is made permanent here, and leaves when that
+// aura is removed for any reason other than death itself (dispel, manual
+// cancel, form loss). Recasting the same spell refreshes the existing
+// aura instead of replacing it, so rank changes follow without help.
+std::unordered_map<uint32, std::unordered_set<uint32>> g_selfBuffs;
+
+// Immunity auras never become permanent: Divine Shield, Ice Block and
+// friends are balanced by their short windows.
+bool IsImmunityBuffSpell(SpellInfo const* info)
+{
+    if (!info)
+        return false;
+    return info->HasAura(SPELL_AURA_SCHOOL_IMMUNITY)
+        || info->HasAura(SPELL_AURA_DAMAGE_IMMUNITY)
+        || info->HasAura(SPELL_AURA_DISPEL_IMMUNITY)
+        || info->HasAura(SPELL_AURA_MECHANIC_IMMUNITY);
+}
+
+// "The player cast this on themselves": either an explicit self unit
+// target, or no unit target at all with every present effect caster
+// targeted (the usual shape of a plain self-buff button).
+bool IsSelfCastBuffSpell(Player* player, Spell* spell)
+{
+    if (!player || !spell || spell->IsTriggered() || spell->m_CastItem)
+        return false;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info)
+        return false;
+    if (Unit* target = spell->m_targets.GetUnitTarget())
+        return target == player;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (!info->Effects[i].Effect)
+            continue;
+        if (info->Effects[i].TargetA.GetTarget() != TARGET_UNIT_CASTER
+            && info->Effects[i].TargetB.GetTarget() != TARGET_UNIT_CASTER)
+            return false;
+    }
+    return true;
+}
+
+// Deferred one tick from OnPlayerSpellCast: that hook fires before the
+// spell's auras exist, and touching auras mid-cast is the reentrant path
+// into the aura system this module keeps deferring around. Only auras the
+// player cast on themselves, that are positive, finite and not permanent
+// already (the module's own managed auras stay managed) are extended.
+void ExtendSelfBuffs(ObjectGuid playerGuid, uint32 spellId)
+{
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!player || !player->IsInWorld() || player->isDead())
+        return;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info || IsImmunityBuffSpell(info))
+        return;
+    uint32 const chain = sSpellMgr->GetFirstSpellInChain(spellId);
+    bool extended = false;
+    for (auto const& pair : player->GetAppliedAuras())
+    {
+        Aura* aura = pair.second->GetBase();
+        if (!aura || aura->IsPermanent() || aura->GetCasterGUID() != playerGuid)
+            continue;
+        if (!aura->GetSpellInfo()->IsPositive())
+            continue;
+        if (sSpellMgr->GetFirstSpellInChain(aura->GetId()) != chain)
+            continue;
+        aura->SetMaxDuration(-1);
+        aura->SetDuration(-1);
+        extended = true;
+    }
+    if (extended)
+        g_selfBuffs[playerGuid.GetCounter()].insert(spellId);
+}
+
+void ForgetSelfBuff(Player* player, uint32 spellId)
+{
+    if (!player)
+        return;
+    auto const itr = g_selfBuffs.find(player->GetGUID().GetCounter());
+    if (itr == g_selfBuffs.end())
+        return;
+    itr->second.erase(spellId);
+    if (itr->second.empty())
+        g_selfBuffs.erase(itr);
+}
+
+// On resurrect: the same buffs come straight back up, permanent again.
+void RecastSelfBuffs(Player* player)
+{
+    if (!player || !player->IsInWorld() || player->isDead())
+        return;
+    auto const itr = g_selfBuffs.find(player->GetGUID().GetCounter());
+    if (itr == g_selfBuffs.end() || itr->second.empty())
+        return;
+    std::vector<uint32> const ids(itr->second.begin(), itr->second.end());
+    for (uint32 spellId : ids)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || IsImmunityBuffSpell(info) || !player->HasSpell(spellId))
+            continue;
+        if (player->CastSpell(player, spellId, true) != SPELL_CAST_OK)
+            continue;
+        ExtendSelfBuffs(player->GetGUID(), spellId);
+    }
+}
+
 void SendLine(Player* player, std::string const& line)
 {
     ::LivingGear_SendAddonLine(player, line);
@@ -1665,11 +1786,13 @@ public:
     }
 
     // Report #195: death drops the blessing; bring it straight back up.
+    // Report #172: the same discipline for every self-cast buff -- the set of
+    // buffs that were permanent when the player died is re-applied here.
     void OnPlayerResurrect(Player* player, float /*restore_percent*/, bool& /*applySickness*/) override
     {
         EnsurePermanentHof(player);
+        RecastSelfBuffs(player);
     }
-
     void OnPlayerLogout(Player* player) override
     {
         if (!player)
@@ -1684,6 +1807,7 @@ public:
             ApplyWeaponPeak(player);
         RestoreMentorBots(player);
         g_state.erase(player->GetGUID().GetCounter());
+        g_selfBuffs.erase(player->GetGUID().GetCounter());
     }
 
     void OnPlayerUpdate(Player* player, uint32 diff) override
@@ -1731,6 +1855,19 @@ public:
             return;
 
         HandlePaladinPerkCast(player, spell->GetSpellInfo(), spell->m_targets.GetUnitTarget());
+
+        // Report #172: a buff the player cast on themselves becomes permanent
+        // and is re-cast on death. The extension is deferred one tick because
+        // this hook runs before the spell's auras exist.
+        if (IsSelfCastBuffSpell(player, spell))
+        {
+            ObjectGuid const guid = player->GetGUID();
+            uint32 const spellId = spell->GetSpellInfo()->Id;
+            player->m_Events.AddEventAtOffset([guid, spellId]()
+            {
+                ExtendSelfBuffs(guid, spellId);
+            }, std::chrono::milliseconds(1));
+        }
     }
 
     void OnPlayerMoneyChanged(Player* player, int32& /*amount*/) override
@@ -1908,8 +2045,21 @@ public:
         UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN,
         UNITHOOK_MODIFY_MELEE_DAMAGE,
         UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
-        UNITHOOK_ON_AURA_APPLY
+        UNITHOOK_ON_AURA_APPLY,
+        UNITHOOK_ON_AURA_REMOVE
     }) { }
+
+    // Report #172: deaths strip auras with AURA_REMOVE_BY_DEATH and the
+    // self-buff snapshot exists to survive exactly that; every other removal
+    // (dispel, manual cancel, form loss) really is gone, so the death-recast
+    // must not bring it back.
+    void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode mode) override
+    {
+        Player* player = unit ? unit->ToPlayer() : nullptr;
+        if (!player || !aurApp || mode == AURA_REMOVE_BY_DEATH)
+            return;
+        ForgetSelfBuff(player, aurApp->GetBase()->GetId());
+    }
 
     // "Divine Storm's cooldown is cleared whenever the paladin deals holy
     // damage" while Sanctified Whirlwind is up (kill-momentum fantasy).
