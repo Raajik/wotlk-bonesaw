@@ -5728,6 +5728,33 @@ function LG2.HandleAddon(prefix, message)
     if prefix ~= PREFIX or not message then
         return
     end
+    -- Server-synced craft-spell list (report #219/#222): chunked "CRAFTS|seq|total|ids".
+    -- Rebuilt into a spell-id set plus a name map, both consumed by the
+    -- spellbook / bar / macro cast hooks further down this file.
+    if message:sub(1, 7) == "CRAFTS|" then
+        local seq, total, data = message:match("^CRAFTS|(%d+)|(%d+)|(.*)$")
+        seq, total = tonumber(seq) or 0, tonumber(total) or 0
+        if total > 0 and seq >= 1 and seq <= total then
+            if seq == 1 then
+                LG2._craftBuf = {}
+                LG2.craftSpellIds = {}
+            end
+            if LG2._craftBuf then
+                LG2._craftBuf[seq] = data or ""
+                if seq == total then
+                    local all = table.concat(LG2._craftBuf, ",")
+                    LG2._craftBuf = nil
+                    for id in all:gmatch("%d+") do
+                        LG2.craftSpellIds[tonumber(id)] = true
+                    end
+                    if LG2.BuildCraftNameMap then
+                        LG2.BuildCraftNameMap()
+                    end
+                end
+            end
+        end
+        return
+    end
     if message == "OPEN" then
         OpenFromCast()
         return
@@ -6780,6 +6807,81 @@ if LG2._origCraftInfo then
             end
         end
         return name, subName, craftType, numAvailable, isExpanded, cost, level
+    end
+end
+
+-- Report #219/#222 tail: casts of craft spells that do NOT come from the
+-- profession window (spellbook click, bar button, macro) went native, and
+-- the client refuses to send a cast whose bag reagents are short -- so
+-- vault-paid crafts were impossible outside the window. The server now
+-- syncs every spell this character knows that creates an item from
+-- reagents (CRAFTS| lines, handled in HandleAddon above). Casting one of
+-- those spells through ANY of the three entry points below routes to
+-- CRAFTCAST instead: the server casts the spell itself through the normal
+-- path, pays bags-then-vault in place, and the item lands in the bags. A
+-- craft the bags can already pay for behaves exactly as before (the
+-- server's own cast pays bags first); one the bags cannot pay finally
+-- works. Spells without reagents never make the list and cast natively.
+LG2.craftSpellIds = LG2.craftSpellIds or {}
+LG2.craftNames = LG2.craftNames or {}
+
+function LG2.BuildCraftNameMap()
+    LG2.craftNames = {}
+    for id in pairs(LG2.craftSpellIds) do
+        local name = GetSpellInfo and GetSpellInfo(id)
+        if name then
+            LG2.craftNames[name] = id
+        end
+    end
+end
+
+local function CraftSpellFromBookItem(index, bookType)
+    if not (index and GetSpellBookItemName) then
+        return nil
+    end
+    local ok, name = pcall(GetSpellBookItemName, index, bookType)
+    if ok and name and LG2.craftNames[name] then
+        return LG2.craftNames[name]
+    end
+    return nil
+end
+
+local origCastSpell = CastSpell
+if origCastSpell then
+    CastSpell = function(index, bookType, ...)
+        local id = CraftSpellFromBookItem(index, bookType)
+        if id and SendLine then
+            SendLine("CRAFTCAST|" .. tostring(id) .. "|1")
+            return
+        end
+        return origCastSpell(index, bookType, ...)
+    end
+end
+
+local origCastSpellByName = CastSpellByName
+if origCastSpellByName then
+    CastSpellByName = function(name, target)
+        local base = name and string.match(name, "^[^%(]+") or nil
+        local id = base and LG2.craftNames[base] or nil
+        if id and SendLine then
+            SendLine("CRAFTCAST|" .. tostring(id) .. "|1")
+            return
+        end
+        return origCastSpellByName(name, target)
+    end
+end
+
+local origUseAction = UseAction
+if origUseAction then
+    UseAction = function(slot, target, button)
+        if GetActionInfo and LG2.craftSpellIds and next(LG2.craftSpellIds) then
+            local ok, atype, aid = pcall(GetActionInfo, slot)
+            if ok and atype == "spell" and aid and LG2.craftSpellIds[aid] and SendLine then
+                SendLine("CRAFTCAST|" .. tostring(aid) .. "|1")
+                return
+            end
+        end
+        return origUseAction(slot, target, button)
     end
 end
 

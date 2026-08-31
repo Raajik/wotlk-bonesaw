@@ -1368,6 +1368,53 @@ void ApplyLootRule(Player* player, Item* item)
     }, std::chrono::milliseconds(1));
 }
 
+// Report #219/#222 tail: crafting from the SPELLBOOK (or a bar button or a
+// macro) never reached CRAFTCAST -- only the profession window's Create
+// button was intercepted (DoCraft/DoTradeSkill + GetCraftInfo hooks in the
+// addon). The 3.3.5 client refuses to even SEND a cast whose BAG reagents
+// are short, so a craft paid partly by the account vault is impossible from
+// the spellbook: the player's own diag reads "needs 33470 x2 (bags 0 +
+// vault 419)" and nothing is ever crafted. The addon cannot hook the C-side
+// reagent check, so it needs to know which casts are crafts: sync every
+// craft spell this character knows (exact HandleCraftCast guard below) and
+// let the addon route those casts through CRAFTCAST. The server casts the
+// spell itself through the normal path -- reagents pay bags-then-vault in
+// place, and the crafted item lands in the bags like any other craft.
+// Chunked at 200 chars per line because a maxed character knows hundreds of
+// craft spells and the self-whisper line cap is 255.
+void SendCraftListSync(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    std::vector<uint32> ids; // PlayerSpellMap is a std::map, so ids come out sorted
+    for (auto const& [spellId, spellState] : player->GetSpellMap())
+    {
+        if (!spellState || spellState->State == PLAYERSPELL_REMOVED || !spellState->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->Reagent[0] == 0 || !info->HasEffect(SPELL_EFFECT_CREATE_ITEM))
+            continue;
+        ids.push_back(spellId);
+    }
+    std::vector<std::string> chunks;
+    std::string cur;
+    for (uint32 id : ids)
+    {
+        std::string piece = (cur.empty() ? std::string() : std::string(",")) + std::to_string(id);
+        if (!cur.empty() && cur.size() + piece.size() > 200)
+        {
+            chunks.push_back(cur);
+            cur.clear();
+        }
+        cur += piece;
+    }
+    if (!cur.empty())
+        chunks.push_back(cur);
+    uint32 const total = uint32(chunks.size());
+    for (uint32 i = 0; i < total; ++i)
+        SendLine(player, Acore::StringFormat("CRAFTS|{}|{}|{}", i + 1, total, chunks[i]));
+}
+
 void SendVaultAndRuleSync(Player* player)
 {
     if (!player || !player->GetSession())
@@ -1375,6 +1422,7 @@ void SendVaultAndRuleSync(Player* player)
     uint32 const accountId = player->GetSession()->GetAccountId();
     LoadVault(accountId);
     LoadRules(accountId);
+    SendCraftListSync(player);
     for (auto const& [key, count] : g_vaults[accountId])
     {
         if (!count)
