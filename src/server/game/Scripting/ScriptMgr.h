@@ -394,6 +394,7 @@ public: /* PlayerScript */
     bool OnPlayerBeforeOpenItem(Player* player, Item* item);
     bool OnPlayerBeforeQuestComplete(Player* player, uint32 quest_id);
     void OnPlayerQuestComputeXP(Player* player, Quest const* quest, uint32& xpValue);
+    void OnPlayerBeforeQuestQueryResponse(Player* player, Quest const* quest, int32& questLevel);
     void OnPlayerBeforeDurabilityRepair(Player* player, ObjectGuid npcGUID, ObjectGuid itemGUID, float& discountMod, uint8 guildBank);
     void OnPlayerBeforeBuyItemFromVendor(Player* player, ObjectGuid vendorguid, uint32 vendorslot, uint32& item, uint8 count, uint8 bag, uint8 slot);
     void OnPlayerBeforeStoreOrEquipNewItem(Player* player, uint32 vendorslot, uint32& item, uint8 count, uint8 bag, uint8 slot, ItemTemplate const* pProto, Creature* pVendor, VendorItem const* crItem, bool bStore);

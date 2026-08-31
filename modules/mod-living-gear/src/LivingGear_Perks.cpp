@@ -1243,6 +1243,32 @@ uint32 EffectiveCreatureLevel(Creature const* creature, Player* viewer)
     return effective;
 }
 
+// Quest log difficulty (report #70): the level a quest should present itself
+// as to this viewer, or 0 to leave the authored level alone. Mirrors
+// EffectiveCreatureLevel so the log agrees with the mobs standing next to the
+// quest's targets: same eligibility, same one-rank-above-viewer target, and
+// the same dungeon caveat -- dungeons scale up only, so a dungeon quest
+// authored at or above the viewer's level keeps its authored number (an ICC
+// quest chain stays red at 30, exactly like the ICC mobs do).
+uint32 QuestDifficultyLevelFor(Player* player, uint32 authoredLevel)
+{
+    if (!g_cfg.zoneEnable || !player)
+        return 0;
+    bool const openWorld = OpenWorld(player);
+    bool const dungeon = !openWorld && g_cfg.dungeonScale && ScalableDungeon(player);
+    if (!openWorld && !dungeon)
+        return 0;
+    uint32 const viewerLevel = player->GetLevel();
+    if (viewerLevel < g_cfg.zoneMinLevel)
+        return 0;
+    if (dungeon && authoredLevel >= viewerLevel)
+        return 0;
+    uint32 effective = viewerLevel + 1;
+    if (effective > 80)
+        effective = 80;
+    return effective;
+}
+
 // Per-viewer displayed creature level (called from PerksUnit's
 // ShouldTrackValuesUpdatePosByIndex/OnPatchValuesUpdate UnitScript hooks --
 // Unit::PatchValuesUpdate already takes a per-target Player, so different
@@ -2810,6 +2836,8 @@ public:
         PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT,
         PLAYERHOOK_ON_UPDATE_CRAFTING_SKILL,
         PLAYERHOOK_ON_QUEST_COMPUTE_EXP,
+        PLAYERHOOK_ON_BEFORE_QUEST_QUERY_RESPONSE,
+        PLAYERHOOK_ON_LEVEL_CHANGED,
         PLAYERHOOK_CAN_SOLO_QUEUE,
         PLAYERHOOK_ON_AFTER_SPEC_SLOT_CHANGED,
         PLAYERHOOK_ON_ACHI_COMPLETE
@@ -3090,6 +3118,41 @@ public:
         uint32 const floor = uint32(uint64(forNextLevel) * g_cfg.questFloorPct / 100);
         if (xpValue < floor)
             xpValue = floor;
+    }
+
+    // Report #70, the display leg of quest scaling. EffectiveCreatureLevel
+    // already shows every eligible mob one rank above the viewer, and
+    // OnPlayerQuestComputeXP pays quest turn-ins at the viewer's level -- but
+    // the quest log still colored quests from the AUTHORED quest level, so a
+    // level 5 quest read gray at 70 while the wolves beside it showed yellow
+    // and the turn-in paid full XP. The client colors a quest from the
+    // QuestLevel field of SMSG_QUEST_QUERY_RESPONSE alone; this hook rewrites
+    // exactly that field per viewer. Quests the client already cached keep
+    // their old color until re-queried, so OnPlayerLevelChanged below re-asks
+    // for everything still in the log on every level-up.
+    void OnPlayerBeforeQuestQueryResponse(Player* player, Quest const* quest, int32& questLevel) override
+    {
+        if (!player || !quest || !g_cfg.questScale)
+            return;
+        if (questLevel < 0) // -1 = scaling quest; the client already colors those from the viewer's level
+            return;
+        uint32 const effective = QuestDifficultyLevelFor(player, uint32(questLevel));
+        if (effective)
+            questLevel = int32(effective);
+    }
+
+    // The client keeps quest data for the whole session, so a character
+    // climbing several brackets in one sitting would otherwise keep reading
+    // log colors from the level they logged in at. Re-send every logged
+    // quest; the client overwrites its cache entry and the log repaints the
+    // next time it is opened.
+    void OnPlayerLevelChanged(Player* player, uint8 /*oldLevel*/) override
+    {
+        if (!player || !player->GetSession())
+            return;
+        for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            if (Quest const* quest = sObjectMgr->GetQuestTemplate(player->GetQuestSlotQuestId(slot)))
+                player->PlayerTalkClass->SendQuestQueryResponse(quest);
     }
 
     void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override

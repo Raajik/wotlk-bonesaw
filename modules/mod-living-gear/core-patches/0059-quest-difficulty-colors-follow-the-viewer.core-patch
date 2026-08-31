@@ -1,0 +1,33 @@
+Report #70: "since quests also scale with the world, i'd like the quest
+difficulty to also match your level."
+
+Zone scaling already shows every eligible mob one rank above the viewer
+(module-side, PerksUnit), and quest turn-in XP is paid at the viewer's level
+(OnPlayerQuestComputeXP, module-side) -- but the quest log still colored every
+quest from its authored level. A level 5 quest read gray at 70 while the
+wolves beside it showed yellow and the turn-in paid full XP.
+
+The 3.3.5 client colors a quest from the QuestLevel field of
+SMSG_QUEST_QUERY_RESPONSE alone (client-side quest cache; WDB, which the
+launcher already clears every launch). The module had no way to touch that
+packet, so this adds the hook it needs.
+
+Change: PlayerMenu::SendQuestQueryResponse routes the QuestLevel field through
+sScriptMgr->OnPlayerBeforeQuestQueryResponse(Player*, Quest const*, int32&
+questLevel) before writing it (new PLAYERHOOK_ON_BEFORE_QUEST_QUERY_RESPONSE
+PlayerScript hook). The module's PerksPlayer rewrites the field with the same
+eligibility and one-rank-above-viewer rule as EffectiveCreatureLevel
+(QuestDifficultyLevelFor), including the dungeons-scale-up-only caveat (a
+dungeon quest authored at or above the viewer keeps its authored number, same
+as the mobs inside), and re-queries every quest in the player's log on
+level-up so in-session colors keep up (the client caches quest data for the
+whole session, so colors would otherwise freeze at the level each quest was
+first queried). Gated by the existing LivingGear.QuestScale.Enable config.
+Scaling quests (authored level -1) are left alone -- the client already
+colors those from the viewer's level.
+
+Touches: src/server/game/Scripting/ScriptDefines/PlayerScript.h (enum +
+virtual), src/server/game/Scripting/ScriptDefines/PlayerScript.cpp (ScriptMgr
+impl), src/server/game/Scripting/ScriptMgr.h (declaration),
+src/server/game/Entities/Creature/GossipDef.cpp (PlayerMenu::
+SendQuestQueryResponse call site).
