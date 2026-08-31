@@ -60,8 +60,10 @@ SEP = "\x1f"
 def run_sql(sql: str, db_password: str) -> str:
     proc = subprocess.run(
         ["docker", "exec", "-i", DB_CONTAINER, "mysql", "--user=%s" % DB_USER,
-         "--password=%s" % db_password, "--batch", "--raw", "--skip-column-names", DB_NAME],
-        input=sql, capture_output=True, text=True)
+         "--password=%s" % db_password, "--default-character-set=utf8mb4",
+         "--batch", "--raw", "--skip-column-names", DB_NAME],
+        input=sql, capture_output=True, text=True,
+        encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         err = "\n".join(l for l in proc.stderr.splitlines()
                         if "Using a password on the command line" not in l).strip()
