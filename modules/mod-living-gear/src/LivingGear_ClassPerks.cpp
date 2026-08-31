@@ -2524,6 +2524,80 @@ void TryHunterMMOnCast(Player* player, Spell* spell)
 }
 
 // -------------------------------------------------------------------------
+// Shaman: Elemental guardians (#167)
+// "add 2 permanent fire elementals (scaled down to 25% of regular size) as
+// guardians--also make them do 2000% extra damage"
+//
+// SummonGuardian re-owners the totem's cast to the PLAYER, so both the
+// vanilla elemental and the twin are player-owned temp summons and pass
+// through OnPlayerBeforeTempSummonInitStats -- which is where they are
+// shrunk and made permanent (duration 0 turns the summon into
+// TEMPSUMMON_DEAD_DESPAWN: it lives until something kills it). The twin is
+// summoned straight through Map::SummonCreature with the vanilla summon
+// properties, so it is the same creature class with the same AI as the
+// vanilla elemental. x21, not x20: "2000% extra", the same reading every
+// other 2000% kit on this realm uses (Living Bomb, Affliction ladder).
+// -------------------------------------------------------------------------
+uint32 const NPC_GREATER_FIRE_ELEMENTAL = 15438;
+uint32 const SPELL_FIRE_ELEMENTAL_TOTEM = 2894;
+uint32 const SPELL_SUMMON_GREATER_FIRE_ELEMENTAL = 32982;  // what the totem casts
+uint32 const SUMMON_PROPS_GREATER_FIRE_ELEMENTAL = 61;     // slot 0: guardians coexist
+float const FIRE_ELEMENTAL_GUARDIAN_SCALE = 0.25f;
+uint32 const FIRE_ELEMENTAL_GUARDIAN_DAMAGE_MULT = 21;     // +2000%
+
+// One pack per Elemental shaman. Summon properties 61 has slot 0, so a new
+// totem would otherwise stack a third and fourth guardian instead of
+// replacing the old pair.
+std::unordered_map<uint32, std::vector<ObjectGuid>> g_feGuardianPacks;
+
+void DespawnShamanFireElementals(Player* player)
+{
+    auto itr = g_feGuardianPacks.find(player->GetGUID().GetCounter());
+    if (itr == g_feGuardianPacks.end())
+        return;
+    for (ObjectGuid const& guid : itr->second)
+        if (Creature* fe = ObjectAccessor::GetCreature(*player, guid))
+            if (fe->IsSummon())
+                fe->ToTempSummon()->UnSummon();
+    g_feGuardianPacks.erase(itr);
+}
+
+Player* FireElementalGuardianOwner(Unit const* summon)
+{
+    if (!summon || summon->GetEntry() != NPC_GREATER_FIRE_ELEMENTAL)
+        return nullptr;
+    Unit* owner = summon->GetOwner();
+    Player* player = owner ? owner->ToPlayer() : nullptr;
+    if (!player || GetClassPerk(player) != SPELL_SHAMAN_ELEMENTAL)
+        return nullptr;
+    return player;
+}
+
+// Called from ClassPerksPlayer::OnPlayerBeforeTempSummonInitStats for every
+// player-owned temp summon.
+void ApplyShamanElementalGuardianSummon(Player* player, TempSummon* summon, uint32& duration)
+{
+    if (!player || !summon || summon->GetEntry() != NPC_GREATER_FIRE_ELEMENTAL)
+        return;
+    if (summon->GetUInt32Value(UNIT_CREATED_BY_SPELL) != SPELL_SUMMON_GREATER_FIRE_ELEMENTAL)
+        return;
+    if (GetClassPerk(player) != SPELL_SHAMAN_ELEMENTAL)
+        return;
+    summon->SetObjectScale(FIRE_ELEMENTAL_GUARDIAN_SCALE);
+    duration = 0;
+    g_feGuardianPacks[player->GetGUID().GetCounter()].push_back(summon->GetGUID());
+}
+
+// Called from ClassPerksUnit::OnDamage -- the one funnel every direct damage
+// number passes through (melee, spell hits and periodic ticks alike).
+void ApplyShamanElementalGuardianDamage(Unit* attacker, uint32& damage)
+{
+    if (!damage || !FireElementalGuardianOwner(attacker))
+        return;
+    damage *= FIRE_ELEMENTAL_GUARDIAN_DAMAGE_MULT;
+}
+
+// -------------------------------------------------------------------------
 // Shaman: Elemental (910151)
 // "Thunderstorm has no cooldown. Lava Burst deals double damage. Chain
 // Lightning has no target cap."
@@ -2533,10 +2607,29 @@ void TryShamanElementalOnCast(Player* player, Spell* spell)
     if (!player || !spell || GetClassPerk(player) != SPELL_SHAMAN_ELEMENTAL)
         return;
     SpellInfo const* info = spell->GetSpellInfo();
+    if (!info)
+        return;
+
+    // Report #167: the totem itself summons the first guardian through the
+    // vanilla path four seconds from now (the summon resolves to the player,
+    // so the InitStats hook below scales and permanizes it); the twin goes
+    // out right here with the same summon properties and the same 32982
+    // spell stamp, which makes it the same creature class with the same AI.
+    // A fresh totem despawns the previous pack first, since slot 0 means
+    // nothing would ever replace it.
+    if (info->Id == SPELL_FIRE_ELEMENTAL_TOTEM)
+    {
+        DespawnShamanFireElementals(player);
+        if (SummonPropertiesEntry const* props = sSummonPropertiesStore.LookupEntry(SUMMON_PROPS_GREATER_FIRE_ELEMENTAL))
+            player->GetMap()->SummonCreature(NPC_GREATER_FIRE_ELEMENTAL, player->GetPosition(), props,
+                0, player, SPELL_SUMMON_GREATER_FIRE_ELEMENTAL);
+        return;
+    }
+
     // RankOf, not an exact id: Thunderstorm is rank 1 of 4 (51490 -> 51502,
     // 51503, 51504). The old comment here claimed single rank and was wrong,
     // so an Elemental shaman past rank 1 got no cooldown removal at all.
-    if (!info || !RankOf(info, SPELL_THUNDERSTORM))
+    if (!RankOf(info, SPELL_THUNDERSTORM))
         return;
     // info->Id, not SPELL_THUNDERSTORM: the player may be casting a higher rank,
     // and clearing rank 1's cooldown entry would leave theirs untouched.
@@ -5319,12 +5412,21 @@ public:
         PLAYERHOOK_ON_UPDATE,
         PLAYERHOOK_ON_SPELL_CAST,
         PLAYERHOOK_ON_PLAYER_LEAVE_COMBAT,
-        PLAYERHOOK_ON_PLAYER_RESURRECT
+        PLAYERHOOK_ON_PLAYER_RESURRECT,
+        PLAYERHOOK_ON_BEFORE_TEMP_SUMMON_INIT_STATS
     }) { }
 
     void OnPlayerResurrect(Player* player, float /*restore_percent*/, bool& /*applySickness*/) override
     {
         ApplyRogueCombatBladeFlurry(player);
+    }
+
+    // Report #167: the Fire Elemental guardians (vanilla + twin) come through
+    // here as player-owned temp summons -- shrink them, drop their duration
+    // to zero (permanent until killed) and book them for pack replacement.
+    void OnPlayerBeforeTempSummonInitStats(Player* player, TempSummon* tempSummon, uint32& duration) override
+    {
+        ApplyShamanElementalGuardianSummon(player, tempSummon, duration);
     }
 
     void OnPlayerLogin(Player* player) override
@@ -5660,6 +5762,7 @@ public:
         ApplyDevotionDR(victim, damage);
         TryProtThorns(attacker, victim, damage);
         TryDruidBalanceInsectOnStruck(attacker, victim);
+        ApplyShamanElementalGuardianDamage(attacker, damage);
     }
 
     void ModifySpellDamageTaken(Unit* target, Unit* attacker, int32& damage, SpellInfo const* spellInfo) override
