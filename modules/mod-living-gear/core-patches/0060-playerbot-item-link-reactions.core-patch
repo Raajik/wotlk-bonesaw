@@ -1,0 +1,38 @@
+Report #229: "Need even more playerbot insults to counter the
+defaults--wanting other bots to react to [item links]"
+('wow, i just got [link]')
+
+Two halves.
+
+Insults: the toxic and taunt pools sat at 152/153 lines against a
+player who has heard all of them. This adds 50 new
+suggest_something_toxic lines (placeholder-free -- the broadcast
+send path, BroadcastHelper::BroadcastSuggestSomethingToxic, fills
+no name placeholders) and 25 new taunt lines (<target> only, which
+is what the say::taunt action sets). Data only, in
+mod-playerbots/data/sql/playerbots/updates/
+2026_08_31_01_ai_playerbot_insults_and_item_link_reactions.sql.
+
+Item links: ChatReplyAction::ChatReplyDo routed a chat message
+containing an item link straight into GenerateReplyMessage, where
+the verb parser matches nothing and the bot answers from the
+REPLY_NOT_UNDERSTAND pool ("how should i know %s"). New
+HandleItemLinkReply runs before that fallback: any message
+containing |Hitem (after the WTB / toxic-links / thunderfury
+handlers) pulls from a new reply_item_link pool (%s = the poster,
+%random_inventory_item_link = a bot-owned item so lines can brag
+back) and answers in the channel the link was posted in (say ->
+PlayerbotAI::Say, yell -> Yell, world -> SayToWorld, general
+channel -> GENERAL, guild/party/raid -> SayToGuild/SayToParty/
+SayToRaid); unknown channels return false and fall through to the
+generic reply as before. No new chance config: the receive-side
+gates in PlayerbotAI (1-in-5 for real-player messages, 1-in-21
+for bot chatter) already cap how many bots answer, and the reply
+pool selection itself is always-on by design, so an
+ai_playerbot_texts_chance row would never be consulted on this
+path.
+
+Touches (module only): modules/mod-playerbots/src/Ai/Base/Actions/
+SayAction.h (declaration), modules/mod-playerbots/src/Ai/Base/
+Actions/SayAction.cpp (call site after the thunderfury handler +
+handler), and the SQL update file above. No core files, no DBC.
