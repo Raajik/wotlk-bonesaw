@@ -138,11 +138,25 @@ def main() -> None:
                     help="no client files changed: skip MPQ/launcher/release steps")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the plan without executing mutating steps")
+    ap.add_argument("--notes-only", action="store_true",
+                    help="STAGE 1: bump the version, build the client if any, "
+                         "write the patch notes, then STOP for the human pass -- "
+                         "edit the notes file, then re-run with --post")
+    ap.add_argument("--post", action="store_true",
+                    help="STAGE 2: re-check the reviewed notes, post them to "
+                         "Discord and the GitHub release, commit, tag LAST, push")
     args = ap.parse_args()
+    if args.notes_only and args.post:
+        sys.exit("pick one stage: --notes-only (prepare) or --post (publish)")
+    if not args.notes_only and not args.post and not args.dry_run:
+        sys.exit("two stages now: run --notes-only first, do the human pass on "
+                 "the notes file, then re-run with --post (unreviewed notes are "
+                 "never posted)")
 
     version = args.version
     current = VERSION_FILE.read_text().strip()
-    if bump_version(current) != version:
+    already_bumped = current == version
+    if bump_version(current) != version and not already_bumped:
         sys.exit(f"version mismatch: {VERSION_FILE} says {current}; "
                  f"expected the next bump {bump_version(current)}, got {version}")
     tag = f"ship/{version}"
@@ -159,10 +173,13 @@ def main() -> None:
         print("dry-run: no mutating steps executed")
         return
 
-    # 1. version bump
-    VERSION_FILE.write_text(version + "\n")
-    run(f'git add "{VERSION_FILE.relative_to(ROOT)}" && '
-        f'git commit -m "Bump Bonesaw.version to {version}"')
+    # 1. version bump (idempotent: --notes-only may be re-run after the bump)
+    if not already_bumped:
+        VERSION_FILE.write_text(version + "\n")
+        run(f'git add "{VERSION_FILE.relative_to(ROOT)}" && '
+            f'git commit -m "Bump Bonesaw.version to {version}"')
+    else:
+        print("  version already bumped to " + version)
 
     if client:
         # 2-5. MPQs, launcher, release, verify
@@ -187,18 +204,38 @@ def main() -> None:
                      "upload did not take effect; re-run step 7 before continuing")
         print(f"  live manifest serves {version} -- OK")
 
-    # 9-12. patch notes
-    notes = write_patch_notes(version)
+    # 9-12. patch notes -- STAGE 1 ends here; nothing is posted until --post.
+    notes_rel = str((NOTES_DIR / f"{version}.md").relative_to(ROOT))
+    if args.notes_only:
+        notes = write_patch_notes(version)
+        run(f'python tools/retest_list.py --check "{notes_rel}"')
+        print()
+        print("--- notes for the human pass (edit this file now) ---")
+        print(notes.read_text(encoding="utf-8"))
+        print("--- end of notes ---")
+        print("Human pass: player-facing bullets, retest asks for THIS ship's "
+              "own changes first, no code names or file paths.")
+        print("Then publish: python tools/ship_bookkeeping.py --version "
+              + version + (" --no-client" if not client else "") + " --post")
+        return
+
+    # STAGE 2 (--post): publish the reviewed notes only.
+    notes = NOTES_DIR / f"{version}.md"
+    if not notes.exists():
+        sys.exit(f"{notes} missing -- run --notes-only first")
+    run(f'python tools/retest_list.py --check "{notes_rel}"')
+    print("--- publishing these notes ---")
+    print(notes.read_text(encoding="utf-8"))
     run(f"python tools/post_patch_notes.py \"{notes}\" --dry-run")
     run(f'python tools/post_patch_notes.py "{notes}"')
     if client:
         run(f"gh release edit v{version} --repo {REPO} --notes-file \"{notes}\"")
     else:
-        # No client ship -> no GitHub release exists (created only in step 4).
+        # No client ship -> no GitHub release exists (created only in stage 1).
         # Create a server-only release so the notes still live on the tag page.
         run(f'gh release create v{version} --repo {REPO} --latest '
             f'--title "Bonesaw {version}" --notes-file "{notes}"')
-    run(f'git add "{notes.relative_to(ROOT)}" && '
+    run(f'git add "{notes_rel}" && '
         f'git commit -m "Patch notes {version}"')
 
     # 13-14. tag LAST, then push everything together

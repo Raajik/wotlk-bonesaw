@@ -136,18 +136,23 @@ the whole tail in the right order, refuses to continue on any failed step, and
 tags LAST so `git log ship/<latest>..HEAD` is empty when it exits:
 
 ```
-python tools/ship_bookkeeping.py --version X.Y.Z            # client changed
-python tools/ship_bookkeeping.py --version X.Y.Z --no-client  # server-only
+python tools/ship_bookkeeping.py --version X.Y.Z --notes-only           # then --post
+python tools/ship_bookkeeping.py --version X.Y.Z --no-client --notes-only
+python tools/ship_bookkeeping.py --version X.Y.Z --no-client --post
 ```
 
-Run it **after Phase 3's `bonesaw_status` says `pending SQL: all imported`**.
-It expects the working tree clean and `Bonesaw.version` still at the previous
-number (it bumps by exactly one patch). Review the generated
-`tools/patch-notes/X.Y.Z.md` before step 10 if the commit list needs
-hand-editing for player-facing tone - the script's bullets are commit
-subjects, and only a human pass makes them read as notes. The phases below
-document what the script does; use them as the manual fallback when the
-script cannot run.
+Run stage 1 (`--notes-only`) **after Phase 3's `bonesaw_status` says
+`pending SQL: all imported`**. It bumps the version (exactly one patch),
+builds the client if any, writes `tools/patch-notes/X.Y.Z.md` and **stops -
+nothing has been posted**. The script's bullets are raw commit subjects and
+only a human pass makes them read as notes, so the pass is now mandatory and
+happens between the stages: edit the notes file (player-facing bullets, retest
+asks for THIS ship's own changes first, no code names or file paths), then run
+stage 2 (`--post`), which re-runs the retest check, prints the notes it is
+about to publish, and only then posts to Discord, updates the GitHub release,
+commits the notes, tags LAST and pushes. One set of notes goes out - the
+reviewed one. The phases below document what the script does; use them as the
+manual fallback when the script cannot run.
 
 Push **only** to origin `Raajik/wotlk-bonesaw`, never to the `playerbots`
 remote. Never force-push `main`.
