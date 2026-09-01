@@ -689,7 +689,7 @@ local db = {
     rules = {},
     vault = {},
     autoloot = { on = 0, corpses = 0, need = 10, de = 0 },
-    attune = { on = 1, count = 0, off = 0 },
+    attune = { on = 1, count = 0, off = 0, ilvl = 0 },
     -- [itemId] = true for every item entry attuned on this account. Fed by
     -- ATL| (batched, at sync) and ATT| (one entry, live as it attunes);
     -- read only by the tooltip's ATTUNED line.
@@ -3254,6 +3254,7 @@ function LG2.BuildItemsPanel(parent)
             GameTooltip:AddLine("Level a Living Gear item to 10 to unlock Auto-Attune. Poor starts on.", 0.7, 0.7, 0.7, true)
         else
             GameTooltip:AddLine("Qualifying items attune themselves as they come in. This is the master switch; per-quality switches live on the old Attune panel's rows.", 0.7, 0.7, 0.7, true)
+            GameTooltip:AddLine("The Min ilvl button beside this sets the lowest item level auto-attune will take.", 0.7, 0.7, 0.7, true)
         end
         GameTooltip:Show()
     end)
@@ -3261,6 +3262,65 @@ function LG2.BuildItemsPanel(parent)
         GameTooltip:Hide()
     end)
     ui.itemsAutoAttune = autoAttune
+
+    -- Min ilvl filter (report #228): auto-attune only consumes items at or
+    -- above this item level. A numeric popup instead of a cycle list -- the
+    -- realm's items span ilvl 1-284 and a cycle of that length is misery.
+    StaticPopupDialogs["LG2_AA_ILVL"] = {
+        text = "Auto-attune minimum item level (0 = no minimum)",
+        button1 = ACCEPT,
+        button2 = CANCEL,
+        hasEditBox = 1,
+        maxLetters = 3,
+        OnAccept = function(self)
+            local v = tonumber(self.editBox:GetText()) or 0
+            if v < 0 then v = 0 end
+            if v > 999 then v = 999 end
+            db.attune.ilvl = v
+            SendLine("AASET|lvl|" .. tostring(v))
+            LG2.RefreshItems()
+        end,
+        EditBoxOnEnterPressed = function(self)
+            local v = tonumber(self:GetText()) or 0
+            if v < 0 then v = 0 end
+            if v > 999 then v = 999 end
+            db.attune.ilvl = v
+            SendLine("AASET|lvl|" .. tostring(v))
+            LG2.RefreshItems()
+            StaticPopup_Hide("LG2_AA_ILVL")
+        end,
+        EditBoxOnEscapePressed = function(self)
+            StaticPopup_Hide("LG2_AA_ILVL")
+        end,
+        timeout = 0,
+        whileDead = 1,
+        hideOnEscape = 1,
+        preferredIndex = 3,
+    }
+    local aaIlvl = CreateFrame("Button", nil, p)
+    aaIlvl:SetSize(120, 20)
+    aaIlvl:SetPoint("RIGHT", autoAttune, "LEFT", -8, 0)
+    StyleBtn(aaIlvl, 0.10, 0.10, 0.10)
+    aaIlvl.label = Font(aaIlvl, 10, 0.9, 0.95, 0.9)
+    aaIlvl.label:SetPoint("CENTER", 0, 0)
+    aaIlvl.label:SetJustifyH("CENTER")
+    aaIlvl.label:SetText("Min ilvl: Off")
+    aaIlvl:SetScript("OnClick", function()
+        if not PerkKnown(910041) then
+            return
+        end
+        StaticPopup_Show("LG2_AA_ILVL")
+    end)
+    aaIlvl:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("Auto-Attune Level Filter")
+        GameTooltip:AddLine("Auto-attune only consumes items at or above this item level. 0 turns the minimum off.", 0.7, 0.7, 0.7, true)
+        GameTooltip:Show()
+    end)
+    aaIlvl:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+    ui.itemsAaIlvl = aaIlvl
     p.empty = Font(p, 11, 0.6, 0.6, 0.6)
     p.empty:SetPoint("TOPLEFT", 10, -46)
     p.empty:SetText("Nothing matches these filters.")
@@ -3461,6 +3521,19 @@ function LG2.RefreshItems()
                 StyleBtn(ui.itemsAutoAttune, COLOR_OFF[1], COLOR_OFF[2], COLOR_OFF[3])
                 ui.itemsAutoAttune.label:SetTextColor(0.95, 0.90, 0.90, 1)
             end
+        end
+    end
+    if ui.itemsAaIlvl then
+        local ilvl = tonumber(db.attune.ilvl) or 0
+        if ilvl > 0 then
+            ui.itemsAaIlvl.label:SetText("Min ilvl: " .. tostring(ilvl))
+        else
+            ui.itemsAaIlvl.label:SetText("Min ilvl: Off")
+        end
+        if PerkKnown(910041) then
+            ui.itemsAaIlvl.label:SetTextColor(0.90, 0.95, 0.90, 1)
+        else
+            ui.itemsAaIlvl.label:SetTextColor(0.55, 0.55, 0.55, 1)
         end
     end
     if p.qualityBtn then
@@ -5802,7 +5875,7 @@ function LG2.HandleAddon(prefix, message)
         db.vault = {}
         LG2._vaultGen = (LG2._vaultGen or 0) + 1
         db.armory = {}
-        db.attune = { on = 1, count = 0, off = 0 }
+        db.attune = { on = 1, count = 0, off = 0, ilvl = 0 }
         -- Rebuilt in full by the ATL| burst that follows in this same sync,
         -- so clearing here is what keeps a de-attuned entry from lingering.
         db.attuned = {}
@@ -5928,6 +6001,7 @@ function LG2.HandleAddon(prefix, message)
         db.attune.on = tonumber(p[2]) or 0
         db.attune.count = tonumber(p[3]) or 0
         db.attune.off = tonumber(p[4]) or 0
+        db.attune.ilvl = tonumber(p[5]) or 0
         -- The armory toggle (report #158) reads this state directly; repaint
         -- it so a flip from the old panel's path is not shown stale.
         LG2.RefreshItems()
