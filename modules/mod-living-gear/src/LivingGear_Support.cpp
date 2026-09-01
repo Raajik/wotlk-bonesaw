@@ -119,12 +119,28 @@ bool g_wgSiegeScale = true;
 float g_wgVehicleMult = 10.0f;
 
 // A unit is siege-vehicle damage when it rides a vehicle (the player in the
-// siege engine seat, casting its spells) or is itself a vehicle (the siege
+// siege engine seat, casting its spells) or is itself a siege engine (the
 // engine creature firing its own AI or accessory spells). Ordinary mounts are
 // not vehicles -- they never have a kit and the rider's GetVehicle() is null.
+//
+// Report #238: the kit half used to catch EVERY creature with a vehicle kit,
+// and Archavon the Stone Watcher (VehicleId 303) is exactly that. His damage
+// was multiplied by the siege factor while the client was shown the
+// pre-multiplied number -- the swing and spell packets are sent before
+// Unit::DealDamage runs the funnel -- so he "hits for 19k but instant kills
+// anyone he hits". The real engines (Wintergrasp, Strand of the Ancients,
+// Isle of Conquest, Ulduar's salvaged vehicles, the gunship and keep
+// cannons) are MECHANICAL creatures; bosses and quest constructs that merely
+// carry a kit (Giants, elementals, drakes) are not siege engines.
 bool IsSiegeVehicleDamage(Unit const* unit)
 {
-    return unit && (unit->GetVehicle() || unit->GetVehicleKit());
+    if (!unit)
+        return false;
+    if (unit->GetVehicle())
+        return true;
+    Creature const* creature = unit->ToCreature();
+    return creature && creature->GetVehicleKit() && creature->GetCreatureTemplate()
+        && creature->GetCreatureTemplate()->type == CREATURE_TYPE_MECHANICAL;
 }
 
 // ---------------------------------------------------------------------
