@@ -374,10 +374,19 @@ public:
 
         void MovementInform(uint32 type, uint32 id) override
         {
-            if (type != POINT_MOTION_TYPE && id != POINT_SAURFANG)
+            if (type != POINT_MOTION_TYPE || id != POINT_SAURFANG)
                 return;
 
             instance->HandleGameObject(instance->GetGuidData(GO_SAURFANG_S_DOOR), false);
+
+            // Report #237: the fight may only start once Saurfang is in
+            // position and the door is closed behind him. Starting it
+            // earlier lets a mid-walk engage replace this arrival move,
+            // leaving the door open; any evade then walks him back through
+            // it and Reset() marks him unattackable again. Combat shed
+            // during the walk (JustEngagedWith bails) lets the walk finish,
+            // so the fight starts from here.
+            DoAction(ACTION_INTRO_DONE);
         }
 
         void SpellHitTarget(Unit*  /*target*/, SpellInfo const* spell) override
@@ -475,7 +484,17 @@ public:
                     }
                     break;
                 case ACTION_INTRO_DONE:
+                    // Report #237: the finish used to run from the intro
+                    // NPC's 4s timer while Saurfang was still walking out of
+                    // the door. It now runs from MovementInform once he is in
+                    // place with the door closed, and is idempotent so the
+                    // intro NPC's re-check can race it safely.
+                    if (_introDone)
+                        break;
                     _introDone = true;
+                    me->SetImmuneToPC(false);
+                    if (Player* target = me->SelectNearestPlayer(100.0f))
+                        AttackStart(target);
                     break;
                 default:
                     break;
@@ -526,11 +545,13 @@ public:
         {
             ASSERT(creature->GetVehicleKit());
             _instance = me->GetInstanceScript();
+            _finishRetries = 0;
         }
 
         void Reset() override
         {
             _events.Reset();
+            _finishRetries = 0;
             me->SetNpcFlag(UNIT_NPC_FLAG_GOSSIP);
             me->SetReactState(REACT_PASSIVE);
         }
@@ -713,15 +734,25 @@ public:
                 case EVENT_INTRO_FINISH:
                     // Report #215: the early finish cancels the rest of the
                     // cosmetic chain (guard charge, Grip of Agony) so it does
-                    // not play out over the top of the fight. ACTION_INTRO_DONE
-                    // is idempotent, so a re-fire here is harmless either way.
+                    // not play out over the top of the fight.
+                    // Report #237: the fight itself may only start once
+                    // Saurfang has walked to his position and the door closed
+                    // -- engaging him mid-walk replaced the arrival move,
+                    // left the door open and let any evade reset him behind
+                    // it as unattackable. Re-check every second until he is
+                    // in place; force the start after ~15s so the encounter
+                    // cannot brick.
                     _events.Reset();
                     if (Creature* deathbringer = ObjectAccessor::GetCreature(*me, _instance->GetGuidData(DATA_DEATHBRINGER_SAURFANG)))
                     {
-                        deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
-                        deathbringer->SetImmuneToPC(false);
-                        if (Player* target = deathbringer->SelectNearestPlayer(100.0f))
-                            deathbringer->AI()->AttackStart(target);
+                        float finishX = deathbringerPos.GetPositionX();
+                        float finishY = deathbringerPos.GetPositionY();
+                        float finishZ = deathbringerPos.GetPositionZ();
+                        bool inPosition = deathbringer->IsWithinDist3d(finishX, finishY, finishZ, 3.0f);
+                        if (inPosition || ++_finishRetries >= 15)
+                            deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
+                        else
+                            _events.ScheduleEvent(EVENT_INTRO_FINISH, 1s, 0, PHASE_INTRO_H);
                     }
                     break;
 
@@ -755,6 +786,7 @@ public:
         EventMap _events;
         InstanceScript* _instance;
         std::list<Creature*> _guardList;
+        uint32 _finishRetries;
     };
 
     bool OnGossipHello(Player* player, Creature* creature) override
@@ -799,11 +831,13 @@ public:
         npc_muradin_bronzebeard_iccAI(Creature* creature) : ScriptedAI(creature)
         {
             _instance = me->GetInstanceScript();
+            _finishRetries = 0;
         }
 
         void Reset() override
         {
             _events.Reset();
+            _finishRetries = 0;
             me->SetNpcFlag(UNIT_NPC_FLAG_GOSSIP);
             me->SetReactState(REACT_PASSIVE);
         }
@@ -959,15 +993,25 @@ public:
                 case EVENT_INTRO_FINISH:
                     // Report #215: the early finish cancels the rest of the
                     // cosmetic chain (guard charge, Grip of Agony) so it does
-                    // not play out over the top of the fight. ACTION_INTRO_DONE
-                    // is idempotent, so a re-fire here is harmless either way.
+                    // not play out over the top of the fight.
+                    // Report #237: the fight itself may only start once
+                    // Saurfang has walked to his position and the door closed
+                    // -- engaging him mid-walk replaced the arrival move,
+                    // left the door open and let any evade reset him behind
+                    // it as unattackable. Re-check every second until he is
+                    // in place; force the start after ~15s so the encounter
+                    // cannot brick.
                     _events.Reset();
                     if (Creature* deathbringer = ObjectAccessor::GetCreature(*me, _instance->GetGuidData(DATA_DEATHBRINGER_SAURFANG)))
                     {
-                        deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
-                        deathbringer->SetImmuneToPC(false);
-                        if (Player* target = deathbringer->SelectNearestPlayer(100.0f))
-                            deathbringer->AI()->AttackStart(target);
+                        float finishX = deathbringerPos.GetPositionX();
+                        float finishY = deathbringerPos.GetPositionY();
+                        float finishZ = deathbringerPos.GetPositionZ();
+                        bool inPosition = deathbringer->IsWithinDist3d(finishX, finishY, finishZ, 3.0f);
+                        if (inPosition || ++_finishRetries >= 15)
+                            deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
+                        else
+                            _events.ScheduleEvent(EVENT_INTRO_FINISH, 1s, 0, PHASE_INTRO_A);
                     }
                     break;
             }
@@ -977,6 +1021,7 @@ public:
         EventMap _events;
         InstanceScript* _instance;
         std::list<Creature*> _guardList;
+        uint32 _finishRetries;
     };
 
     bool OnGossipHello(Player* player, Creature* creature) override
