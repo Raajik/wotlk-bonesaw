@@ -1,0 +1,49 @@
+Report #228: "Auto-Attune option is back, but I don't see a way
+to filter the level of items you auto-attune"
+(auto-attune options thread: toggle + quality filter + level
+filter)
+
+The option was not just missing a filter -- it was a lie. Since
+2026-08-23 TryAutoAttune is an empty stub (auto-attuning was
+retired because attuning CONSUMES the item, and auto-consuming
+looted gear before the player could decide to wear it is hostile),
+while the client's perk-gated toggle and the per-quality switches
+kept storing auto_attune_on / auto_attune_off into
+lg_account_meta that nothing read. The player unlocked the perk,
+flipped the toggle on, and nothing happened except a switch that
+said ON.
+
+Change: the auto-attune path is revived behind real filters, so
+the switch finally does what it says.
+
+* Server (TryAutoAttune, on OnPlayerStoreNewItem): mirrors the
+  retired body's safe parts -- the consumption is deferred one
+  tick (m_Events + GUID re-resolve, so the item is not destroyed
+  mid-add), the account row is read per item (auto_attune_on,
+  auto_attune_off, auto_attune_ilvl), the per-quality opt-out
+  mask still wins, and the new minimum item level must be met
+  (proto->ItemLevel >= auto_attune_ilvl, 0 = no minimum). The
+  actual attune goes through AttuneItemEntry exactly like
+  ATTUNEALL, so a duplicate of an already-attuned entry is
+  declined and SURVIVES in the bag (only first copies are ever
+  consumed), followed by DestroyItem + RefreshStats + a chat
+  line naming the item so nothing vanishes silently.
+* Master switch defaults OFF: migration flips the column default
+  to 0 and resets every existing account to 0 (rev_auto_attune_
+  min_ilvl.sql in pending_db_characters) -- nobody's loot starts
+  getting consumed because an old row defaulted to 1 while the
+  stub made that harmless. Opting in is the toggle's job.
+* New filter: AASET|lvl|<0-999> (HandleAutoAttuneSet) stores
+  auto_attune_ilvl; the AA| addon sync line gains a 5th field
+  carrying it (older clients ignore the extra field).
+* Client: a Min ilvl button sits beside the Auto-Attune toggle on
+  the items tab (StaticPopup numeric input, 0 = off), the AA|
+  parser reads the new field, saved-vars defaults carry ilvl=0,
+  and the Auto-Attune tooltip points at the new control.
+
+Touches (module + one characters SQL): modules/mod-living-gear/
+src/LivingGear.cpp (TryAutoAttune revival, HandleAutoAttuneSet,
+SendAddonSync AA line), client_addon/LivingGear/LivingGear.lua
+(button + popup + AA parse + defaults), data/sql/updates/
+pending_db_characters/rev_auto_attune_min_ilvl.sql. No core
+files.
