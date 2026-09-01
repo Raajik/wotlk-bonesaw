@@ -5257,7 +5257,8 @@ void TryPaladinProtOnCast(Player* player, Spell* spell)
         info->Id, info->GetCategory(), player->GetName());
     ObjectGuid const playerGuid = player->GetGUID();
     uint32 const spellId = info->Id;
-    player->m_Events.AddEventAtOffset([playerGuid, spellId]()
+    uint32 const cat = info->GetCategory();
+    player->m_Events.AddEventAtOffset([playerGuid, spellId, cat]()
     {
         if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
             if (p->HasSpell(spellId))
@@ -5268,6 +5269,14 @@ void TryPaladinProtOnCast(Player* player, Spell* spell)
                 // stale entry first, then re-arm -- otherwise the icon shows
                 // 30s while the server is already ready.
                 p->SendClearCooldown(spellId, p);
+                // Report #230: the spell-entry clear was not enough -- the
+                // cast packet also gives the client a CATEGORY entry
+                // (category 1158) at 30s, and the icon stays locked by it
+                // while the server is already at 6s. Send the same clear
+                // keyed by the category id so whichever way the client keys
+                // its entries, the stale 30s is gone; then re-arm 6s.
+                if (cat)
+                    p->SendClearCooldown(cat, p);
                 p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS, true);
                 // Report #187: the 30s cooldown came back anyway. Log the
                 // cooldown state 1ms after the override lands so the next
