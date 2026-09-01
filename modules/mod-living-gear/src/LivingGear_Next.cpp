@@ -580,10 +580,26 @@ std::unordered_map<uint32, std::unordered_set<uint32>> g_selfBuffs;
 
 // Immunity auras never become permanent: Divine Shield, Ice Block and
 // friends are balanced by their short windows.
+//
+// Cloak of Shadows (report #241) is WotLK's fifth wall and it hides from
+// the four checks above: its 3.3.5 spell (31224) applies
+// MOD_ATTACKER_SPELL_HIT_CHANCE (-90, the "resist all spells" reading)
+// and MOD_DAMAGE_PERCENT_TAKEN rather than any of the four immunity aura
+// types, so it slipped the guard and came back permanent -- a rogues'
+// wall on a 5 second budget, re-cast for free after every death. A
+// MOD_DAMAGE_PERCENT_TAKEN reduction is shared by honest buffs
+// (Survival Instincts and friends), so the door closes per spell.
 bool IsImmunityBuffSpell(SpellInfo const* info)
 {
     if (!info)
         return false;
+    switch (info->Id)
+    {
+        case 31224: // Cloak of Shadows
+            return true;
+        default:
+            break;
+    }
     return info->HasAura(SPELL_AURA_SCHOOL_IMMUNITY)
         || info->HasAura(SPELL_AURA_DAMAGE_IMMUNITY)
         || info->HasAura(SPELL_AURA_DISPEL_IMMUNITY)
