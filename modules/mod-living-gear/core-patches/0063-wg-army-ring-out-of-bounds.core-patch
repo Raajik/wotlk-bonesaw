@@ -1,0 +1,26 @@
+Report #236: "Warsong Champions (and presumably Alliance equivalent) are
+not multiplied in spawn amount, just seeing the regular 1x spawns
+(Wintergrasp)."
+
+The 5x army multiplication (core-patch 0047 addendum) was structurally
+broken in two ways, both in WG_ARMY_RING:
+
+1. The array declared 3 offsets while WG_ARMY_COPIES_PER_ROW is 5 -- the
+   OnBattleStart loops read WG_ARMY_RING[3] and [4] OUT OF BOUNDS, so two
+   of the five copies per row spawned at garbage offsets (or failed to
+   spawn at all). Out-of-bounds reads past a 3x2 float array inside a
+   header full of constants: no compile warning, spawns just quietly went
+   wrong.
+2. Even the three valid offsets were {0,0}, {3,2}, {-3,-2} -- every copy
+   of a row stood within 3 yards of its siblings, so five overlapping
+   models read exactly like the single spawn the reporter described.
+
+Change: WG_ARMY_RING is now five well-spread offsets ({0,0}, {9,6},
+{-9,-6}, {6,-9}, {-6,9}) matching the copy count, so all five copies of
+every keep and outside army row spawn at visibly distinct positions for
+both factions (Warsong Champion 30739 / Valiance Expedition Champion
+30740 ARE the army guard entries -- BATTLEFIELD_WG_NPC_GUARD_H/A).
+
+Touches (core, untracked tree -- recorded here): src/server/game/
+Battlefield/Zones/BattlefieldWG.h (WG_ARMY_RING declaration). No cpp
+change needed; both loops already iterate to WG_ARMY_COPIES_PER_ROW.

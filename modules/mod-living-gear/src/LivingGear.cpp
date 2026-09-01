@@ -2111,7 +2111,9 @@ static bool HandleAttuneMessage(Player* player, std::string const& raw)
 // toggle a lie; auto-attune is back, but only behind real filters so nothing
 // is consumed without the account opting in and naming its limits: the
 // master switch (migrated to DEFAULT 0), the per-quality opt-out mask, and
-// the new minimum item level (auto_attune_ilvl, 0 = no minimum). Attuning
+// the new maximum item level cap (auto_attune_ilvl, 0 = no cap; report #233
+// flipped the filter's direction -- a minimum would consume the upgrades the
+// player wants to wear). Attuning
 // still consumes the item, so consumption is deferred one tick out of the
 // StoreNewItem hook and announced in chat; duplicates of an already-attuned
 // entry survive because AttuneItemEntry declines them, same as ATTUNEALL.
@@ -2125,19 +2127,22 @@ static void TryAutoAttune(Player* player, Item* item)
     uint32 const accountId = player->GetSession()->GetAccountId();
     uint32 autoOn = 0;
     uint32 autoOff = 0;
-    uint32 minIlvl = 0;
+    uint32 maxIlvl = 0;
     if (QueryResult q = CharacterDatabase.Query(
         "SELECT `auto_attune_on`, `auto_attune_off`, `auto_attune_ilvl` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
     {
         autoOn = (*q)[0].Get<uint8>();
         autoOff = (*q)[1].Get<uint32>();
-        minIlvl = (*q)[2].Get<uint16>();
+        maxIlvl = (*q)[2].Get<uint16>();
     }
     if (!autoOn)
         return;
     if (proto->Quality < 32 && (autoOff & (1u << proto->Quality)))
         return;
-    if (minIlvl && proto->ItemLevel < minIlvl)
+    // Report #233: the filter is a MAXIMUM -- auto-attune exists to clear
+    // low-level junk, and a minimum would consume the upgrades the player
+    // wants to wear. 0 = no cap.
+    if (maxIlvl && proto->ItemLevel > maxIlvl)
         return;
 
     ObjectGuid playerGuid = player->GetGUID();

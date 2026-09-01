@@ -5253,42 +5253,35 @@ void TryPaladinProtOnCast(Player* player, Spell* spell)
     // pacing the report asks for is real and not just a free button.
     ClearCooldownAfterCast(player, info->Id, info->GetCategory());
     LOG_INFO("module.livinggear",
-        "avenger shield: cast {} (category {}) by {} -- scheduling deferred 30s clear + 6s",
+        "avenger shield: cast {} (category {}) by {} -- server re-arm now, client clear at 1.5s",
         info->Id, info->GetCategory(), player->GetName());
     ObjectGuid const playerGuid = player->GetGUID();
     uint32 const spellId = info->Id;
     uint32 const cat = info->GetCategory();
+    // Server pacing first, 1ms after the cast: re-arm the flat 6s (#132).
+    player->m_Events.AddEventAtOffset([playerGuid, spellId]()
+    {
+        if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+            if (p->HasSpell(spellId))
+                p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS, true);
+    }, std::chrono::milliseconds(1));
+    // Reports #207/#230/#232: the cast packet hands the client a 30s CATEGORY
+    // entry, and it arrives AFTER any 1ms clear -- the client re-locks at 30s
+    // no matter how fast the server wipes it (the 0.1.124 clear raced the
+    // packet and lost). Clear both entries ~1.5s later, once the packet has
+    // certainly landed and long before the engine's 30s could matter, then
+    // push a fresh 6s entry so the icon paces with the server.
     player->m_Events.AddEventAtOffset([playerGuid, spellId, cat]()
     {
         if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
             if (p->HasSpell(spellId))
             {
-                // Report #207: the 6s server state is correct (verified by the
-                // log line below), but the client kept displaying the engine's
-                // 30s category entry from the cast packet. Wipe the client's
-                // stale entry first, then re-arm -- otherwise the icon shows
-                // 30s while the server is already ready.
                 p->SendClearCooldown(spellId, p);
-                // Report #230: the spell-entry clear was not enough -- the
-                // cast packet also gives the client a CATEGORY entry
-                // (category 1158) at 30s, and the icon stays locked by it
-                // while the server is already at 6s. Send the same clear
-                // keyed by the category id so whichever way the client keys
-                // its entries, the stale 30s is gone; then re-arm 6s.
                 if (cat)
                     p->SendClearCooldown(cat, p);
                 p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS, true);
-                // Report #187: the 30s cooldown came back anyway. Log the
-                // cooldown state 1ms after the override lands so the next
-                // re-report tells us whether something re-writes it later.
-                auto const& cds = p->GetSpellCooldownMap();
-                for (auto const& [cdSpell, cd] : cds)
-                    if (cdSpell == spellId || cd.category)
-                        LOG_INFO("module.livinggear",
-                            "avenger shield: cooldown after override -- spell {} end {} category {} maxduration {}",
-                            cdSpell, cd.end, cd.category, cd.maxduration);
             }
-    }, std::chrono::milliseconds(1));
+    }, std::chrono::milliseconds(1500));
     ScheduleAvengerBounces(player, spell);
 }
 

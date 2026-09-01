@@ -3254,7 +3254,7 @@ function LG2.BuildItemsPanel(parent)
             GameTooltip:AddLine("Level a Living Gear item to 10 to unlock Auto-Attune. Poor starts on.", 0.7, 0.7, 0.7, true)
         else
             GameTooltip:AddLine("Qualifying items attune themselves as they come in. This is the master switch; per-quality switches live on the old Attune panel's rows.", 0.7, 0.7, 0.7, true)
-            GameTooltip:AddLine("The Min ilvl button beside this sets the lowest item level auto-attune will take.", 0.7, 0.7, 0.7, true)
+            GameTooltip:AddLine("The Max ilvl button beside this sets the highest item level auto-attune will take.", 0.7, 0.7, 0.7, true)
         end
         GameTooltip:Show()
     end)
@@ -3267,7 +3267,7 @@ function LG2.BuildItemsPanel(parent)
     -- above this item level. A numeric popup instead of a cycle list -- the
     -- realm's items span ilvl 1-284 and a cycle of that length is misery.
     StaticPopupDialogs["LG2_AA_ILVL"] = {
-        text = "Auto-attune minimum item level (0 = no minimum)",
+        text = "Auto-attune maximum item level (0 = no cap)",
         button1 = ACCEPT,
         button2 = CANCEL,
         hasEditBox = 1,
@@ -3304,7 +3304,7 @@ function LG2.BuildItemsPanel(parent)
     aaIlvl.label = Font(aaIlvl, 10, 0.9, 0.95, 0.9)
     aaIlvl.label:SetPoint("CENTER", 0, 0)
     aaIlvl.label:SetJustifyH("CENTER")
-    aaIlvl.label:SetText("Min ilvl: Off")
+    aaIlvl.label:SetText("Max ilvl: Off")
     aaIlvl:SetScript("OnClick", function()
         if not PerkKnown(910041) then
             return
@@ -3314,7 +3314,7 @@ function LG2.BuildItemsPanel(parent)
     aaIlvl:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Auto-Attune Level Filter")
-        GameTooltip:AddLine("Auto-attune only consumes items at or above this item level. 0 turns the minimum off.", 0.7, 0.7, 0.7, true)
+        GameTooltip:AddLine("Auto-attune only consumes items at or below this item level. 0 turns the cap off.", 0.7, 0.7, 0.7, true)
         GameTooltip:Show()
     end)
     aaIlvl:SetScript("OnLeave", function()
@@ -3526,9 +3526,9 @@ function LG2.RefreshItems()
     if ui.itemsAaIlvl then
         local ilvl = tonumber(db.attune.ilvl) or 0
         if ilvl > 0 then
-            ui.itemsAaIlvl.label:SetText("Min ilvl: " .. tostring(ilvl))
+            ui.itemsAaIlvl.label:SetText("Max ilvl: " .. tostring(ilvl))
         else
-            ui.itemsAaIlvl.label:SetText("Min ilvl: Off")
+            ui.itemsAaIlvl.label:SetText("Max ilvl: Off")
         end
         if PerkKnown(910041) then
             ui.itemsAaIlvl.label:SetTextColor(0.90, 0.95, 0.90, 1)
@@ -6772,7 +6772,7 @@ if LG2._origDoTradeSkill then
         end
         if index and numReagents and LG2.StageVaultCraft
             and LG2.StageVaultCraft(index, numReagents, GetTradeSkillReagentInfo,
-                GetTradeSkillReagentItemLink, repeatCount, GetTradeSkillItemLink) then
+                GetTradeSkillReagentItemLink, repeatCount, GetTradeSkillItemLink, LG2._origTradeSkillInfo) then
             return -- the server is crafting it straight from the vault
         end
         return LG2._origDoTradeSkill(index, repeatCount)
@@ -6792,7 +6792,7 @@ if LG2._origDoCraft then
         end
         if index and numReagents and LG2.StageVaultCraft
             and LG2.StageVaultCraft(index, numReagents, GetCraftReagentInfo,
-                GetCraftReagentItemLink, repeatCount, GetCraftItemLink) then
+                GetCraftReagentItemLink, repeatCount, GetCraftItemLink, LG2._origCraftInfo) then
             return -- the server is crafting it straight from the vault
         end
         return LG2._origDoCraft(index, repeatCount)
@@ -6813,7 +6813,7 @@ end
 -- and re-fires the craft the moment the withdrawal lands in the bags. A
 -- craft the bags can already pay for stages nothing; a craft that is short
 -- even with the vault stages nothing and lets the native refusal speak.
-function LG2.StageVaultCraft(index, numReagents, reagentInfo, reagentLink, repeatCount, itemLinkFn)
+function LG2.StageVaultCraft(index, numReagents, reagentInfo, reagentLink, repeatCount, itemLinkFn, nameFn)
     if not (index and numReagents and numReagents > 0 and reagentInfo and reagentLink
         and LG2.RawItemCount and SendLine) then
         return false
@@ -6857,9 +6857,18 @@ function LG2.StageVaultCraft(index, numReagents, reagentInfo, reagentLink, repea
     local itemLink = itemLinkFn and itemLinkFn(index) or nil
     local spellId = itemLink and tonumber(string.match(itemLink, "enchant:(%d+)")) or nil
     if not spellId then
-        -- No spell id could be parsed: fall back to the native refusal
-        -- rather than staging reagents into the bags.
-        return false
+        -- Report #231: craft-type windows (First Aid, Cooking) hand out plain
+        -- item links with no enchant payload, so the authoritative parse
+        -- misses, StageVaultCraft bails, and the client's own native bag
+        -- check refuses crafts the vault could pay for -- with zero
+        -- server-side refusals in the log. The CRAFTS sync already maps
+        -- recipe name -> spell id for every craft this character knows;
+        -- resolve through it before giving up.
+        local name = nameFn and nameFn(index) or nil
+        spellId = name and LG2.craftNames[name] or nil
+        if not spellId then
+            return false
+        end
     end
     SendLine("CRAFTCAST|" .. tostring(spellId) .. "|" .. tostring(want))
     return true

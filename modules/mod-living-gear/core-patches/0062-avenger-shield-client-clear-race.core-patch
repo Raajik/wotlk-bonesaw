@@ -1,0 +1,22 @@
+Report #232: "|Hspell:48827|h[Avenger's Shield]|h still 30s cooldown..."
+filed at 20:35, five minutes AFTER 0.1.124 went live.
+
+The 0.1.124 fix (clear both the spell entry and the 30s category entry,
+then re-arm 6s) ran at +1ms after the cast -- and LOST A RACE. The cast
+packet itself hands the client a fresh 30s category entry, and that packet
+lands on the client some tens of milliseconds after the cast, i.e. AFTER
+the +1ms clear: the client wiped the entry, then immediately re-locked at
+30s from the packet, with nothing scheduled to clear it again. Live log at
+20:35 showed the server at 6s/category 0 (correct) while the player saw
+30s.
+
+Change: two-stage. Stage 1 at +1ms re-arms the server-side flat 6s
+(onHold, server pacing true to #132). Stage 2 at +1.5s -- long after the
+cast packet has certainly landed, long before the engine's 30s could ever
+elapse -- clears the spell entry AND the category entry, then pushes a
+fresh 6s cooldown sent to the client, so the icon paces with the server
+instead of the engine's 30s. The stale "scheduling deferred 30s clear" log
+wording now reads "server re-arm now, client clear at 1.5s".
+
+Touches (module only): modules/mod-living-gear/src/LivingGear_ClassPerks.cpp
+(TryPaladinProtOnCast). No core files.

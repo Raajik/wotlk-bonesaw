@@ -468,7 +468,11 @@ uint8 const WG_MAX_OUTSIDE_NPC = 14;
 // faction-aligned battle NPCs; see BattlefieldWG.cpp OnBattleStart).
 uint8 const WG_ARMY_COPIES_PER_ROW = 5;
 // Ring offsets (yards) so the copies of one row don't stack invisibly.
-float const WG_ARMY_RING[3][2] = { { 0.0f, 0.0f }, { 3.0f, 2.0f }, { -3.0f, -2.0f } };
+// Report #236: the ring had 3 offsets while WG_ARMY_COPIES_PER_ROW is 5 --
+// copies 3 and 4 read past the array (garbage offsets, spawns lost), and
+// even the 3 valid ones sat within 3 yards of each other, so five stacked
+// models read as a single spawn. Five well-spread offsets now.
+float const WG_ARMY_RING[5][2] = { { 0.0f, 0.0f }, { 9.0f, 6.0f }, { -9.0f, -6.0f }, { 6.0f, -9.0f }, { -6.0f, 9.0f } };
 uint8 const WG_OUTSIDE_ALLIANCE_NPC = 7;
 uint8 const WG_MAX_TELEPORTER = 12;
 
