@@ -8282,13 +8282,16 @@ SlashCmdList["LGREPORT"] = function(msg)
     ReportUI.Toggle()
 end
 
--- Bug reports. /bugreport rather than /bug, because /bug is a stock WoW slash
--- command that opens Blizzard's own report frame -- that frame files into a
--- table nobody here reads, so overriding it would silently swallow reports.
--- Bare (no text) now opens the report form; with text it files a plain bug
--- directly, same as before.
+-- Bug reports. Historically /bugreport rather than /bug, because /bug is a
+-- stock WoW slash command that opens Blizzard's own report frame -- that
+-- frame files into a table nobody here reads, so overriding it was feared
+-- to silently swallow reports. Report #223 asked for /bug to open the same
+-- form as /report; since the stock frame goes nowhere useful on this
+-- realm, /bug now opens our form too (with text it files a plain bug,
+-- same as /bugreport). Bare (no text) opens the report form.
 SLASH_LGBUG1 = "/bugreport"
 SLASH_LGBUG2 = "/lgbug"
+SLASH_LGBUG3 = "/bug"
 SlashCmdList["LGBUG"] = function(msg)
     msg = string.gsub(msg or "", "^%s+", "")
     if msg == "" then
