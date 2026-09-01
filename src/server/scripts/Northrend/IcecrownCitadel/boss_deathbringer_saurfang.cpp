@@ -516,6 +516,9 @@ public:
 
         void EnterEvadeMode(EvadeReason why) override
         {
+            // Report #240: still resetting on pull after the 0.1.126 start
+            // fix -- make every evade tell us why it happened.
+            LOG_INFO("scripts.icc.saurfang", "Deathbringer Saurfang evade: reason {} introDone {}", uint32(why), _introDone ? 1 : 0);
             BossAI::EnterEvadeMode(why);
             if (Creature* creature = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_SAURFANG_EVENT_NPC)))
                 creature->AI()->DoAction(ACTION_EVADE);
@@ -740,17 +743,30 @@ public:
                     // -- engaging him mid-walk replaced the arrival move,
                     // left the door open and let any evade reset him behind
                     // it as unattackable. Re-check every second until he is
-                    // in place; force the start after ~15s so the encounter
-                    // cannot brick.
+                    // in place.
+                    // Report #240: the ~15s force-start could still fire
+                    // while he was mid-walk (a crowd on his path slows the
+                    // walk down), re-creating exactly the state the fix
+                    // exists to prevent. The force path no longer engages a
+                    // moving boss: it stops the walk, teleports him the last
+                    // few yards into position, closes the door itself and
+                    // only then starts the fight -- the in-position-and-door
+                    // invariant holds no matter how long the walk took.
                     _events.Reset();
                     if (Creature* deathbringer = ObjectAccessor::GetCreature(*me, _instance->GetGuidData(DATA_DEATHBRINGER_SAURFANG)))
                     {
                         float finishX = deathbringerPos.GetPositionX();
                         float finishY = deathbringerPos.GetPositionY();
                         float finishZ = deathbringerPos.GetPositionZ();
-                        bool inPosition = deathbringer->IsWithinDist3d(finishX, finishY, finishZ, 3.0f);
-                        if (inPosition || ++_finishRetries >= 15)
+                        if (deathbringer->IsWithinDist3d(finishX, finishY, finishZ, 3.0f))
                             deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
+                        else if (++_finishRetries >= 15)
+                        {
+                            deathbringer->GetMotionMaster()->Clear();
+                            deathbringer->NearTeleportTo(finishX, finishY, finishZ, deathbringer->GetOrientation());
+                            _instance->HandleGameObject(_instance->GetGuidData(GO_SAURFANG_S_DOOR), false);
+                            deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
+                        }
                         else
                             _events.ScheduleEvent(EVENT_INTRO_FINISH, 1s, 0, PHASE_INTRO_H);
                     }
@@ -999,17 +1015,30 @@ public:
                     // -- engaging him mid-walk replaced the arrival move,
                     // left the door open and let any evade reset him behind
                     // it as unattackable. Re-check every second until he is
-                    // in place; force the start after ~15s so the encounter
-                    // cannot brick.
+                    // in place.
+                    // Report #240: the ~15s force-start could still fire
+                    // while he was mid-walk (a crowd on his path slows the
+                    // walk down), re-creating exactly the state the fix
+                    // exists to prevent. The force path no longer engages a
+                    // moving boss: it stops the walk, teleports him the last
+                    // few yards into position, closes the door itself and
+                    // only then starts the fight -- the in-position-and-door
+                    // invariant holds no matter how long the walk took.
                     _events.Reset();
                     if (Creature* deathbringer = ObjectAccessor::GetCreature(*me, _instance->GetGuidData(DATA_DEATHBRINGER_SAURFANG)))
                     {
                         float finishX = deathbringerPos.GetPositionX();
                         float finishY = deathbringerPos.GetPositionY();
                         float finishZ = deathbringerPos.GetPositionZ();
-                        bool inPosition = deathbringer->IsWithinDist3d(finishX, finishY, finishZ, 3.0f);
-                        if (inPosition || ++_finishRetries >= 15)
+                        if (deathbringer->IsWithinDist3d(finishX, finishY, finishZ, 3.0f))
                             deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
+                        else if (++_finishRetries >= 15)
+                        {
+                            deathbringer->GetMotionMaster()->Clear();
+                            deathbringer->NearTeleportTo(finishX, finishY, finishZ, deathbringer->GetOrientation());
+                            _instance->HandleGameObject(_instance->GetGuidData(GO_SAURFANG_S_DOOR), false);
+                            deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
+                        }
                         else
                             _events.ScheduleEvent(EVENT_INTRO_FINISH, 1s, 0, PHASE_INTRO_A);
                     }
