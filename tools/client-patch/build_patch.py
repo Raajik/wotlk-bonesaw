@@ -35,8 +35,11 @@ AREATABLE_DBC_BASE = ROOT / "cache" / "AreaTable.dbc.base"
 # own DBC before the mount cast is even sent, so the fix must ride the
 # client patch. The 3.3.5a client has no SpellArea.dbc at all (verified:
 # no candidate MPQ carries one), so the area flags are the only client
-# gate. Wintergrasp keeps its battlefield flight gate server-side and its
-# own area rows are left untouched. AreaTable.dbc ships in patch-Y.MPQ and
+# gate. Report #235 removed Wintergrasp's Flightless (58730) spell_area
+# rows server-side instead; the WG area rows carry no NO_FLY flag in the
+# client DBC (verified: 18 WG-tree rows, zero flagged), so no client
+# AreaTable change is needed for it -- its rows are left untouched here.
+# AreaTable.dbc ships in patch-Y.MPQ and
 # in both locale patch-<locale>-4.MPQ archives: the locale patch-4 outranks
 # blizzard's locale patch-3, which is where the pristine copy lives.
 AREA_FLAG_NO_FLY_ZONE = 0x20000000
