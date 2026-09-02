@@ -1,0 +1,173 @@
+Periodic aura scripts stop dividing by a zero tick count.
+
+Touches: src/server/scripts/Spells/spell_druid.cpp (Innervate, Insect Swarm),
+         src/server/scripts/Spells/spell_generic.cpp (Lifeblood, Gift of the
+         Naaru), src/server/scripts/Spells/spell_hunter.cpp (Chimera Shot),
+         src/server/scripts/Outland/BlackTemple/boss_teron_gorefiend.cpp
+         (Spirit Lance)
+
+Why: worldserver crash 2026-09-02 14:18 MDT -- SIGFPE/FPE_INTDIV, whole process
+killed, container auto-restarted four times.
+
+AuraEffect::GetTotalTicks() is MaxDuration/m_amplitude. A permanent aura has
+MaxDuration -1, and -1/amplitude truncates toward zero in C++, so every
+permanent periodic aura reports **zero** total ticks. Upstream never hit this
+because almost nothing is permanent; on this realm a great many player-cast
+auras are deliberately made permanent, which turns every "divide by the tick
+count" in a spell script into a live landmine.
+
+The crash: two saved Innervate auras (character_aura, spell 29166, guid 32
+Selonian and guid 773 Selryeth, both maxDuration -1) were restored on playerbot
+login. Player::_LoadAuras -> Aura::SetLoadedState -> RecalculateAmount ->
+spell_dru_innervate::CalculateAmount divided by GetTotalTicks() == 0 and took
+the process down. Confirmed from the core: rax 7866 dividend, rcx 0 divisor.
+Because _LoadAuras dies partway the rows were never consumed, so each restart
+re-armed the same crash -- a loop, not a one-off. The two rows were deleted to
+break it; this patch is what stops it coming back.
+
+Sweeping every GetTotalTicks() use split into three groups:
+
+- Integer divides -- these SIGFPE. Innervate (the crash), Insect Swarm's T8
+  balance relic bonus, and Teron Gorefiend's Spirit Lance. All now guarded.
+  Spirit Lance is an encounter debuff rather than a player-cast buff, so it is
+  precautionary, but the shape is identical and the guard is free.
+
+- Float divides -- these do not trap, they produce inf, and int32(inf) is
+  undefined behaviour. Lifeblood and Gift of the Naaru. Not academic: 57
+  permanent Lifeblood auras (spells 55501/55502/55503) were already sitting in
+  character_aura, so those players were getting a garbage heal amount rather
+  than a crash. Also guarded.
+
+- Tick count used as a *multiplier* -- Chimera Shot. Zero ticks meant the shot
+  silently paid out nothing instead of crashing. It now falls back to the tick
+  count the spell was designed for, SpellInfo::GetMaxDuration()/amplitude, so a
+  permanent Serpent Sting again pays its normal five ticks at 40%. The
+  amplitude comes off the aura effect, not the DBC, so it stays consistent with
+  core-patch 0027: at 25% haste the period is 2.4s, giving six ticks and a
+  correspondingly larger payout.
+
+Deliberately left alone:
+- Unit::CastDelayedSpellWithPeriodicAmount (Unit.cpp) already skips zero-tick
+  effects three lines above its divide.
+- boss_archimonde.cpp and boss_broggok.cpp divide as float, on boss-only auras
+  that cannot be persisted, and only to scale a coefficient.
+
+--- a/src/server/scripts/Spells/spell_druid.cpp
++++ b/src/server/scripts/Spells/spell_druid.cpp
+@@ -622,8 +622,12 @@
+ 
+     void CalculateAmount(AuraEffect const* aurEff, int32& amount, bool& /*canBeRecalculated*/)
+     {
+-        if (Unit* caster = GetCaster())
+-            amount = int32(CalculatePct(caster->GetCreatePowers(POWER_MANA), amount) / aurEff->GetTotalTicks());
++        // A permanent (maxDuration -1) Innervate restored from character_aura yields
++        // zero total ticks, which used to divide by zero and take down the process.
++        int32 const totalTicks = aurEff->GetTotalTicks();
++        Unit* caster = GetCaster();
++        if (caster && totalTicks > 0)
++            amount = int32(CalculatePct(caster->GetCreatePowers(POWER_MANA), amount) / totalTicks);
+         else
+             amount = 0;
+     }
+@@ -2007,9 +2011,13 @@
+ 
+     void CalculateAmount(AuraEffect const* aurEff, int32& amount, bool& /*canBeRecalculated*/)
+     {
++        // A permanent aura reports zero total ticks.
++        int32 const totalTicks = aurEff->GetTotalTicks();
++        if (totalTicks <= 0)
++            return;
+         if (Unit* caster = GetCaster())
+             if (AuraEffect const* relicAurEff = caster->GetAuraEffect(SPELL_DRUID_ITEM_T8_BALANCE_RELIC, EFFECT_0))
+-                amount += relicAurEff->GetAmount() / aurEff->GetTotalTicks();
++                amount += relicAurEff->GetAmount() / totalTicks;
+     }
+ 
+     void Register() override
+--- a/src/server/scripts/Spells/spell_generic.cpp
++++ b/src/server/scripts/Spells/spell_generic.cpp
+@@ -2494,8 +2494,12 @@
+ 
+     void CalculateAmount(AuraEffect const* aurEff, int32& amount, bool& /*canBeRecalculated*/)
+     {
++        // A permanent aura reports zero total ticks.
++        int32 const totalTicks = aurEff->GetTotalTicks();
++        if (totalTicks <= 0)
++            return;
+         if (Unit* owner = GetUnitOwner())
+-            amount += int32(CalculatePct(owner->GetMaxHealth(), 1.5f / aurEff->GetTotalTicks()));
++            amount += int32(CalculatePct(owner->GetMaxHealth(), 1.5f / float(totalTicks)));
+     }
+ 
+     void Register() override
+@@ -4309,7 +4313,11 @@
+                 break;
+         }
+ 
+-        int32 healTick = std::floor(heal / aurEff->GetTotalTicks());
++        // A permanent aura reports zero total ticks.
++        int32 const totalTicks = aurEff->GetTotalTicks();
++        if (totalTicks <= 0)
++            return;
++        int32 healTick = std::floor(heal / float(totalTicks));
+         amount += int32(std::max(healTick, 0));
+     }
+ 
+--- a/src/server/scripts/Spells/spell_hunter.cpp
++++ b/src/server/scripts/Spells/spell_hunter.cpp
+@@ -446,6 +446,21 @@
+     }
+ };
+ 
++// Chimera Shot pays out a share of the sting's whole-duration output, so it
++// scales off the tick count. A permanent sting reports zero ticks, which would
++// silently zero the payout -- fall back to the count the spell was designed for.
++static int32 GetStingTickCount(Aura const* aura, AuraEffect const* aurEff)
++{
++    int32 const ticks = aurEff->GetTotalTicks();
++    if (ticks > 0)
++        return ticks;
++
++    int32 const amplitude = aurEff->GetAmplitude();
++    int32 const duration = aura->GetSpellInfo()->GetMaxDuration();
++    int32 const designed = (amplitude > 0 && duration > 0) ? duration / amplitude : 0;
++    return designed > 0 ? designed : 1;
++}
++
+ // 53209 Chimera Shot
+ class spell_hun_chimera_shot : public SpellScript
+ {
+@@ -479,7 +494,7 @@
+                     // Serpent Sting - Instantly deals 40% of the damage done by your Serpent Sting.
+                     if (familyFlag[0] & 0x4000)
+                     {
+-                        int32 TickCount = aurEff->GetTotalTicks();
++                        int32 TickCount = GetStingTickCount(aura, aurEff);
+                         spellId = SPELL_HUNTER_CHIMERA_SHOT_SERPENT;
+                         basePoint = aurEff->GetAmount();
+                         ApplyPct(basePoint, TickCount * 40);
+@@ -488,7 +503,7 @@
+                     // Viper Sting - Instantly restores mana to you equal to 60% of the total amount drained by your Viper Sting.
+                     else if (familyFlag[1] & 0x00000080)
+                     {
+-                        int32 TickCount = aura->GetEffect(0)->GetTotalTicks();
++                        int32 TickCount = GetStingTickCount(aura, aurEff);
+                         spellId = SPELL_HUNTER_CHIMERA_SHOT_VIPER;
+ 
+                         // Amount of one aura tick
+--- a/src/server/scripts/Outland/BlackTemple/boss_teron_gorefiend.cpp
++++ b/src/server/scripts/Outland/BlackTemple/boss_teron_gorefiend.cpp
+@@ -217,7 +217,12 @@
+     void CalculateAmount(AuraEffect const* /*aurEff*/, int32& amount, bool& /*canBeRecalculated*/)
+     {
+         if (AuraEffect* effect = GetAura()->GetEffect(EFFECT_2))
+-            amount -= (amount / effect->GetTotalTicks()) * effect->GetTickNumber();
++        {
++            // A permanent aura reports zero total ticks.
++            int32 const totalTicks = effect->GetTotalTicks();
++            if (totalTicks > 0)
++                amount -= (amount / totalTicks) * effect->GetTickNumber();
++        }
+     }
+ 
+     void Update(AuraEffect const*  /*effect*/)
