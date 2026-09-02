@@ -27,6 +27,7 @@
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
 #include "GameTime.h"
+#include "Vehicle.h"
 #include "AllGameObjectScript.h"
 #include "AreaDefines.h"
 #include "Battlefield.h"
@@ -118,29 +119,65 @@ uint32 g_killXpFloorPct = 2;
 bool g_wgSiegeScale = true;
 float g_wgVehicleMult = 10.0f;
 
-// A unit is siege-vehicle damage when it rides a vehicle (the player in the
-// siege engine seat, casting its spells) or is itself a siege engine (the
-// engine creature firing its own AI or accessory spells). Ordinary mounts are
-// not vehicles -- they never have a kit and the rider's GetVehicle() is null.
+// A unit is siege-vehicle damage when it rides a siege vehicle (the player
+// in the siege engine seat, casting its spells) or is itself a listed siege
+// engine (the engine creature firing its own AI or accessory spells).
+// Ordinary mounts are not vehicles -- they never have a kit and the rider's
+// GetVehicle() is null.
 //
 // Report #238: the kit half used to catch EVERY creature with a vehicle kit,
 // and Archavon the Stone Watcher (VehicleId 303) is exactly that. His damage
 // was multiplied by the siege factor while the client was shown the
 // pre-multiplied number -- the swing and spell packets are sent before
 // Unit::DealDamage runs the funnel -- so he "hits for 19k but instant kills
-// anyone he hits". The real engines (Wintergrasp, Strand of the Ancients,
-// Isle of Conquest, Ulduar's salvaged vehicles, the gunship and keep
-// cannons) are MECHANICAL creatures; bosses and quest constructs that merely
-// carry a kit (Giants, elementals, drakes) are not siege engines.
+// anyone he hits". The first fix required a MECHANICAL creature, but that
+// still caught anything big and metal: reports #247 and #249 are XT-002
+// Deconstructor (33293) and Mimiron's Aerial Command Unit (33670/34109),
+// both Mechanical with kits, both one-shotting the raid through the funnel.
+// Report #245 is the same hole on the rider half: Snobold Vassal is seated
+// in a vehicle (the player's head), so unit->GetVehicle() was true and every
+// Fire Bomb tick carried the x10. So the question is no longer "does it have
+// a kit" but "is it one of the actual siege engines" -- an explicit entry
+// list of the Wintergrasp / Strand / Isle of Conquest / Ulduar vehicles and
+// their turrets and cannons, and the rider path only counts when the thing
+// being ridden is on that list.
+bool IsSiegeVehicleEntry(uint32 entry);
 bool IsSiegeVehicleDamage(Unit const* unit)
 {
     if (!unit)
         return false;
-    if (unit->GetVehicle())
-        return true;
+    if (Vehicle const* ridden = unit->GetVehicle())
+    {
+        Unit const* base = ridden->GetBase();
+        return base && IsSiegeVehicleEntry(base->GetEntry());
+    }
     Creature const* creature = unit->ToCreature();
-    return creature && creature->GetVehicleKit() && creature->GetCreatureTemplate()
-        && creature->GetCreatureTemplate()->type == CREATURE_TYPE_MECHANICAL;
+    return creature && IsSiegeVehicleEntry(creature->GetEntry());
+}
+
+// The real engines: Wintergrasp's attackers and defenders, the Strand and
+// Isle of Conquest battleground vehicles, Ulduar's salvaged convoy, the
+// gunship and keep cannons, and theWG tower/antipersonnel cannon emplacements.
+// Vehicle kits alone never qualify -- XT-002, the Aerial Command Unit,
+// Archavon, Kologarn and the rest keep their kits but stay off this list.
+bool IsSiegeVehicleEntry(uint32 entry)
+{
+    switch (entry)
+    {
+        case 27881: case 27894: case 28094: case 28312: case 28319: // Wintergrasp catapult, cannon, demolisher, siege engine, turret
+        case 28366: case 28781: case 28833: case 30236:             // WG tower cannon, SotA demolisher, Scarlet/Argent cannon
+        case 31830: case 32627: case 32629: case 32795: case 32796: // refurbished demolisher, WG siege engine/turret, SotA cannon/demolisher
+        case 33060: case 33062: case 33067: case 33109: case 33167: // Ulduar salvaged siege engine, chopper, turret, demolisher, mechanic seat
+        case 33316: case 33669:                                     // ram, demolisher engineer
+        case 34045: case 34775: case 34776: case 34777: case 34793: // IoC chopper, demolisher, siege engine, turret, catapult
+        case 34929: case 34935: case 34944: case 35069:             // gunship cannons, keep cannon, WG siege engine
+        case 35410: case 35413: case 35415: case 35427: case 35429: // spawn mirrors of the above
+        case 35431: case 35433: case 35436: case 36355: case 36357:
+        case 36838: case 36839: case 39759:
+            return true;
+        default:
+            return false;
+    }
 }
 
 // ---------------------------------------------------------------------
