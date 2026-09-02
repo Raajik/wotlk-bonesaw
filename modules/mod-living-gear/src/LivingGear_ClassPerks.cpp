@@ -5251,6 +5251,11 @@ void TryPaladinProtJudgementProc(Player* player, Spell* spell)
 // shield exactly like a hand cast: server cooldown wiped (spell + category)
 // and replaced with the flat 6s, client display cleared after the cast packet
 // has certainly landed. Shared with the hand-cast path (TryPaladinProtOnCast).
+// One re-arm ticket per player: the deferred passes below only act if no
+// newer re-arm superseded them (a fresh hand cast or proc inside the old
+// schedule's window must not get its cooldown shaved by old leftovers).
+std::unordered_map<uint32, uint32> g_avengerRearmEpoch;
+
 void RearmAvengersShield(Player* player, uint32 shieldId)
 {
     if (!player || !shieldId)
@@ -5258,6 +5263,7 @@ void RearmAvengersShield(Player* player, uint32 shieldId)
     SpellInfo const* shieldInfo = sSpellMgr->GetSpellInfo(shieldId);
     uint32 const cat = shieldInfo ? shieldInfo->GetCategory() : 0;
     ObjectGuid const playerGuid = player->GetGUID();
+    uint32 const epoch = ++g_avengerRearmEpoch[playerGuid.GetCounter()];
     // Server pacing first, 1ms after the trigger: wipe whatever is there and
     // re-arm the flat 6s (#132).
     player->m_Events.AddEventAtOffset([playerGuid, shieldId]()
@@ -5271,9 +5277,15 @@ void RearmAvengersShield(Player* player, uint32 shieldId)
     // client's display for all of them, then push the fresh 6s. The category
     // wipe is server-side too now (#244: only the client display was cleared
     // before, so a surviving server entry could keep the button dead while
-    // the icon read ready).
-    player->m_Events.AddEventAtOffset([playerGuid, shieldId, cat]()
+    // the icon read ready). The 6s is also PUSHED to the client now (#253:
+    // AddSpellCooldown's last argument is a login-data flag, not a packet --
+    // nothing ever told the client about the 6s, so it showed the cast's own
+    // 30s until the clear landed and then "nothing").
+    player->m_Events.AddEventAtOffset([playerGuid, shieldId, cat, epoch]()
     {
+        auto ticket = g_avengerRearmEpoch.find(playerGuid.GetCounter());
+        if (ticket == g_avengerRearmEpoch.end() || ticket->second != epoch)
+            return;
         if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
             if (p->HasSpell(shieldId))
             {
@@ -5281,8 +5293,45 @@ void RearmAvengersShield(Player* player, uint32 shieldId)
                 if (cat)
                     p->RemoveCategoryCooldown(cat);
                 p->AddSpellCooldown(shieldId, 0, PALADIN_AS_COOLDOWN_MS, true);
+                WorldPacket data;
+                p->BuildCooldownPacket(data, SPELL_COOLDOWN_FLAG_NONE, shieldId,
+                    PALADIN_AS_COOLDOWN_MS);
+                p->SendDirectMessage(&data);
             }
     }, std::chrono::milliseconds(1500));
+    // Final pass, AFTER the bounce chain has fully drained (#254). The hops
+    // are triggered casts -- server-side they never touch cooldowns -- but
+    // every hop's SpellGo reaches the caster's own client, and the client
+    // answers each one by re-applying the spell's authored 30s display. The
+    // chain runs 1ms + 29 hops x 150ms = ~4.35s, so hops kept landing after
+    // the 1.5s pass and re-poisoning the display ("randomly getting the 30
+    // second cooldown again"). This pass runs past the last hop: wipe spell
+    // + category on both sides, re-arm ONLY the remaining 6s budget (so the
+    // button still frees at trigger + 6s), and push that remaining sweep to
+    // the client.
+    uint32 const chainEndMs = 1u + (PALADIN_AS_BOUNCES - 1u) * 150u;
+    uint32 const finalPassMs = std::max<uint32>(1750u, chainEndMs + 250u);
+    uint32 const remainingMs = finalPassMs < PALADIN_AS_COOLDOWN_MS
+        ? PALADIN_AS_COOLDOWN_MS - finalPassMs
+        : 500u;
+    player->m_Events.AddEventAtOffset([playerGuid, shieldId, cat, epoch]()
+    {
+        auto ticket = g_avengerRearmEpoch.find(playerGuid.GetCounter());
+        if (ticket == g_avengerRearmEpoch.end() || ticket->second != epoch)
+            return;
+        g_avengerRearmEpoch.erase(ticket);
+        if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+            if (p->HasSpell(shieldId))
+            {
+                p->RemoveSpellCooldown(shieldId, true);
+                if (cat)
+                    p->RemoveCategoryCooldown(cat);
+                p->AddSpellCooldown(shieldId, 0, remainingMs, true);
+                WorldPacket data;
+                p->BuildCooldownPacket(data, SPELL_COOLDOWN_FLAG_NONE, shieldId, remainingMs);
+                p->SendDirectMessage(&data);
+            }
+    }, std::chrono::milliseconds(finalPassMs));
 }
 
 void TryPaladinProtOnCast(Player* player, Spell* spell)
