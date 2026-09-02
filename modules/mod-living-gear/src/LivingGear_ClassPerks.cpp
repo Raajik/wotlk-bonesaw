@@ -5211,6 +5211,8 @@ void ScheduleAvengerBounces(Player* player, Spell* spell)
     ScheduleAvengerBouncesOn(player, current->GetGUID(), info->Id);
 }
 
+void TryPaladinProtJudgementProc(Player* player, Spell* spell);
+void RearmAvengersShield(Player* player, uint32 shieldId);
 // Report #81: a Judgement cast has PALADIN_AS_PROC_CHANCE % to fire the full
 // Avenger's Shield bounce chain for free. Runs from the cast hook like every
 // other perk trigger, so it is a real button being pressed -- not a proc
@@ -5235,7 +5237,52 @@ void TryPaladinProtJudgementProc(Player* player, Spell* spell)
     uint32 const guid = player->GetGUID().GetCounter();
     if (!g_reentryGuard.insert(guid).second)
         return;
-    ScheduleAvengerBouncesOn(player, target->GetGUID(), BestOwnedOrFirst(player, SPELL_AVENGERS_SHIELD));
+    uint32 const shieldId = BestOwnedOrFirst(player, SPELL_AVENGERS_SHIELD);
+    ScheduleAvengerBouncesOn(player, target->GetGUID(), shieldId);
+    RearmAvengersShield(player, shieldId);
+}
+
+// Reports #244/#246: the Judgement/HotR proc used to fire the free shield and
+// touch nothing else, so whatever Avenger's Shield cooldown was already on the
+// player (the engine's own 30s entry, the client's local 30s lock from the
+// cast packet) sat there untouched -- the button stayed locked long after the
+// 6s re-arm should have freed it, and a proc never read as the reset the
+// report asks for ("resetting a cooldown-in-progress"). A proc now re-arms the
+// shield exactly like a hand cast: server cooldown wiped (spell + category)
+// and replaced with the flat 6s, client display cleared after the cast packet
+// has certainly landed. Shared with the hand-cast path (TryPaladinProtOnCast).
+void RearmAvengersShield(Player* player, uint32 shieldId)
+{
+    if (!player || !shieldId)
+        return;
+    SpellInfo const* shieldInfo = sSpellMgr->GetSpellInfo(shieldId);
+    uint32 const cat = shieldInfo ? shieldInfo->GetCategory() : 0;
+    ObjectGuid const playerGuid = player->GetGUID();
+    // Server pacing first, 1ms after the trigger: wipe whatever is there and
+    // re-arm the flat 6s (#132).
+    player->m_Events.AddEventAtOffset([playerGuid, shieldId]()
+    {
+        if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+            if (p->HasSpell(shieldId))
+                p->AddSpellCooldown(shieldId, 0, PALADIN_AS_COOLDOWN_MS, true);
+    }, std::chrono::milliseconds(1));
+    // ~1.5s later, once the cast packet has certainly landed: wipe the server
+    // entries again (spell + every spell in the category) and clear the
+    // client's display for all of them, then push the fresh 6s. The category
+    // wipe is server-side too now (#244: only the client display was cleared
+    // before, so a surviving server entry could keep the button dead while
+    // the icon read ready).
+    player->m_Events.AddEventAtOffset([playerGuid, shieldId, cat]()
+    {
+        if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
+            if (p->HasSpell(shieldId))
+            {
+                p->RemoveSpellCooldown(shieldId, true);
+                if (cat)
+                    p->RemoveCategoryCooldown(cat);
+                p->AddSpellCooldown(shieldId, 0, PALADIN_AS_COOLDOWN_MS, true);
+            }
+    }, std::chrono::milliseconds(1500));
 }
 
 void TryPaladinProtOnCast(Player* player, Spell* spell)
@@ -5251,37 +5298,14 @@ void TryPaladinProtOnCast(Player* player, Spell* spell)
     // on a flat 6s. Cleared deferred (after the engine writes its own 30s
     // entry), then a 6s cooldown is applied in the same deferred tick so the
     // pacing the report asks for is real and not just a free button.
+    // Reports #244/#246: the re-arm is shared with the proc path now
+    // (RearmAvengersShield) and its 1.5s pass also wipes the server-side
+    // category entry, not just the client's display.
     ClearCooldownAfterCast(player, info->Id, info->GetCategory());
     LOG_INFO("module.livinggear",
         "avenger shield: cast {} (category {}) by {} -- server re-arm now, client clear at 1.5s",
         info->Id, info->GetCategory(), player->GetName());
-    ObjectGuid const playerGuid = player->GetGUID();
-    uint32 const spellId = info->Id;
-    uint32 const cat = info->GetCategory();
-    // Server pacing first, 1ms after the cast: re-arm the flat 6s (#132).
-    player->m_Events.AddEventAtOffset([playerGuid, spellId]()
-    {
-        if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
-            if (p->HasSpell(spellId))
-                p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS, true);
-    }, std::chrono::milliseconds(1));
-    // Reports #207/#230/#232: the cast packet hands the client a 30s CATEGORY
-    // entry, and it arrives AFTER any 1ms clear -- the client re-locks at 30s
-    // no matter how fast the server wipes it (the 0.1.124 clear raced the
-    // packet and lost). Clear both entries ~1.5s later, once the packet has
-    // certainly landed and long before the engine's 30s could matter, then
-    // push a fresh 6s entry so the icon paces with the server.
-    player->m_Events.AddEventAtOffset([playerGuid, spellId, cat]()
-    {
-        if (Player* p = ObjectAccessor::FindPlayer(playerGuid))
-            if (p->HasSpell(spellId))
-            {
-                p->SendClearCooldown(spellId, p);
-                if (cat)
-                    p->SendClearCooldown(cat, p);
-                p->AddSpellCooldown(spellId, 0, PALADIN_AS_COOLDOWN_MS, true);
-            }
-    }, std::chrono::milliseconds(1500));
+    RearmAvengersShield(player, info->Id);
     ScheduleAvengerBounces(player, spell);
 }
 
