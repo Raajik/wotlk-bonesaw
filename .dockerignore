@@ -38,6 +38,19 @@
 /doc/
 /bin/
 
+# The live MySQL data directory. The db-import stage does a bare `COPY data data`
+# (apps/docker/Dockerfile), so it takes all of data/ -- and data/mysql is the
+# running database's bind mount, owned by uid 999 with #innodb_redo at 0750. The
+# build context cannot even read it:
+#
+#   error from sender: open .../data/mysql/#innodb_redo: permission denied
+#
+# That aborted the 2026-09-02 ship. Nothing in any image wants a copy of the live
+# datadir; db-import reads data/sql, which this does not touch. The directory
+# only became unreadable when mysql recreated #innodb_redo on its 14:19 restart,
+# which is why earlier builds the same day got away with it.
+/data/mysql/
+
 # 252MB image export left at the repo root on 2026-08-18. /tools/ above already
 # covers its sibling ws-layer.tar; this one sits outside it and was still being
 # shipped to the daemon on every build. No COPY or bind mount references it.
