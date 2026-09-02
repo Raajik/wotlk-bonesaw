@@ -150,3 +150,8 @@ tools/client-update/soap.env
 /progress.md
 /.planning/
 /HANDOFF.md
+
+# Restored server data (migrated from Windows Docker Desktop volumes).
+# 9GB MySQL datadir + 3GB client data -- never commit these.
+/data/mysql/
+/data/client-data/
