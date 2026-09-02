@@ -1998,6 +1998,35 @@ void DrainLegacyQuestVault(Player* player)
 // A failed cast (stock ran dry) zeroes the batch so the staggered tail is
 // skipped instead of spamming refusals.
 std::unordered_map<uint32, uint32> g_craftCastRemaining; // char guid counter -> casts left
+std::unordered_map<uint32, Position> g_craftCastOrigin;  // char guid -> where the batch started
+
+// Report #251: the client stops auto-crafting the moment you move, but this
+// batch is server-driven, so the cast interrupted by moving or jumping never
+// came back through the refusal path below -- the staggered tail kept firing
+// and the only way out was a relog. A slot that finds the caster away from
+// where the batch started (or falling, i.e. mid-jump) stops the batch on the
+// spot.
+void CraftBatchErase(uint32 guidCounter)
+{
+    g_craftCastRemaining.erase(guidCounter);
+    g_craftCastOrigin.erase(guidCounter);
+}
+
+// True when the batch should stop; erases it before returning.
+bool CraftBatchMoved(Player* player, ObjectGuid ownerGuid)
+{
+    auto origin = g_craftCastOrigin.find(ownerGuid.GetCounter());
+    if (origin == g_craftCastOrigin.end())
+        return true;
+    if (player->IsFalling() || player->GetExactDist(&origin->second) > 0.5f)
+    {
+        LOG_INFO("module.livinggear", "craft batch stopped: {} moved or jumped",
+            player->GetName());
+        CraftBatchErase(ownerGuid.GetCounter());
+        return true;
+    }
+    return false;
+}
 
 void HandleCraftCastRetry(ObjectGuid ownerGuid, uint32 spellId);
 void HandleCraftCast(Player* player, uint32 spellId, uint32 count)
@@ -2031,6 +2060,8 @@ void HandleCraftCast(Player* player, uint32 spellId, uint32 count)
     uint32 const castTimeMs = info->CastTimeEntry ? info->CastTimeEntry->CastTime : 0;
     uint32 const staggerMs = std::max<uint32>(600u, castTimeMs + 250u);
     g_craftCastRemaining[ownerGuid.GetCounter()] = count;
+    g_craftCastOrigin[ownerGuid.GetCounter()] =
+        Position(player->GetPositionX(), player->GetPositionY(), player->GetPositionZ());
     for (uint32 i = 0; i < count; ++i)
     {
         player->m_Events.AddEventAtOffset([ownerGuid, spellId]()
@@ -2041,9 +2072,11 @@ void HandleCraftCast(Player* player, uint32 spellId, uint32 count)
             Player* p = ObjectAccessor::FindPlayer(ownerGuid);
             if (!p || !p->IsInWorld())
             {
-                g_craftCastRemaining.erase(ownerGuid.GetCounter());
+                CraftBatchErase(ownerGuid.GetCounter());
                 return;
             }
+            if (CraftBatchMoved(p, ownerGuid))
+                return;
             // Still casting the previous craft: push this attempt back instead
             // of refusing it (a refusal here resets the client's cast bar and
             // used to kill the whole batch).
@@ -2057,7 +2090,9 @@ void HandleCraftCast(Player* player, uint32 spellId, uint32 count)
             }
             --found->second;
             if (!p->CastSpell(p, spellId, false))
-                g_craftCastRemaining.erase(ownerGuid.GetCounter());
+                CraftBatchErase(ownerGuid.GetCounter());
+            else if (found->second == 0)
+                CraftBatchErase(ownerGuid.GetCounter());
         }, std::chrono::milliseconds(staggerMs * i));
     }
 }
@@ -2071,6 +2106,8 @@ void HandleCraftCastRetry(ObjectGuid ownerGuid, uint32 spellId)
     Player* p = ObjectAccessor::FindPlayer(ownerGuid);
     if (!p || !p->IsInWorld() || !g_craftCastRemaining.count(ownerGuid.GetCounter()))
         return;
+    if (CraftBatchMoved(p, ownerGuid))
+        return;
     if (p->HasUnitState(UNIT_STATE_CASTING))
     {
         p->m_Events.AddEventAtOffset([ownerGuid, spellId]()
@@ -2082,7 +2119,9 @@ void HandleCraftCastRetry(ObjectGuid ownerGuid, uint32 spellId)
     auto found = g_craftCastRemaining.find(ownerGuid.GetCounter());
     --found->second;
     if (!p->CastSpell(p, spellId, false))
-        g_craftCastRemaining.erase(ownerGuid.GetCounter());
+        CraftBatchErase(ownerGuid.GetCounter());
+    else if (found->second == 0)
+        CraftBatchErase(ownerGuid.GetCounter());
 }
 
 bool HandleVaultChat(Player* player, std::string msg)
