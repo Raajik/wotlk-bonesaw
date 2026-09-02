@@ -113,27 +113,13 @@ uint32 const SPELL_TRADE[] = { 910026, 910027, 910028, 910029, 910030, 910031 };
 uint32 const TRADE_BREAKS[] = { 75, 150, 225, 300, 375, 450 };
 uint32 const TRADE_TIERS = 6;
 
-// Same 8-profession set LivingGear_Perks.cpp's CatchUpProfession() uses for
-// the Craft (cast-speed) perks -- cooking has its own separate 75-450
-// regen-tier system (SPELL_COOK) and is intentionally excluded here so the
-// two systems don't double up on the same skill.
-// Bug report #47, "Cooking not raising multiple points". Cooking was left out
-// of this list on the grounds that it "has its own perks at the same 75-450
-// breakpoints" -- but those (910063-910068) grant health and mana regen from
-// food, not faster skill-ups, so the two do not overlap at all and cooking was
-// simply getting no skill-up bonus from anything. The Professions track says
-// "+100% skill-ups" for reaching profession skill milestones, and cooking is a
-// profession.
-// Bug report #98: "Profession perk for extra skill per craft not applying to
-// First Aid crafting." First Aid was missing here, so bandage crafts fell out
-// of OnPlayerUpdateCraftingSkill untouched (and silently). First Aid is a
-// secondary trade skill exactly like Cooking, which was always in the list,
-// so it both receives the boost and counts toward the Trade tier unlocks.
-uint32 const TRADE_SKILLS[] = {
-    SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_LEATHERWORKING, SKILL_TAILORING,
-    SKILL_ENGINEERING, SKILL_ENCHANTING, SKILL_JEWELCRAFTING, SKILL_INSCRIPTION,
-    SKILL_COOKING, SKILL_FIRST_AID
-};
+// The craft-side and gather-side skill-up boost gates used to be separate
+// lists, and the narrower one kept shedding professions: Cooking fell out
+// first (#47), then First Aid (#98), and Mining went unheard for two months
+// until report #252 -- Smelt Thorium is a Mining craft, and Mining was never
+// in the "crafting-recipe" list, so every smelt fell out of
+// OnPlayerUpdateCraftingSkill silently and unboosted. There is one list now
+// (ALL_PROFESSION_SKILLS below); both gates check it.
 
 // 910053-910062: Leveling 1-10. XP gains +50% per tier. Unlocked when the
 // account has N characters at max level (this character included).
@@ -393,18 +379,13 @@ void CheckReputationPerks(Player* player)
 // ---------------------------------------------------------------------
 // Trade perks (910026-910031): profession skill-up gain bonus.
 // ---------------------------------------------------------------------
-bool IsTradeSkill(uint32 skillId)
-{
-    for (uint32 sk : TRADE_SKILLS)
-        if (sk == skillId)
-            return true;
-    return false;
-}
 
 // Every real profession, crafting and gathering alike. The Trade perk family's
 // design is cross-profession: whichever profession you grind first unlocks the
 // tiers, and those tiers then speed ALL the others. Lockpicking stays out on
-// purpose -- see its gather hook below.
+// purpose -- see its gather hook below. This is the single source of truth
+// for both skill-up boost gates: the craft hook and the gather hook below
+// both check membership in this list.
 uint32 const ALL_PROFESSION_SKILLS[] = {
     SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_LEATHERWORKING, SKILL_TAILORING,
     SKILL_ENGINEERING, SKILL_ENCHANTING, SKILL_JEWELCRAFTING, SKILL_INSCRIPTION,
@@ -413,7 +394,7 @@ uint32 const ALL_PROFESSION_SKILLS[] = {
 };
 
 // Literal IN list mirror of ALL_PROFESSION_SKILLS for the DB read (offline
-// alts). TRADE_SKILLS above stays the smaller crafting-recipe gate.
+// alts).
 uint32 AccountMaxTradeSkill(Player* player)
 {
     if (!player || !player->GetSession())
@@ -679,7 +660,13 @@ public:
         // craft among them. Instrumentation that buries the case it was added
         // to catch is worse than none: #20 needs the line for an actual
         // profession craft to be findable when it finally happens.
-        if (!IsTradeSkill(skill->SkillLine))
+        // Gate on every profession, not a "crafting" subset (reports #47,
+        // #98, #252: Cooking, then First Aid, then Mining -- Smelt Thorium --
+        // each fell out of a narrower gate silently, one at a time). Mirrors
+        // the gather hook below.
+        if (std::find(std::begin(ALL_PROFESSION_SKILLS),
+                      std::end(ALL_PROFESSION_SKILLS), skill->SkillLine)
+                == std::end(ALL_PROFESSION_SKILLS))
             return;
         if (!gain)
         {
