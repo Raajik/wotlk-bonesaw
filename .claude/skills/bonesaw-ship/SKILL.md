@@ -120,6 +120,18 @@ includes bots, so it reads non-zero on an empty realm.
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/save_world.ps1
 ```
 
+**On the Linux host, use `python3 tools/save_world.py` instead.** There is no
+PowerShell there, and the `.ps1`'s documented fallback `tools/worldserver_cli.py`
+is Windows-only too (it opens the Docker named pipe through `ctypes.WinDLL`), so
+with SOAP disabled the entire warn/save path is unavailable and the ship silently
+has no way to save at all. `save_world.py` attaches to the console on a pty and
+leaves with ctrl-p ctrl-q. Do not replace it with a pipe into `docker attach`:
+stdin goes straight to the worldserver console and EOF halts the server.
+
+Note that port 7878 answering a TCP connect does NOT mean SOAP is up -- docker
+proxy binds the host side regardless. Check `SOAP.Enabled` in
+`env/dist/etc/worldserver.conf`.
+
 The save still runs. It costs about three seconds and it is not a warning - it
 protects world and bot state, and a stale `online` flag left by an earlier crash
 is the one case where this count could be wrong in the dangerous direction. If
@@ -131,6 +143,12 @@ reconnect, not a rollback.
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/restart_worldserver.ps1
 ```
+
+**There is no Linux port of the countdown.** If humans are on and you are on the
+Linux host, drive it by hand with the same helper -- `python3 tools/save_world.py
+--command "announce <text>" --expect ""` for each step of the 5/2/1/0:30/0:10
+ladder, then a final plain `python3 tools/save_world.py` for the saveall. Do not
+skip the ladder because the tool is missing.
 
 Announces in game on a staged countdown (5 minutes, then 2, 1, 30s, 10s), then
 `saveall`. **Wait for its final line**, `OK: players warned ... and saved;
@@ -309,6 +327,9 @@ is a readable history rather than a wall of identical one-liners.
 Append durable learnings to `A:\obsidian\jeremy\wiki\Bonesaw.md` - crashes, UI
 rules, deploy gotchas, spell IDs, do-not-repeat mistakes. Part of shipping, not
 after it.
+
+Same file from the Linux host: `/run/media/muckfup/aba/obsidian/jeremy/wiki/Bonesaw.md`.
+It is CRLF -- write it back as CRLF or the whole page shows as modified.
 
 ## Finally
 
