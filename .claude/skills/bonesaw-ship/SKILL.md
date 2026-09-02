@@ -41,6 +41,40 @@ python tools/bonesaw_status.py
 - If `UNSHIPPED` is empty and the server is not behind, there is nothing to
   ship. Say so and stop.
 
+### Glance at the disk (not every ship - roughly monthly)
+
+Phase 1 builds an image every single ship, and WSL2 virtual disks only ever
+grow. Nothing shrinks `docker_data.vhdx` on its own, so it creeps until C: is
+full and a build fails for reasons that look nothing like disk space.
+
+```
+powershell -NoProfile -Command "'{0:N1} GB free on C:' -f ((Get-PSDrive C).Free/1GB); '{0:N1} GB vhdx' -f ((Get-Item $env:LOCALAPPDATA'\Docker\wsl\disk\docker_data.vhdx').Length/1GB)"
+```
+
+This is a look, not a gate - **never block a ship on it**, and do not compact
+mid-ship. If C: is under ~40 GB free, or the vhdx is far larger than
+`docker system df` says Docker is actually holding, mention it to the user and
+move on. It is its own maintenance job, done between ships.
+
+When they want it done, the sequence is a realm restart plus a compaction, so
+it follows the same warn/save rules as Phase 2:
+
+```
+docker builder prune -f                      # build cache; check `docker system df` first
+tools/save_world.ps1                          # or restart_worldserver.ps1 if humans are on
+docker compose down                           # NEVER with -v: that deletes wow-bonesaw_ac-database
+wsl --shutdown                                # quit Docker Desktop first or it restarts WSL
+# then, elevated: diskpart /s <script> with
+#   select vdisk file="...\docker_data.vhdx" / attach vdisk readonly / compact vdisk / detach vdisk
+docker compose up -d
+```
+
+On 2026-09-01 that vhdx had reached 171 GB while holding ~35 GB of data;
+compaction returned 133 GB. Also worth a glance:
+`%LOCALAPPDATA%\Temp\wsl-crashes` had 43 GB of worldserver dumps, nine of them
+in three days - they accumulate on their own after every crash and nothing
+cleans them up.
+
 Decide the version: bump the patch number in `tools/client-update/Bonesaw.version`.
 **Never skip a number**, including for server-only ships - the launcher and the
 Discord thread both key off it.

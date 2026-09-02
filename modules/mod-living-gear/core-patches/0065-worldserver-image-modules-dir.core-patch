@@ -1,0 +1,61 @@
+From: Bonesaw
+Subject: [PATCH] Worldserver image carries the modules sources, so module DB
+ updaters stop crash-looping the container
+
+apps/docker/Dockerfile -- one build file, not tracked in this repo (see
+modules/mod-living-gear/core-patches/README.md for why and how to apply
+this). Note this is under apps/, not src/server/, but it is the same
+situation: vendored upstream AzerothCore that this repo does not track.
+
+The Dockerfile copies `modules modules` into the db-import stage only. The
+worldserver stage inherits from `runtime`, whose skeleton creates an empty
+/azerothcore/modules and nothing ever fills it.
+
+That is invisible until a module's own database updater is switched on.
+`ENV AC_UPDATES_ENABLE_DATABASES=0` in the worldserver stage reads like it
+covers this, but it only silences the CORE updater -- each module carries its
+own switch, and mod-playerbots has `Playerbots.Updates.EnableDatabases` in
+playerbots.conf. With that at 1 the worldserver resolves playerbots SQL
+against /azerothcore/modules/mod-playerbots at runtime, does not find it, and
+calls Shutting down. Combined with `restart: unless-stopped` in
+docker-compose.yml that is a crash loop, not a single failure.
+
+The nasty part is the delay between cause and symptom. A worldserver container
+that is already running never re-reads any of this, so the realm can sit up for
+weeks over a broken image. It only bites on the next `docker compose down` +
+`up` -- which means it surfaces during whatever unrelated maintenance happened
+to recreate the container and looks like that maintenance broke the realm. On
+2026-09-01 it cost an outage during a disk-space cleanup, and three wrong
+theories before anyone looked inside the image and found /azerothcore/modules
+simply empty.
+
+After applying, verify with:
+
+    docker compose build ac-worldserver
+    docker run --rm --entrypoint sh acore/ac-wotlk-worldserver:master \
+        -c "ls -d /azerothcore/modules/mod-playerbots/data/sql/playerbots"
+
+--- a/apps/docker/Dockerfile
++++ b/apps/docker/Dockerfile
+@@ -188,9 +188,21 @@
+ # This disables user prompts. The console is still active, however
+ ENV AC_DISABLE_INTERACTIVE=1
+ ENV AC_CLOSE_IDLE_CONNECTIONS=0
+
++# AC_UPDATES_ENABLE_DATABASES=0 above only silences the CORE updater. Module
++# updaters have their own switches -- playerbots.conf has
++# Playerbots.Updates.EnableDatabases -- and when one is on, worldserver resolves
++# its SQL against /azerothcore/modules at runtime. Without these sources the
++# image only has the empty dir made in the skeleton stage, so the updater aborts
++# with "the given source directory does not exist" and restart: unless-stopped
++# turns that into a crash loop. A long-running container hides it completely; it
++# only surfaces on the next `docker compose down` + `up`, which is how it cost an
++# outage during unrelated disk maintenance on 2026-09-01.
++COPY --chown=$DOCKER_USER:$DOCKER_USER \
++    modules modules
++
+ COPY --chown=$DOCKER_USER:$DOCKER_USER \
+      --from=build \
+      /azerothcore/env/dist/bin/worldserver /azerothcore/env/dist/bin/worldserver
+
+ VOLUME /azerothcore/env/dist/etc
