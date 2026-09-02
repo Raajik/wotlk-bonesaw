@@ -1999,6 +1999,7 @@ void DrainLegacyQuestVault(Player* player)
 // skipped instead of spamming refusals.
 std::unordered_map<uint32, uint32> g_craftCastRemaining; // char guid counter -> casts left
 
+void HandleCraftCastRetry(ObjectGuid ownerGuid, uint32 spellId);
 void HandleCraftCast(Player* player, uint32 spellId, uint32 count)
 {
     if (!player || !player->IsInWorld())
@@ -2016,7 +2017,19 @@ void HandleCraftCast(Player* player, uint32 spellId, uint32 count)
         return;
     }
     ObjectGuid const ownerGuid = player->GetGUID();
-    uint32 const staggerMs = info->CastTimeEntry ? 600u : 50u;
+    // Report #243: the batch used to fire every 600ms no matter how long the
+    // craft itself takes to cast. Any recipe whose real cast time is longer
+    // than that (and whose craft-speed instant pass does not apply -- the
+    // craft-type windows, unranked lines) got its in-flight cast stomped by
+    // the next staggered event: the second cast is refused with
+    // SPELL_FAILED_SPELL_IN_PROGRESS, the failure packet resets the client's
+    // progress bar ("goes halfway and resets"), and the refusal zeroes the
+    // batch so the tail is skipped and nothing ever finishes. Stagger on the
+    // craft's own cast time (never below 600ms), and an event that lands
+    // while a cast is still running simply defers itself instead of
+    // refusing -- the batch completes one craft at a time.
+    uint32 const castTimeMs = info->CastTimeEntry ? info->CastTimeEntry->CastTime : 0;
+    uint32 const staggerMs = std::max<uint32>(600u, castTimeMs + 250u);
     g_craftCastRemaining[ownerGuid.GetCounter()] = count;
     for (uint32 i = 0; i < count; ++i)
     {
@@ -2031,11 +2044,45 @@ void HandleCraftCast(Player* player, uint32 spellId, uint32 count)
                 g_craftCastRemaining.erase(ownerGuid.GetCounter());
                 return;
             }
+            // Still casting the previous craft: push this attempt back instead
+            // of refusing it (a refusal here resets the client's cast bar and
+            // used to kill the whole batch).
+            if (p->HasUnitState(UNIT_STATE_CASTING))
+            {
+                p->m_Events.AddEventAtOffset([ownerGuid, spellId]()
+                {
+                    HandleCraftCastRetry(ownerGuid, spellId);
+                }, std::chrono::milliseconds(600));
+                return;
+            }
             --found->second;
             if (!p->CastSpell(p, spellId, false))
                 g_craftCastRemaining.erase(ownerGuid.GetCounter());
         }, std::chrono::milliseconds(staggerMs * i));
     }
+}
+
+// One deferred retry of a batch craft whose previous cast was still running
+// when its slot came up (report #243). Shares the batch counter with
+// HandleCraftCast; a retry that finds the batch gone (logged out, batch
+// finished) simply does nothing.
+void HandleCraftCastRetry(ObjectGuid ownerGuid, uint32 spellId)
+{
+    Player* p = ObjectAccessor::FindPlayer(ownerGuid);
+    if (!p || !p->IsInWorld() || !g_craftCastRemaining.count(ownerGuid.GetCounter()))
+        return;
+    if (p->HasUnitState(UNIT_STATE_CASTING))
+    {
+        p->m_Events.AddEventAtOffset([ownerGuid, spellId]()
+        {
+            HandleCraftCastRetry(ownerGuid, spellId);
+        }, std::chrono::milliseconds(600));
+        return;
+    }
+    auto found = g_craftCastRemaining.find(ownerGuid.GetCounter());
+    --found->second;
+    if (!p->CastSpell(p, spellId, false))
+        g_craftCastRemaining.erase(ownerGuid.GetCounter());
 }
 
 bool HandleVaultChat(Player* player, std::string msg)
