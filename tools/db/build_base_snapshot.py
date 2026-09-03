@@ -108,11 +108,18 @@ TARGETS = {
         REPO / "data/sql/base/db_characters/zzz_bonesaw_base.sql",
         REPO / "data/sql/updates/pending_db_characters",
     ),
-    "acore_world": (
-        REPO / "data/sql/base/db_world/zzz_bonesaw_base.sql",
-        REPO / "data/sql/updates/pending_db_world",
-    ),
 }
+
+# acore_world is deliberately absent. Its pending updates are allowed to run
+# normally, because they write world content into upstream-owned tables -- 88
+# statements into spell_dbc alone, plus lfgdungeons_dbc, gameobject_summon_groups
+# and spell_area. Marking those as applied skipped the content and left a fresh
+# realm short 174 spell_dbc rows and all 101 lfgdungeons_dbc rows.
+#
+# They can run because they have no ordering problem: only two create a table,
+# both with IF NOT EXISTS, and world data updates are order-independent. That is
+# not true of pending_db_characters, where rev_living_gear_report_flags.sql needs
+# a column that rev_living_gear_support_github_sync.sql adds and sorts earlier.
 
 # The file name has to sort last. DBUpdater::Populate() std::sort()s the base
 # directory before applying it, and upstream's own updates.sql DROPs and
