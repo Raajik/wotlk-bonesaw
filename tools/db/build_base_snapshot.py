@@ -11,8 +11,8 @@ incremental ALTERs that assume the tables already exist.
 This script writes that missing half, reading the live database as the source
 of truth:
 
-    data/sql/base/db_characters/bonesaw_base.sql
-    data/sql/base/db_world/bonesaw_base.sql
+    data/sql/base/db_characters/zzz_bonesaw_base.sql
+    data/sql/base/db_world/zzz_bonesaw_base.sql
 
 AzerothCore's DBUpdater::Populate() applies every .sql file in the base
 directory, but only when the database is empty. So these files run exactly
@@ -71,18 +71,20 @@ TABLE_LIST = REPO / "tools" / "db" / "bonesaw_tables.txt"
 # database -> (base output file, pending updates directory)
 TARGETS = {
     "acore_characters": (
-        REPO / "data/sql/base/db_characters/bonesaw_base.sql",
+        REPO / "data/sql/base/db_characters/zzz_bonesaw_base.sql",
         REPO / "data/sql/updates/pending_db_characters",
     ),
     "acore_world": (
-        REPO / "data/sql/base/db_world/bonesaw_base.sql",
+        REPO / "data/sql/base/db_world/zzz_bonesaw_base.sql",
         REPO / "data/sql/updates/pending_db_world",
     ),
 }
 
-# `updates` is created by upstream's own base files, but base files are applied
-# in directory order, which is not guaranteed. Create it defensively so section
-# 3 cannot fail on ordering.
+# The file name has to sort last. DBUpdater::Populate() std::sort()s the base
+# directory before applying it, and upstream's own updates.sql DROPs and
+# recreates the `updates` table -- so anything this file inserts before that
+# runs is silently thrown away. Hence the zzz_ prefix. `updates` is still
+# created defensively below in case upstream ever stops shipping it.
 UPDATES_DDL = """CREATE TABLE IF NOT EXISTS `updates` (
   `name` varchar(200) NOT NULL,
   `hash` char(40) DEFAULT '',
