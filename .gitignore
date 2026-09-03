@@ -26,6 +26,13 @@
 /apps/joiner
 /deps/deno
 /data/sql/custom/*
+# ...except Bonesaw's own custom SQL. Upstream ignores this directory because
+# upstream expects it to hold a server owner's local hacks. Bonesaw keeps real,
+# load-bearing schema here -- ap_full_schema.sql alone creates 22 attunement
+# tables -- and a clone that lacks it cannot build the databases.
+!/data/sql/custom/db_auth
+!/data/sql/custom/db_characters
+!/data/sql/custom/db_world
 /src/server/scripts/Custom/*
 !/src/server/scripts/Custom/README.md
 
