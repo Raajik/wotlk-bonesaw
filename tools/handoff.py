@@ -47,7 +47,7 @@ def build() -> str:
                        "```\n" + sh("python tools/bonesaw_status.py") + "\n```"))
 
     out.append(section("Unshipped commits (patch-notes source)",
-                       sh("git log --oneline $(git describe --tags --match 'ship/*' --abbrev=0)..HEAD 2>/dev/null || git log --oneline -5")))
+                       sh("git log --oneline --first-parent $(git describe --tags --match 'ship/*' --abbrev=0)..HEAD 2>/dev/null || git log --oneline --first-parent -5")))
 
     out.append(section("Uncommitted changes", sh("git status --short") or "(clean)"))
 

@@ -185,7 +185,7 @@ notes, Discord, release notes, tag, push) is mechanical and was the recurring
 source of forgotten steps - 0.1.79/0.1.80 shipped with no Discord post, and the
 live manifest went stale twice in the 0.1.105/0.1.106 era. One command runs
 the whole tail in the right order, refuses to continue on any failed step, and
-tags LAST so `git log ship/<latest>..HEAD` is empty when it exits:
+tags LAST so `git log --first-parent ship/<latest>..HEAD` is empty when it exits:
 
 ```
 python tools/ship_bookkeeping.py --version X.Y.Z --notes-only           # then --post
@@ -239,7 +239,7 @@ git tag ship/X.Y.Z
 
 The tag is what makes the next `/bonesaw-status` able to say what players have.
 Without it the whole thing goes blind again. **Tag after the notes commit, not
-before** - a tag chased by manifest/notes commits leaves `ship/<latest>..HEAD`
+before** - a tag chased by manifest/notes commits leaves `--first-parent ship/<latest>..HEAD`
 non-empty forever and every later status reads "N commits not shipped"
 (0.1.104/0.1.105/0.1.106 all needed a tag re-point for exactly this).
 

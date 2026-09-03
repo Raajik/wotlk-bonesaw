@@ -44,9 +44,11 @@ failed silently.
 
 ## Answering follow-ups
 
-- What changed since the last ship: `git log ship/<version>..HEAD`
+- What changed since the last ship: `git log --first-parent ship/<version>..HEAD`
+  (`--first-parent` is required since the fork migration -- without it you also
+  get ~19,000 upstream AzerothCore commits)
 - What a specific ship contained: `git log ship/0.1.47..ship/0.1.48`
-- Whether one file changed since a ship: `git log ship/<version>..HEAD -- <path>`
+- Whether one file changed since a ship: `git log --first-parent ship/<version>..HEAD -- <path>`
 
 ## Do not
 

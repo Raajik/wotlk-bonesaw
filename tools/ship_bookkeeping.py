@@ -11,7 +11,7 @@ right order, and refuses to continue on any failed step.
     python tools/ship_bookkeeping.py --version 0.1.107 [--no-client] [--dry-run]
 
 Order of operations (tag-last ordering: the ship tag is the FINISH line, so
-`git log ship/<latest>..HEAD` is empty when this exits):
+`git log --first-parent ship/<latest>..HEAD` is empty when this exits):
   1. bump tools/client-update/Bonesaw.version (exactly +0.0.1)   [server-only skips client steps]
   2. build client patch MPQs (build_patch.py)                    [--no-client skips]
   3. build Bonesaw.exe + manifest (build_launcher.py)            [--no-client skips]
@@ -80,7 +80,10 @@ def latest_ship_tag() -> str:
 def unshipped_commits() -> list[str]:
     tag = latest_ship_tag()
     rng = f"{tag}..HEAD" if tag else "HEAD~15..HEAD"
-    out = sh_out(f'git log --oneline "{rng}"')
+    # --first-parent keeps this to Bonesaw's own mainline. Since the fork
+    # migration the branch also contains upstream AzerothCore history, and a
+    # plain range would put ~19,000 upstream commits into the patch notes.
+    out = sh_out(f'git log --oneline --first-parent "{rng}"')
     return [l for l in out.splitlines() if l.strip()]
 
 
@@ -295,7 +298,7 @@ def main() -> None:
 
     print()
     print(f"Ship {version} bookkeeping complete. Tag {tag} is the finish line; "
-          "git log ship/..HEAD should be empty.")
+          "git log --first-parent ship/..HEAD should be empty.")
 
 
 if __name__ == "__main__":

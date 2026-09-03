@@ -125,11 +125,14 @@ def main():
         tag_sha = git("rev-parse", "--short", tag + "^{}") or "?"
         tag_at = parse_iso(git("log", "-1", "--format=%cI", tag) or "")
         out.append("  last ship         %s  (%s, %s)" % (tag, tag_sha, fmt(tag_at)))
-        unshipped = (git("log", "--oneline", "%s..HEAD" % tag) or "").splitlines()
+        # --first-parent keeps this to Bonesaw's own mainline. Since the fork
+        # migration the branch also contains upstream AzerothCore history, and
+        # a plain tag..HEAD counts all ~19,000 of those commits as unshipped.
+        unshipped = (git("log", "--oneline", "--first-parent", "%s..HEAD" % tag) or "").splitlines()
     else:
         out.append("  last ship         NO ship/* TAG -- run /bonesaw-ship to start tagging")
         problems.append("no ship tag: cannot tell what players have")
-        unshipped = (git("log", "--oneline", "-20") or "").splitlines()
+        unshipped = (git("log", "--oneline", "--first-parent", "-20") or "").splitlines()
 
     # --- 2. what is committed -------------------------------------------
     out.append("  git HEAD          %s  (%s)" % (head, fmt(head_at)))
@@ -236,7 +239,7 @@ def main():
             # changed. A server-only ship (no client_addon / client-patch /
             # launcher commits since the served version's ship) correctly
             # leaves players on the old client -- nothing new to download.
-            since = run(["git", "log", "--oneline", "v%s..HEAD" % served, "--",
+            since = run(["git", "log", "--oneline", "--first-parent", "v%s..HEAD" % served, "--",
                          "modules/mod-living-gear/client_addon",
                          "tools/client-patch", "tools/launcher"])
             if since:
