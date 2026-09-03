@@ -1,0 +1,27 @@
+# Upstream baseline for the Bonesaw core tree
+#
+# Determined 2026-09-02 by hashing all 1770 on-disk src/ files and scoring
+# every upstream commit by exact (path, blob) matches. This commit is the
+# highest-scoring candidate: 1688 of 1763 src/ files match byte-for-byte.
+
+remote = https://github.com/mod-playerbots/azerothcore-wotlk.git
+branch = Playerbot
+commit = 092e9ba6ff
+
+# Delta from this baseline to the live on-disk tree (src/ only):
+#   75 modified  (52 tracked in git + 23 that git has never seen)
+#    7 added     (TC9Sidecar/{libsidecar.h,TC9SidecarStub.cpp} - wired into
+#                 src/server/game/CMakeLists.txt and src/server/scripts/CMakeLists.txt;
+#                 5 ScarletEnclave scripts that exist nowhere upstream)
+#    0 deleted
+#
+# Corroboration: all 52 tracked src/ files differ from this baseline, and none
+# match it. A wrong baseline would show tracked files that match (i.e. files
+# git tracks but which were never modified). That there are zero such files is
+# the strongest available evidence this baseline is correct.
+#
+# Note: the earlier assumption that upstream was `master` was wrong. master
+# scores only 1632/1760 and is missing the playerbots core-patch surface
+# (PlayerbotsDatabase.*, PlayerbotsScript.cpp, LoginDatabase hooks, ...).
+# The tree came from the `Playerbot` branch, which is also where the local
+# branch name came from.

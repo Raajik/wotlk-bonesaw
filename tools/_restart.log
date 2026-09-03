@@ -1,0 +1,18 @@
+Announcing: Server restart in 5 minutes. Your character will be saved. Finish up and find somewhere safe.
+OK
+OK
+Waiting 300 seconds before saveall...
+Announcing: Server restart in 2 minutes.
+OK
+OK
+Announcing: Server restart in 1 minute.
+OK
+OK
+Announcing: Server restart in 30 seconds.
+OK
+OK
+Announcing: Server restart in 10 seconds.
+OK
+OK
+SOAP skipped: no credentials (tools/soap.env or BONESAW_SOAP_USER). Using console. OK: saved all players via console attach; waited 3s for DB writes
+OK: players warned (300s, staged) and saved; restart is allowed

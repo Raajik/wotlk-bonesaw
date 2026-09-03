@@ -1,0 +1,480 @@
+warning: in the working copy of 'tools/client-update/Bonesaw.version', CRLF will be replaced by LF the next time Git touches it
+[Playerbot 8aae2ea] Bump Bonesaw.version to 0.1.116
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+Lua upvalue check: OK
+Lua main-chunk local check: OK (179/200)
+Template 2656: 'Smelting'
+Chest-open spells usable in combat: 29
+Blizzard ranks made instant: 9
+Bladestorm action-during-channel, no rage: 1
+Research spells cooldown-free client-side: 3
+Mount spells instant while moving: 396
+Haunt ranks instant while moving: 4
+Added spell 910001: '*Account Perks' icon=2610
+Added spell 910002: '*Mailbox' icon=2030
+Added spell 910003: '*Auction House' icon=2801
+Added spell 910004: '*Class Trainer' icon=2610
+Added spell 910005: '*Bank' icon=2492
+Added spell 910006: '*Stable' icon=455
+Added spell 910007: '*Bind' icon=776
+Added spell 910008: '*Autoloot' icon=3210
+Added spell 910009: '*Flight Master' icon=2274
+Added spell 910010: '*Honor: Defeat' icon=1703
+Added spell 910011: '*Honor: Victory' icon=1704
+Added spell 910012: '*Honor: Bloodied' icon=2300
+Added spell 910013: '*Rep: First Exalted' icon=3605
+Added spell 910014: '*Rep: Five Exalted' icon=3604
+Added spell 910015: '*Rep: Ten Exalted' icon=3603
+Added spell 910016: '*Rep: Bloodsail' icon=3602
+Added spell 910017: '*Rep: Darkmoon' icon=3602
+Added spell 910018: '*Rep: Ravenholdt' icon=3602
+Added spell 910019: '*Rep: Shendralar' icon=3602
+Added spell 910020: '*Rep: Arathor' icon=3602
+Added spell 910021: '*Rep: Defilers' icon=3602
+Added spell 910022: '*Rep: Silverwing' icon=3602
+Added spell 910023: '*Rep: Warsong' icon=3602
+Added spell 910024: '*Rep: Stormpike' icon=3602
+Added spell 910025: '*Rep: Frostwolf' icon=3602
+Added spell 910026: '*Trade: 75' icon=339
+Added spell 910027: '*Trade: 150' icon=339
+Added spell 910028: '*Trade: 225' icon=339
+Added spell 910029: '*Trade: 300' icon=339
+Added spell 910030: '*Trade: 375' icon=339
+Added spell 910031: '*Trade: 450' icon=339
+Added spell 910032: '*Mage: Arcane' icon=225
+Added spell 910033: '*Mage: Fire' icon=11
+Added spell 910034: '*Mage: Frost' icon=188
+Added spell 910035: '*Rogue: Assassination' icon=500
+Added spell 910036: '*Rogue: Combat' icon=514
+Added spell 910037: '*Rogue: Subtlety' icon=250
+Added spell 910102: '*Shadow Dance' icon=95
+Added spell 910104: '*Movement: Mounted Opener' icon=1299
+Added spell 910105: '*Auto-Mount' icon=836
+Added spell 910106: '*Class Buffs' icon=1802
+Added spell 910107: '*Riding' icon=1176
+Added spell 910108: '*Auto-Accept' icon=4035
+Added spell 910109: '*Mine: 150' icon=336
+Added spell 910110: '*Mine: 300' icon=336
+Added spell 910111: '*Mine: 450' icon=336
+Added spell 910112: '*Mine: Reach 75' icon=336
+Added spell 910113: '*Mine: Reach 225' icon=336
+Added spell 910114: '*Mine: Reach 375' icon=336
+Added spell 910115: '*Herb: 150' icon=345
+Added spell 910116: '*Herb: 300' icon=345
+Added spell 910117: '*Herb: 450' icon=345
+Added spell 910118: '*Herb: Reach 75' icon=345
+Added spell 910119: '*Herb: Reach 225' icon=345
+Added spell 910120: '*Herb: Reach 375' icon=345
+Added spell 910121: '*Skin: 150' icon=2682
+Added spell 910122: '*Skin: 300' icon=2682
+Added spell 910123: '*Skin: 450' icon=2682
+Added spell 910124: '*Skin: Reach 75' icon=2682
+Added spell 910125: '*Skin: Reach 225' icon=2682
+Added spell 910126: '*Skin: Reach 375' icon=2682
+Added spell 910127: '*Fish: 150' icon=580
+Added spell 910128: '*Fish: 300' icon=580
+Added spell 910129: '*Fish: 450' icon=580
+Added spell 910130: '*Fish: Reach 75' icon=580
+Added spell 910131: '*Fish: Reach 225' icon=580
+Added spell 910132: '*Fish: Reach 375' icon=580
+Added spell 910133: '*Eng: 150' icon=333
+Added spell 910134: '*Eng: 300' icon=333
+Added spell 910135: '*Eng: 450' icon=333
+Added spell 910136: '*Eng: Reach 75' icon=333
+Added spell 910137: '*Eng: Reach 225' icon=333
+Added spell 910138: '*Eng: Reach 375' icon=333
+Added spell 910139: '*Gather Sparkle Herb' icon=179
+Added spell 910140: '*Gather Sparkle Mine' icon=179
+Added spell 910141: '*Gather Sparkle Fish' icon=179
+Added spell 910142: '*Rare Pulse' icon=179
+Added spell 910038: '*Wayfarer' icon=516
+Added spell 910175: '*Wayfarer: Focus' icon=516
+Added spell 910176: '*Wayfarer: Wide' icon=516
+Added spell 910177: '*Wayfarer: Full' icon=516
+Added spell 910039: '*Wayfarer 4' icon=516
+Added spell 910040: '*Wayfarer 5' icon=516
+Added spell 910041: '*Gear: Auto-Attune' icon=997
+Added spell 910053: '*Leveling: 1' icon=3268
+Added spell 910054: '*Leveling: 2' icon=3269
+Added spell 910055: '*Leveling: 3' icon=3270
+Added spell 910056: '*Leveling: 4' icon=3271
+Added spell 910057: '*Leveling: 5' icon=3272
+Added spell 910058: '*Leveling: 6' icon=3273
+Added spell 910059: '*Leveling: 7' icon=3274
+Added spell 910060: '*Leveling: 8' icon=3275
+Added spell 910061: '*Leveling: 9' icon=3276
+Added spell 910062: '*Leveling: 10' icon=3277
+Added spell 910063: '*Cooking: 75' icon=1467
+Added spell 910064: '*Cooking: 150' icon=1467
+Added spell 910065: '*Cooking: 225' icon=1467
+Added spell 910066: '*Cooking: 300' icon=1467
+Added spell 910067: '*Cooking: 375' icon=1467
+Added spell 910068: '*Cooking: 450' icon=1467
+Added spell 910069: '*Paladin: Holy' icon=51
+Added spell 910070: '*Paladin: Protection' icon=2172
+Added spell 910071: '*Paladin: Retribution' icon=3027
+Added spell 910072: '*Paladin: Devotion Speed' icon=291
+Added spell 910073: '*Travel: 1' icon=776
+Added spell 910074: '*Travel: 2' icon=776
+Added spell 910075: '*Travel: 3' icon=776
+Added spell 910076: '*Travel: 4' icon=776
+Added spell 910077: '*Travel: 5' icon=776
+Added spell 910083: '*Warrior: Arms' icon=193
+Added spell 910084: '*Warrior: Fury' icon=38
+Added spell 910085: '*Warrior: Protection' icon=1672
+Added spell 910086: '*Warrior: Fury Haste' icon=38
+Added spell 910087: '*Living Gear Speed' icon=230
+Added spell 910088: '*Quests - Find' icon=2846
+Added spell 910090: '*Quests - Finish' icon=2846
+Added spell 910091: '*Attuned Armory' icon=297
+Added spell 910092: '*Solo Queue' icon=3224
+Added spell 910093: '*Craft: 1' icon=335
+Added spell 910094: '*Craft: 2' icon=335
+Added spell 910095: '*Craft: 3' icon=335
+Added spell 910096: '*Craft: 4' icon=335
+Added spell 910097: '*Craft: 5' icon=335
+Added spell 910098: '*Travel: Swim' icon=545
+Added spell 910101: '*Gear: Curator' icon=444
+Added spell 910150: '*Hunter: Marksmanship' icon=95
+Added spell 910151: '*Shaman: Elemental' icon=95
+Added spell 910152: '*Death Knight: Unholy' icon=95
+Added spell 910153: '*Hunter: Beast Mastery' icon=95
+Added spell 910154: '*Hunter: Survival' icon=95
+Added spell 910155: '*Shaman: Enhancement' icon=95
+Added spell 910156: '*Shaman: Restoration' icon=95
+Added spell 910181: '*Call of the Wilds' icon=406
+Added spell 910157: '*Warlock: Affliction' icon=95
+Added spell 910158: '*Warlock: Demonology' icon=95
+Added spell 910159: '*Warlock: Destruction' icon=95
+Added spell 910160: '*Druid: Balance' icon=95
+Added spell 910161: '*Druid: Feral' icon=95
+Added spell 910162: '*Druid: Restoration' icon=95
+Added spell 910163: '*Priest: Discipline' icon=95
+Added spell 910164: '*Priest: Holy' icon=95
+Added spell 910165: '*Priest: Shadow' icon=95
+Added spell 910166: '*Death Knight: Blood' icon=95
+Added spell 910167: '*Death Knight: Frost' icon=95
+Added spell 910168: '*Pull Radius' icon=201
+Added spell 910170: '*Track Ore' icon=122
+Added spell 910171: '*Track Herbs' icon=3088
+Added spell 910172: '*CC Reduction' icon=2812
+Added spell 910173: '*Shadow Dance' icon=95
+Added spell 910174: '*Well Fed' icon=231
+Added spell 910178: '*Curator 2' icon=444
+Added spell 910179: '*Curator 3' icon=444
+Added spell 910180: '*Curator 4' icon=444
+Added HoT spell 910052: 'First Aid' icon=104
+Wrote A:\wow-bonesaw\tools\client-patch\staging\DBFilesClient\Spell.dbc (49993 records)
+Verify 910001: name='*Account Perks' icon=2610 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910002: name='*Mailbox' icon=2030 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910003: name='*Auction House' icon=2801 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910004: name='*Class Trainer' icon=2610 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910005: name='*Bank' icon=2492 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910006: name='*Stable' icon=455 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910007: name='*Bind' icon=776 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910008: name='*Autoloot' icon=3210 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910009: name='*Flight Master' icon=2274 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910010: name='*Honor: Defeat' icon=1703 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910011: name='*Honor: Victory' icon=1704 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910012: name='*Honor: Bloodied' icon=2300 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910013: name='*Rep: First Exalted' icon=3605 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910014: name='*Rep: Five Exalted' icon=3604 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910015: name='*Rep: Ten Exalted' icon=3603 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910016: name='*Rep: Bloodsail' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910017: name='*Rep: Darkmoon' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910018: name='*Rep: Ravenholdt' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910019: name='*Rep: Shendralar' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910020: name='*Rep: Arathor' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910021: name='*Rep: Defilers' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910022: name='*Rep: Silverwing' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910023: name='*Rep: Warsong' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910024: name='*Rep: Stormpike' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910025: name='*Rep: Frostwolf' icon=3602 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910026: name='*Trade: 75' icon=339 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910027: name='*Trade: 150' icon=339 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910028: name='*Trade: 225' icon=339 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910029: name='*Trade: 300' icon=339 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910030: name='*Trade: 375' icon=339 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910031: name='*Trade: 450' icon=339 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910032: name='*Mage: Arcane' icon=225 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910033: name='*Mage: Fire' icon=11 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910034: name='*Mage: Frost' icon=188 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910035: name='*Rogue: Assassination' icon=500 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910036: name='*Rogue: Combat' icon=514 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910037: name='*Rogue: Subtlety' icon=250 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910102: name='*Shadow Dance' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910104: name='*Movement: Mounted Opener' icon=1299 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910105: name='*Auto-Mount' icon=836 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910106: name='*Class Buffs' icon=1802 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910107: name='*Riding' icon=1176 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910108: name='*Auto-Accept' icon=4035 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910109: name='*Mine: 150' icon=336 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910110: name='*Mine: 300' icon=336 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910111: name='*Mine: 450' icon=336 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910112: name='*Mine: Reach 75' icon=336 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910113: name='*Mine: Reach 225' icon=336 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910114: name='*Mine: Reach 375' icon=336 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910115: name='*Herb: 150' icon=345 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910116: name='*Herb: 300' icon=345 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910117: name='*Herb: 450' icon=345 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910118: name='*Herb: Reach 75' icon=345 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910119: name='*Herb: Reach 225' icon=345 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910120: name='*Herb: Reach 375' icon=345 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910121: name='*Skin: 150' icon=2682 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910122: name='*Skin: 300' icon=2682 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910123: name='*Skin: 450' icon=2682 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910124: name='*Skin: Reach 75' icon=2682 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910125: name='*Skin: Reach 225' icon=2682 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910126: name='*Skin: Reach 375' icon=2682 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910127: name='*Fish: 150' icon=580 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910128: name='*Fish: 300' icon=580 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910129: name='*Fish: 450' icon=580 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910130: name='*Fish: Reach 75' icon=580 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910131: name='*Fish: Reach 225' icon=580 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910132: name='*Fish: Reach 375' icon=580 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910133: name='*Eng: 150' icon=333 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910134: name='*Eng: 300' icon=333 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910135: name='*Eng: 450' icon=333 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910136: name='*Eng: Reach 75' icon=333 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910137: name='*Eng: Reach 225' icon=333 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910138: name='*Eng: Reach 375' icon=333 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910139: name='*Gather Sparkle Herb' icon=179 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910140: name='*Gather Sparkle Mine' icon=179 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910141: name='*Gather Sparkle Fish' icon=179 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910142: name='*Rare Pulse' icon=179 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910038: name='*Wayfarer' icon=516 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910175: name='*Wayfarer: Focus' icon=516 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910176: name='*Wayfarer: Wide' icon=516 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910177: name='*Wayfarer: Full' icon=516 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910039: name='*Wayfarer 4' icon=516 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910040: name='*Wayfarer 5' icon=516 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910041: name='*Gear: Auto-Attune' icon=997 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910053: name='*Leveling: 1' icon=3268 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910054: name='*Leveling: 2' icon=3269 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910055: name='*Leveling: 3' icon=3270 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910056: name='*Leveling: 4' icon=3271 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910057: name='*Leveling: 5' icon=3272 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910058: name='*Leveling: 6' icon=3273 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910059: name='*Leveling: 7' icon=3274 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910060: name='*Leveling: 8' icon=3275 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910061: name='*Leveling: 9' icon=3276 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910062: name='*Leveling: 10' icon=3277 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910063: name='*Cooking: 75' icon=1467 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910064: name='*Cooking: 150' icon=1467 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910065: name='*Cooking: 225' icon=1467 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910066: name='*Cooking: 300' icon=1467 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910067: name='*Cooking: 375' icon=1467 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910068: name='*Cooking: 450' icon=1467 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910069: name='*Paladin: Holy' icon=51 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910070: name='*Paladin: Protection' icon=2172 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910071: name='*Paladin: Retribution' icon=3027 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910072: name='*Paladin: Devotion Speed' icon=291 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910073: name='*Travel: 1' icon=776 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910074: name='*Travel: 2' icon=776 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910075: name='*Travel: 3' icon=776 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910076: name='*Travel: 4' icon=776 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910077: name='*Travel: 5' icon=776 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910083: name='*Warrior: Arms' icon=193 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910084: name='*Warrior: Fury' icon=38 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910085: name='*Warrior: Protection' icon=1672 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910086: name='*Warrior: Fury Haste' icon=38 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910087: name='*Living Gear Speed' icon=230 effect=6 attr=16777232 dur=21 stacks=1 cat=0 cd=0/0
+Verify 910088: name='*Quests - Find' icon=2846 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910090: name='*Quests - Finish' icon=2846 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910091: name='*Attuned Armory' icon=297 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910092: name='*Solo Queue' icon=3224 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910093: name='*Craft: 1' icon=335 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910094: name='*Craft: 2' icon=335 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910095: name='*Craft: 3' icon=335 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910096: name='*Craft: 4' icon=335 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910097: name='*Craft: 5' icon=335 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910098: name='*Travel: Swim' icon=545 effect=6 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910101: name='*Gear: Curator' icon=444 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910150: name='*Hunter: Marksmanship' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910151: name='*Shaman: Elemental' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910152: name='*Death Knight: Unholy' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910153: name='*Hunter: Beast Mastery' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910154: name='*Hunter: Survival' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910155: name='*Shaman: Enhancement' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910156: name='*Shaman: Restoration' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910181: name='*Call of the Wilds' icon=406 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910157: name='*Warlock: Affliction' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910158: name='*Warlock: Demonology' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910159: name='*Warlock: Destruction' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910160: name='*Druid: Balance' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910161: name='*Druid: Feral' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910162: name='*Druid: Restoration' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910163: name='*Priest: Discipline' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910164: name='*Priest: Holy' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910165: name='*Priest: Shadow' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910166: name='*Death Knight: Blood' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910167: name='*Death Knight: Frost' icon=95 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910168: name='*Pull Radius' icon=201 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910170: name='*Track Ore' icon=122 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910171: name='*Track Herbs' icon=3088 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910172: name='*CC Reduction' icon=2812 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910173: name='*Shadow Dance' icon=95 effect=6 attr=16777232 dur=21 stacks=0 cat=0 cd=0/0
+Verify 910174: name='*Well Fed' icon=231 effect=6 attr=16777232 dur=21 stacks=0 cat=0 cd=0/0
+Verify 910178: name='*Curator 2' icon=444 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910179: name='*Curator 3' icon=444 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Verify 910180: name='*Curator 4' icon=444 effect=3 attr=16777232 dur=0 stacks=0 cat=0 cd=0/0
+Added SkillLineAbility 910001 -> spell 910088
+Added SkillLineAbility 910002 -> spell 910090
+Added SkillLineAbility 910003 -> spell 910091
+Added SkillLineAbility 910004 -> spell 910001
+Added SkillLineAbility 910005 -> spell 910002
+Added SkillLineAbility 910006 -> spell 910003
+Added SkillLineAbility 910007 -> spell 910004
+Added SkillLineAbility 910008 -> spell 910005
+Added SkillLineAbility 910009 -> spell 910006
+Added SkillLineAbility 910010 -> spell 910007
+Added SkillLineAbility 910011 -> spell 910009
+Wrote A:\wow-bonesaw\tools\client-patch\staging\DBFilesClient\SkillLineAbility.dbc (10230 records)
+Wrote A:\wow-bonesaw\tools\client-patch\staging\Interface\FrameXML\FrameXML.toc, A:\wow-bonesaw\tools\client-patch\staging\Interface\FrameXML\LivingGear.lua and A:\wow-bonesaw\tools\client-patch\staging\Interface\FrameXML\BonesawAuras.lua
+LFG raid 42: "Zul'Gurub (20)" map=309 diff=0 group=6
+LFG raid 46: "Onyxia's Lair (10)" map=249 diff=0 group=8
+LFG raid 48: 'Molten Core (40)' map=409 diff=0 group=6
+LFG raid 50: 'Blackwing Lair (40)' map=469 diff=0 group=6
+LFG raid 159: 'Naxxramas (10)' map=533 diff=0 group=8
+LFG raid 160: "Ruins of Ahn'Qiraj (20)" map=509 diff=0 group=6
+LFG raid 161: "Temple of Ahn'Qiraj (40)" map=531 diff=0 group=6
+LFG raid 175: 'Karazhan (10)' map=532 diff=0 group=7
+LFG raid 176: "Magtheridon's Lair (25)" map=544 diff=0 group=7
+LFG raid 177: "Gruul's Lair (25)" map=565 diff=0 group=7
+LFG raid 193: 'Tempest Keep (25)' map=550 diff=0 group=7
+LFG raid 194: 'Serpentshrine Cavern (25)' map=548 diff=0 group=7
+LFG raid 195: 'Hyjal Summit (25)' map=534 diff=0 group=7
+LFG raid 196: 'Black Temple (25)' map=564 diff=0 group=7
+LFG raid 197: "Zul'Aman (10)" map=568 diff=0 group=7
+LFG raid 199: 'Sunwell Plateau (25)' map=580 diff=0 group=7
+LFG raid 223: 'Eye of Eternity (10)' map=616 diff=0 group=8
+LFG raid 224: 'Obsidian Sanctum (10)' map=615 diff=0 group=8
+LFG raid 227: 'Naxxramas (25)' map=533 diff=1 group=9
+LFG raid 237: 'Eye of Eternity (25)' map=616 diff=1 group=9
+LFG raid 238: 'Obsidian Sanctum (25)' map=615 diff=1 group=9
+LFG raid 239: 'Vault of Archavon (10)' map=624 diff=0 group=8
+LFG raid 240: 'Vault of Archavon (25)' map=624 diff=1 group=9
+LFG raid 243: 'Ulduar (10)' map=603 diff=0 group=8
+LFG raid 244: 'Ulduar (25)' map=603 diff=1 group=9
+LFG raid 246: 'Trial of the Crusader (10)' map=649 diff=0 group=8
+LFG raid 247: 'Trial of the Grand Crusader (10)' map=649 diff=2 group=8
+LFG raid 248: 'Trial of the Crusader (25)' map=649 diff=1 group=9
+LFG raid 250: 'Trial of the Grand Crusader (25)' map=649 diff=3 group=9
+LFG raid 257: "Onyxia's Lair (25)" map=249 diff=1 group=9
+LFG raid 279: 'Icecrown Citadel (10)' map=631 diff=0 group=8
+LFG raid 280: 'Icecrown Citadel (25)' map=631 diff=1 group=9
+LFG raid 293: 'Ruby Sanctum (10)' map=724 diff=0 group=8
+LFG raid 294: 'Ruby Sanctum (25)' map=724 diff=1 group=9
+LFG raid 800: 'Icecrown Citadel Heroic (10)' map=631 diff=2 group=8
+LFG raid 801: 'Icecrown Citadel Heroic (25)' map=631 diff=3 group=9
+LFG raid 802: 'Ruby Sanctum Heroic (10)' map=724 diff=2 group=8
+LFG raid 803: 'Ruby Sanctum Heroic (25)' map=724 diff=3 group=9
+Wrote A:\wow-bonesaw\tools\client-patch\staging\DBFilesClient\LFGDungeons.dbc (199 records)
+LFG group 9 'Wrath of the Lich King Raid (25)' type -> dungeon
+LFG group 8 'Wrath of the Lich King Raid (10)' type -> dungeon
+LFG group 7 'Burning Crusade Raid' type -> dungeon
+LFG group 6 'Classic Raid' type -> dungeon
+Wrote A:\wow-bonesaw\tools\client-patch\staging\DBFilesClient\LFGDungeonGroup.dbc (converted 4 raid groups to LFD)
+Wrote A:\wow-bonesaw\data\sql\updates\pending_db_world\rev_lfg_raids.sql (38 entries)
+Wrote A:\wow-bonesaw\data\sql\updates\pending_db_world\rev_lfg_legacy_queues.sql (63 entries)
+Added DBFilesClient\Spell.dbc <- Spell.dbc
+Added DBFilesClient\SkillLineAbility.dbc <- SkillLineAbility.dbc
+Added DBFilesClient\LFGDungeons.dbc <- LFGDungeons.dbc
+Added DBFilesClient\LFGDungeonGroup.dbc <- LFGDungeonGroup.dbc
+Built A:\wow-bonesaw\tools\client-patch\dist\patch-Y.MPQ (4756208 bytes)
+Added Interface\FrameXML\FrameXML.toc <- FrameXML.toc
+Added Interface\FrameXML\LivingGear.lua <- LivingGear.lua
+Added Interface\FrameXML\BonesawAuras.lua <- BonesawAuras.lua
+Built A:\wow-bonesaw\tools\client-patch\dist\patch-enUS-4.MPQ (245039 bytes)
+Added Interface\FrameXML\FrameXML.toc <- FrameXML.toc
+Added Interface\FrameXML\LivingGear.lua <- LivingGear.lua
+Added Interface\FrameXML\BonesawAuras.lua <- BonesawAuras.lua
+Built A:\wow-bonesaw\tools\client-patch\dist\patch-enGB-4.MPQ (245039 bytes)
+Done. Copy patch-Y.MPQ to Data/ and patch-<locale>-4.MPQ to Data/<locale>/.
+   Compiling bonesaw-launcher v2.0.0 (A:\wow-bonesaw\tools\launcher)
+    Finished `release` profile [optimized] target(s) in 9.85s
+payload  patch-Y.MPQ  4,756,208 bytes
+payload  patch-enUS-4.MPQ  245,039 bytes
+building Bonesaw.exe ...
+
+A:\wow-bonesaw\tools\launcher\dist\Bonesaw.exe  6,600,192 bytes
+sha256 3918cea784bcc174c61647c6f8ee44f482be96473a082dfb359921359736271f
+wrote A:\wow-bonesaw\tools\client-update\Bonesaw.manifest.txt
+
+Next:
+  gh release create v0.1.116 --repo Raajik/wotlk-bonesaw --latest --title "Bonesaw client 0.1.116" --notes "Run Bonesaw.exe." "A:\wow-bonesaw\tools\launcher\dist\Bonesaw.exe"
+  then commit and push tools\client-update\Bonesaw.manifest.txt
+https://github.com/Raajik/wotlk-bonesaw/releases/tag/v0.1.116
+manifest matches A:\wow-bonesaw\tools\launcher\dist\Bonesaw.exe
+  3918cea784bcc174c61647c6f8ee44f482be96473a082dfb359921359736271f 6600192 bytes
+warning: in the working copy of 'tools/client-update/Bonesaw.manifest.txt', CRLF will be replaced by LF the next time Git touches it
+[Playerbot 09e568e] Manifest 0.1.116
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+0.1.116.md: 1798 chars; body 1797 chars; attached as Bonesaw-0.1.116-patch-notes.txt
+
+----- body -----
+**Bonesaw 0.1.116 - patch notes**
+
+**Reports & bug tracker**
+- The report window is much larger with a taller text area, so nothing gets cut off behind the Send button.
+- The 60-second wait between reports from the same account is gone - file as many as you need. Length caps still apply.
+- Item links in reports now arrive as [item:ID], so shift+clicked items make it through in one piece.
+
+**Spells**
+- Fixed: Lightning Bolt hit for billions because the spell data behind Chain Lightning was corrupted. Bolts hit for sane amounts again.
+- Living Bomb now spreads to enemies within 40 yards (was 15) and hits far harder, matching the Affliction DoT ladder.
+- Fixed: Avenger's Shield left a stale 30 second cooldown on the button after casting. The real 6 second cooldown now shows.
+
+**Perks**
+- Reputation perks now also multiply reputation from items and tokens, like the Zandalari Honor Token.
+
+**PvP**
+- Wintergrasp armies are larger: 5 spawns per faction row, up from 3, for both Alliance and Horde.
+
+**Please test these things**
+
+Fresh from this patch - tell us if any of it misbehaves:
+- Cast Living Bomb on a packed group of enemies - does it now spread within 40 yards and hit much harder?
+- Paladins: cast Avenger's Shield - does the button show the 6 second cooldown instead of a stale 30?
+- Shamans: throw Chain Lightning - is the damage back to sane numbers instead of billions?
+- File two reports back to back - no more 60 second wait, and all your text stays visible above the Send button.
+
+Still waiting on a report from you:
+- Crafting speed perks are not applying to Blacksmithing or Leatherworking
+- Living bomb not auto spreading in combat
+- lockpicking level-up chests don't auto-unlock (using rogue's own skill for skillups)/autoloot
+
+Close Wow and run Bonesaw.exe to update.
+
+----- attachment: Bonesaw-0.1.116-patch-notes.txt (1798 bytes) -----
+0.1.116.md: 1798 chars; body 1797 chars; attached as Bonesaw-0.1.116-patch-notes.txt
+  posted  id 1543701561144901776  (notes attached as Bonesaw-0.1.116-patch-notes.txt)
+done
+https://github.com/Raajik/wotlk-bonesaw/releases/tag/v0.1.116
+[Playerbot 7a1bb26] Patch notes 0.1.116
+ 1 file changed, 32 insertions(+)
+ create mode 100644 tools/patch-notes/0.1.116.md
+To https://github.com/Raajik/wotlk-bonesaw.git
+   a3b843e03..7a1bb2687  Playerbot -> Playerbot
+ * [new tag]             ship/0.1.116 -> ship/0.1.116
+Shipping 0.1.116 (client=yes)
+  $ git add "tools\client-update\Bonesaw.version" && git commit -m "Bump Bonesaw.version to 0.1.116"
+  $ python tools/client-patch/build_patch.py
+  $ python tools/launcher/build_launcher.py
+  $ gh release create v0.1.116 --repo Raajik/wotlk-bonesaw --latest --title "Bonesaw client 0.1.116" --notes "Run Bonesaw.exe." "A:\wow-bonesaw\tools\launcher\dist\Bonesaw.exe"
+  $ python tools/launcher/build_launcher.py --verify
+  $ git add "tools\client-update\Bonesaw.manifest.txt" && git commit -m "Manifest 0.1.116"
+  $ gh release upload updater "A:\wow-bonesaw\tools\client-update\Bonesaw.manifest.txt" --repo Raajik/wotlk-bonesaw --clobber
+  $ curl -sfL "https://github.com/Raajik/wotlk-bonesaw/releases/download/updater/Bonesaw.manifest.txt?v=0.1.116"
+  live manifest serves 0.1.116 -- OK
+  $ python tools/retest_list.py
+  keeping existing A:\wow-bonesaw\tools\patch-notes\0.1.116.md (hand-written)
+  $ python tools/post_patch_notes.py "A:\wow-bonesaw\tools\patch-notes\0.1.116.md" --dry-run
+  $ python tools/post_patch_notes.py "A:\wow-bonesaw\tools\patch-notes\0.1.116.md"
+  $ gh release edit v0.1.116 --repo Raajik/wotlk-bonesaw --notes-file "A:\wow-bonesaw\tools\patch-notes\0.1.116.md"
+  $ git add "tools\patch-notes\0.1.116.md" && git commit -m "Patch notes 0.1.116"
+  $ git tag "ship/0.1.116"
+  $ git push origin Playerbot "ship/0.1.116"
+
+Ship 0.1.116 bookkeeping complete. Tag ship/0.1.116 is the finish line; git log ship/..HEAD should be empty.
+EXIT_0 

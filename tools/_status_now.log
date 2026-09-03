@@ -1,0 +1,42 @@
+BONESAW STATUS
+
+  branch            Playerbot
+  Bonesaw.version   0.1.118
+  last ship         ship/0.1.118  (d4ecc10d9, 2026-08-30 19:23)
+  git HEAD          27f0e4cdb  (2026-08-30 22:27)
+
+  UNSHIPPED (12 commits)
+    27f0e4cdb Affliction warlock DoTs last until the target dies -- Corruption, Curse of Agony, Unstable
+    925a1aa07 Self-cast buffs are permanent and automatically re-applied on death -- a buff the player a
+    ce2610a4a Armory gets its auto-attune toggle back next to Attune All, plus a quality filter: the tog
+    c8ed7078c Wintergrasp defender portals teleport to the fortress and no longer stack a 30s [Teleport]
+    fe61df355 Reputation is account-wide: every rep change any character earns is recorded account-wide 
+    58347d638 Emblem/badge rewards from random dungeons increased 10x -- the silent LFG reward quests no
+    2e5cf9ea6 Living Bomb spread chain-reacts within a single tick instead of hopping one ring per secon
+    feb50b14b Craft-path addon errors are no longer swallowed silently -- the 'Interface action failed b
+    19495fc47 Flying mounts work in Dalaran on the client too: the client's own AreaTable.dbc (blizzard 
+    b793974dc Flying mounts work on the streets of Dalaran: the 0.1.118 area-tree fix only cleared sub-a
+    c9083d45e Crafting consumes the reagent bank directly, server-side -- CRAFTCAST runs the recipe thro
+    3f3e4f688 Putricide's trap gauntlet: Giant Insect Swarm periodic damage gutted -- the swarm between 
+
+  UNCOMMITTED (2)
+    M data/sql/updates/pending_db_world/rev_lfg_legacy_queues.sql
+     M data/sql/updates/pending_db_world/rev_lfg_raids.sql
+  worldserver       image built 2026-08-30 22:25, container running
+                    BEHIND: 1 commit(s) landed after this build
+                      Affliction warlock DoTs last until the target dies -- Corruption, Curse of Agony
+                    cache-hit suspect: if you just built, the build resolved from cache -- verify with docker compose build --no-cache ac-worldserver
+  pending SQL       3 file(s) NOT imported
+                      data/sql/updates/pending_db_world/rev_lfg_emblem_10x.sql
+                      data/sql/updates/pending_db_world/rev_wg_portal_teleport.sql
+                      data/sql/updates/pending_db_characters/rev_living_gear_account_reputation.sql
+  github release    v0.1.118  OK
+  live manifest     0.1.117  OK -- server-only ship, client unchanged
+  realm address     100.65.58.17  OK (local clients get 127.0.0.1)
+  world port        127.0.0.1:8085  OK
+
+  NOT SHIPPED CLEAN:
+    - 12 commit(s) not shipped
+    - 2 uncommitted file(s)
+    - running build predates 1 commit(s)
+    - 3 SQL file(s) not imported
