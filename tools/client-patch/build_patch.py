@@ -6,19 +6,26 @@ FrameXML UI ships in patch-enUS-4.MPQ and patch-enGB-4.MPQ. Needs the patched Wo
 
 Do not overwrite Data/patch-Z.mpq -- that archive already ships Item.dbc.
 
-Usage (Windows):
+Usage (Windows or Linux):
   python tools/client-patch/build_patch.py
+
+Windows uses the vendored StormLib.dll. Linux needs StormLib installed
+(Arch: `yay -S stormlib`, Debian/Ubuntu: `libstorm-dev`, Fedora: `StormLib-devel`),
+or set BONESAW_STORMLIB to a libstorm.so.
 """
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
+import os
+import re
 import shutil
 import struct
 import sys
-from ctypes import wintypes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+BS = chr(92)  # MPQ path separator
 STAGING = ROOT / "staging"
 DBC_DIR = STAGING / "DBFilesClient"
 SPELL_DBC = DBC_DIR / "Spell.dbc"
@@ -58,7 +65,7 @@ UI_LUA = STAGING / "Interface" / "FrameXML" / "LivingGear.lua"
 # insertion marker in FrameXML.toc is past both).
 AURA_LUA_SRC = ROOT / "BonesawAuras.lua"
 AURA_LUA = STAGING / "Interface" / "FrameXML" / "BonesawAuras.lua"
-STORMLIB = (
+STORMLIB_DLL = (
     ROOT.parent.parent
     / "archive"
     / "failed-eotw-cota-20260814"
@@ -350,28 +357,166 @@ SPELL_AURA_MOUNTED = 78
 INTERRUPT_FLAG_MOVEMENT = 0x08
 
 
-def load_storm():
-    if not STORMLIB.exists():
-        raise SystemExit(f"Missing StormLib at {STORMLIB}")
-    storm = ctypes.WinDLL(str(STORMLIB))
-    storm.SFileCreateArchive.argtypes = [
-        wintypes.LPCWSTR,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.POINTER(ctypes.c_void_p),
-    ]
-    storm.SFileCreateArchive.restype = wintypes.BOOL
-    storm.SFileAddFileEx.argtypes = [
-        ctypes.c_void_p,
-        wintypes.LPCWSTR,
-        wintypes.LPCSTR,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-        ctypes.c_uint32,
-    ]
-    storm.SFileAddFileEx.restype = wintypes.BOOL
-    storm.SFileCloseArchive.argtypes = [ctypes.c_void_p]
-    storm.SFileCloseArchive.restype = wintypes.BOOL
+def _find_stormlib() -> str:
+    """Locate StormLib. BONESAW_STORMLIB always wins, so a developer can point
+    at a self-built copy without touching this file."""
+    override = os.environ.get("BONESAW_STORMLIB")
+    if override:
+        if not Path(override).exists():
+            raise SystemExit(f"BONESAW_STORMLIB does not exist: {override}")
+        return override
+
+    if sys.platform == "win32":
+        if not STORMLIB_DLL.exists():
+            raise SystemExit(f"Missing StormLib at {STORMLIB_DLL}")
+        return str(STORMLIB_DLL)
+
+    found = ctypes.util.find_library("storm")
+    if found:
+        return found
+    for candidate in ("libstorm.so.9", "libstorm.so", "libStorm.so"):
+        try:
+            ctypes.CDLL(candidate)
+            return candidate
+        except OSError:
+            continue
+    raise SystemExit(
+        "StormLib not found. Install it (Arch: `yay -S stormlib`, "
+        "Debian/Ubuntu: `libstorm-dev`, Fedora: `StormLib-devel`) or set "
+        "BONESAW_STORMLIB to a libstorm.so."
+    )
+
+
+class Storm:
+    """The three StormLib calls we need, with the one real cross-platform
+    difference handled in one place: StormLib's TCHAR paths are wchar_t on
+    Windows and plain char (UTF-8) on everything else. Archived names are
+    `const char *` on both, so those stay bytes throughout."""
+
+    def __init__(self) -> None:
+        self.path = _find_stormlib()
+        self.windows = sys.platform == "win32"
+        if self.windows:
+            self.lib = ctypes.WinDLL(self.path)
+            tchar_p = ctypes.c_wchar_p
+            ok_t = ctypes.c_int32
+        else:
+            self.lib = ctypes.CDLL(self.path, use_errno=True)
+            tchar_p = ctypes.c_char_p
+            ok_t = ctypes.c_bool
+
+        self.lib.SFileCreateArchive.argtypes = [
+            tchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.lib.SFileCreateArchive.restype = ok_t
+        self.lib.SFileAddFileEx.argtypes = [
+            ctypes.c_void_p,
+            tchar_p,
+            ctypes.c_char_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        ]
+        self.lib.SFileAddFileEx.restype = ok_t
+        self.lib.SFileCloseArchive.argtypes = [ctypes.c_void_p]
+        self.lib.SFileCloseArchive.restype = ok_t
+
+        # Read side, used to pull base files back out of the client.
+        self.lib.SFileOpenArchive.argtypes = [
+            tchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.lib.SFileOpenArchive.restype = ok_t
+        self.lib.SFileHasFile.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        self.lib.SFileHasFile.restype = ok_t
+        self.lib.SFileOpenFileEx.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.lib.SFileOpenFileEx.restype = ok_t
+        self.lib.SFileGetFileSize.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        self.lib.SFileGetFileSize.restype = ctypes.c_uint32
+        self.lib.SFileReadFile.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_void_p,
+        ]
+        self.lib.SFileReadFile.restype = ok_t
+        self.lib.SFileCloseFile.argtypes = [ctypes.c_void_p]
+        self.lib.SFileCloseFile.restype = ok_t
+
+    # MPQ_OPEN_READ_ONLY: without it SFileOpenArchive takes a write lock and
+    # fails with a sharing violation while the client has the archive open,
+    # which reads as "file not found" rather than "busy".
+    MPQ_OPEN_READ_ONLY = 0x00000100
+
+    def read_archived(self, archive: Path, name: bytes) -> bytes | None:
+        """Return one file's bytes from an MPQ, or None if it is not in there."""
+        h = ctypes.c_void_p()
+        if not self.lib.SFileOpenArchive(
+            self._path(archive), 0, self.MPQ_OPEN_READ_ONLY, ctypes.byref(h)
+        ):
+            return None
+        try:
+            if not self.lib.SFileHasFile(h, name):
+                return None
+            f = ctypes.c_void_p()
+            if not self.lib.SFileOpenFileEx(h, name, 0, ctypes.byref(f)):
+                return None
+            try:
+                size = self.lib.SFileGetFileSize(f, None)
+                buf = ctypes.create_string_buffer(size)
+                got = ctypes.c_uint32()
+                if not self.lib.SFileReadFile(f, buf, size, ctypes.byref(got), None):
+                    return None
+                return buf.raw[: got.value]
+            finally:
+                self.lib.SFileCloseFile(f)
+        finally:
+            self.lib.SFileCloseArchive(h)
+
+    def _path(self, p) -> bytes | str:
+        return str(p) if self.windows else os.fsencode(p)
+
+    def last_error(self) -> int:
+        return ctypes.GetLastError() if self.windows else ctypes.get_errno()
+
+    def create_archive(self, dest, flags: int, max_files: int) -> ctypes.c_void_p:
+        h = ctypes.c_void_p()
+        if not self.lib.SFileCreateArchive(
+            self._path(dest), flags, max_files, ctypes.byref(h)
+        ):
+            raise SystemExit(
+                f"SFileCreateArchive failed for {dest} err={self.last_error()}"
+            )
+        return h
+
+    def add_file(
+        self, h, local, archived: bytes, flags: int, comp: int, comp_next: int
+    ) -> bool:
+        return bool(
+            self.lib.SFileAddFileEx(h, self._path(local), archived, flags, comp, comp_next)
+        )
+
+    def close_archive(self, h) -> None:
+        self.lib.SFileCloseArchive(h)
+
+
+def load_storm() -> Storm:
+    storm = Storm()
+    print(f"StormLib: {storm.path}")
     return storm
 
 
@@ -946,6 +1091,224 @@ def patch_framexml():
     print(f"Wrote {FRAME_TOC}, {UI_LUA} and {AURA_LUA}")
 
 
+# --------------------------------------------------------------------------
+# GlueXML: the login and character-select screens.
+#
+# These are stock Blizzard files we rewrite, so each one has to start from the
+# version the client actually loads. WoW resolves a file from the highest
+# numbered patch archive that contains it, NOT from patch-<locale>.MPQ -- e.g.
+# GlueParent.lua is in patch-enUS.MPQ (11620 bytes) and again in
+# patch-enUS-3.MPQ (16897 bytes), and the -3 copy is the live one. Basing a
+# patch on the wrong copy silently reverts everything Blizzard changed in
+# between, because our archive outranks all of them.
+# --------------------------------------------------------------------------
+GLUE_DIR = STAGING / "Interface" / "GlueXML"
+# Lowest priority first. Bonesaw's own outputs are deliberately absent: this
+# list reads stock bases, and patch-<locale>-4 is ours.
+GLUE_SOURCE_ARCHIVES = (
+    "base-{loc}.MPQ",
+    "locale-{loc}.MPQ",
+    "patch-{loc}.MPQ",
+    "patch-{loc}-2.MPQ",
+    "patch-{loc}-3.MPQ",
+)
+GLUE_FILES = ("GlueButtons.xml", "GlueParent.lua", "CharacterSelect.lua")
+
+# Glue-Panel-Button-Up.blp is 256x64; the templates draw TexCoords
+# (0..0.578125, 0..0.75) = 148x48px. Column analysis of that art puts the
+# rounded end caps at 0..26px and 122..148px with a uniform middle between.
+GLUE_CAP_L = 26 / 256
+GLUE_CAP_R = 122 / 256
+GLUE_ART_R = 148 / 256
+GLUE_ART_B = 0.75
+
+# Widths these buttons declare in CharacterSelect.xml but do not get.
+GLUE_BUTTON_WIDTHS = {
+    "CharSelectCreateCharacterButton": 200,
+    "CharSelectChangeRealmButton": 135,
+    "CharSelectEnterWorldButton": 200,
+    "CharSelectDeleteButton": 150,
+    "CharSelectBackButton": 150,
+    "CharSelectAddonsButton": 150,
+}
+
+
+def glue_base(name: str) -> Path:
+    return ROOT / "cache" / f"{name}.base"
+
+
+def refresh_glue_bases(data_dir: Path) -> None:
+    """Re-extract the stock GlueXML files from a client into cache/.
+
+        python build_patch.py --refresh-glue-bases "<client>/Data"
+    """
+    storm = load_storm()
+    loc = "enUS"
+    for name in GLUE_FILES:
+        archived = ("Interface" + BS + "GlueXML" + BS + name).encode()
+        found = None
+        for pattern in GLUE_SOURCE_ARCHIVES:
+            arc = data_dir / loc / pattern.format(loc=loc)
+            if not arc.exists():
+                continue
+            data = storm.read_archived(arc, archived)
+            if data:
+                found = (arc.name, data)  # keep going: later archives win
+        if not found:
+            raise SystemExit(f"{name} not found under {data_dir / loc}")
+        arc_name, data = found
+        glue_base(name).parent.mkdir(parents=True, exist_ok=True)
+        glue_base(name).write_bytes(data)
+        print(f"glue base {name:22} <- {arc_name} ({len(data)} bytes)")
+
+
+def _glue_caps(art: str, cap: int) -> str:
+    art_path = "Interface" + BS + "Glues" + BS + "Common" + BS + art
+    return (
+        '\t\t<Layers>\n\t\t\t<Layer level="BACKGROUND">\n'
+        f'\t\t\t\t<Texture name="$parentLeftCap" file="{art_path}">\n'
+        '\t\t\t\t\t<Anchors>\n\t\t\t\t\t\t<Anchor point="TOPLEFT"/>\n'
+        '\t\t\t\t\t\t<Anchor point="BOTTOMRIGHT" relativePoint="BOTTOMLEFT">'
+        f'<Offset><AbsDimension x="{cap}" y="0"/></Offset></Anchor>\n'
+        '\t\t\t\t\t</Anchors>\n'
+        f'\t\t\t\t\t<TexCoords left="0" right="{GLUE_CAP_L}" top="0" bottom="{GLUE_ART_B}"/>\n'
+        '\t\t\t\t</Texture>\n'
+        f'\t\t\t\t<Texture name="$parentRightCap" file="{art_path}">\n'
+        '\t\t\t\t\t<Anchors>\n'
+        '\t\t\t\t\t\t<Anchor point="TOPLEFT" relativePoint="TOPRIGHT">'
+        f'<Offset><AbsDimension x="-{cap}" y="0"/></Offset></Anchor>\n'
+        '\t\t\t\t\t\t<Anchor point="BOTTOMRIGHT"/>\n\t\t\t\t\t</Anchors>\n'
+        f'\t\t\t\t\t<TexCoords left="{GLUE_CAP_R}" right="{GLUE_ART_R}" top="0" bottom="{GLUE_ART_B}"/>\n'
+        '\t\t\t\t</Texture>\n\t\t\t</Layer>\n\t\t</Layers>\n'
+    )
+
+
+def _glue_middle(tag: str, tex: str, cap: int) -> str:
+    return (
+        f'\t\t<{tag} inherits="{tex}">\n\t\t\t<Anchors>\n'
+        f'\t\t\t\t<Anchor point="TOPLEFT"><Offset><AbsDimension x="{cap}" y="0"/></Offset></Anchor>\n'
+        f'\t\t\t\t<Anchor point="BOTTOMRIGHT"><Offset><AbsDimension x="-{cap}" y="0"/></Offset></Anchor>\n'
+        f'\t\t\t</Anchors>\n\t\t</{tag}>\n'
+    )
+
+
+def patch_gluexml():
+    """3-slice the glue button templates and pin the character-select widths.
+
+    Stock buttons draw one texture stretched across the whole button, so the
+    rounded end caps smear wider as the button gets wider -- and these buttons
+    are very wide. Fixed-width caps plus a stretched middle fixes that with no
+    Lua involved.
+    """
+    for name in GLUE_FILES:
+        if not glue_base(name).exists():
+            raise SystemExit(
+                f"Missing {glue_base(name)}. Run:\n"
+                f"  python {Path(__file__).name} --refresh-glue-bases <client>/Data"
+            )
+    GLUE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def write(name: str, text: str) -> None:
+        (GLUE_DIR / name).write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+
+    def read(name: str) -> str:
+        return glue_base(name).read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+    # --- GlueButtons.xml: 3-slice the four button templates ---
+    xml = read("GlueButtons.xml")
+    defs = "".join(
+        f'\t<Texture name="GluePanelButton{kind}MiddleTexture{suffix}" '
+        f'file="Interface{BS}Glues{BS}Common{BS}Glue-Panel-Button-{art}" virtual="true">\n'
+        f'\t\t<TexCoords left="{GLUE_CAP_L}" right="{GLUE_CAP_R}" top="0" bottom="{GLUE_ART_B}"/>\n'
+        f'\t</Texture>\n'
+        for kind, art, suffix in (
+            ("Up", "Up", ""), ("Down", "Down", ""), ("Disabled", "Disabled", ""),
+            ("Up", "Up-Blue", "Blue"), ("Down", "Down-Blue", "Blue"),
+        )
+    )
+    anchor = '\t<Button name="GlueButtonTemplate" virtual="true">'
+    if anchor not in xml:
+        raise SystemExit("GlueButtons.xml: GlueButtonTemplate not found")
+    xml = xml.replace(anchor, defs + anchor, 1)
+
+    # Cap width is fixed in UI units, sized per template height: the art's caps
+    # are 26px of 48px-tall art, so ~24u on a 45-tall button, ~21u on a 38.
+    for tmpl, cap, art, suffix in (
+        ("GlueButtonTemplate", 24, "Glue-Panel-Button-Up", ""),
+        ("GlueButtonTemplateBlue", 24, "Glue-Panel-Button-Up-Blue", "Blue"),
+        ("GlueButtonSmallTemplate", 21, "Glue-Panel-Button-Up", ""),
+        ("GlueButtonSmallTemplateBlue", 21, "Glue-Panel-Button-Up-Blue", "Blue"),
+    ):
+        m = re.search(
+            r'(\t<Button name="' + tmpl + r'" virtual="true">)(.*?)(\t</Button>)', xml, re.S
+        )
+        if not m:
+            raise SystemExit(f"GlueButtons.xml: {tmpl} not found")
+        body = m.group(2)
+        if "\t\t</Size>\n" not in body:
+            raise SystemExit(f"GlueButtons.xml: {tmpl} has no <Size> to place caps after")
+        body = body.replace("\t\t</Size>\n", "\t\t</Size>\n" + _glue_caps(art, cap), 1)
+        # HighlightTexture is left whole on purpose: it is an additive glow
+        # where stretching does not read, so this change stays off the hover path.
+        for tag, tex in (
+            ("NormalTexture", f"GluePanelButtonUpMiddleTexture{suffix}"),
+            ("PushedTexture", f"GluePanelButtonDownMiddleTexture{suffix}"),
+            ("DisabledTexture", "GluePanelButtonDisabledMiddleTexture"),
+        ):
+            body = re.sub(
+                r'\t\t<' + tag + r' inherits="[^"]+"/>\n', _glue_middle(tag, tex, cap), body
+            )
+        xml = xml[: m.start(2)] + body + xml[m.end(2):]
+    write("GlueButtons.xml", xml)
+
+    # --- GlueParent.lua: a uniform scale knob for the whole glue UI ---
+    lua = read("GlueParent.lua")
+    clamp = '\t\tself:SetPoint("TOPLEFT", barWidth, 0); \n\t\tself:SetPoint("BOTTOMRIGHT", -barWidth, 0);'
+    if clamp not in lua:
+        raise SystemExit("GlueParent.lua: 16:9 clamp block not found")
+    lua = lua.replace(
+        "function GlueParent_OnLoad(self)",
+        "-- Bonesaw: uniform shrink for the whole glue UI. 1.0 is stock.\n"
+        "BONESAW_GLUE_SCALE = 1.0;\n\n"
+        "function GlueParent_OnLoad(self)\n"
+        "\tlocal scale = BONESAW_GLUE_SCALE or 1;\n"
+        "\tif ( scale ~= 1 ) then\n\t\tself:SetScale(scale);\n\tend",
+        1,
+    )
+    # Anchor offsets are in the frame's own scaled units, so the screen-pixel
+    # bar width has to be divided back out or the pillarbox grows with scale.
+    lua = lua.replace(
+        clamp,
+        '\t\tself:SetPoint("TOPLEFT", barWidth / (BONESAW_GLUE_SCALE or 1), 0);\n'
+        '\t\tself:SetPoint("BOTTOMRIGHT", -barWidth / (BONESAW_GLUE_SCALE or 1), 0);',
+        1,
+    )
+    write("GlueParent.lua", lua)
+
+    # --- CharacterSelect.lua: force the widths the XML already declares ---
+    cs = read("CharacterSelect.lua")
+    if "function CharacterSelect_OnShow" not in cs:
+        raise SystemExit("CharacterSelect.lua: CharacterSelect_OnShow not found")
+    widths = "".join(f'\t["{n}"] = {w},\n' for n, w in sorted(GLUE_BUTTON_WIDTHS.items()))
+    cs += (
+        "\n-- Bonesaw: these buttons declare their size in CharacterSelect.xml but\n"
+        "-- render several times wider. Nothing in GlueXML resizes them and the\n"
+        "-- cause is still unknown, so put the declared width back on every show.\n"
+        "BONESAW_GLUE_BUTTON_WIDTHS = {\n" + widths + "};\n\n"
+        "function Bonesaw_FixGlueButtonWidths()\n"
+        "\tfor name, w in pairs(BONESAW_GLUE_BUTTON_WIDTHS) do\n"
+        "\t\tlocal b = _G[name];\n"
+        "\t\tif ( b and b.SetWidth ) then\n\t\t\tb:SetWidth(w);\n\t\tend\n"
+        "\tend\nend\n\n"
+        "local Bonesaw_Orig_CharacterSelect_OnShow = CharacterSelect_OnShow;\n"
+        "function CharacterSelect_OnShow()\n"
+        "\tBonesaw_Orig_CharacterSelect_OnShow();\n"
+        "\tBonesaw_FixGlueButtonWidths();\nend\n"
+    )
+    write("CharacterSelect.lua", cs)
+    print(f"Wrote {len(GLUE_FILES)} GlueXML files to {GLUE_DIR}")
+
+
 def _create_mpq(storm, dest: Path, files: list[tuple[Path, bytes]]):
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
@@ -954,31 +1317,28 @@ def _create_mpq(storm, dest: Path, files: list[tuple[Path, bytes]]):
     MPQ_CREATE_LISTFILE = 0x00100000
     MPQ_CREATE_ATTRIBUTES = 0x00200000
     MPQ_CREATE_ARCHIVE_V1 = 0x00000000
-    h = ctypes.c_void_p()
     flags = MPQ_CREATE_LISTFILE | MPQ_CREATE_ATTRIBUTES | MPQ_CREATE_ARCHIVE_V1
     # Large hash table so lookups for files we do not ship miss instead of colliding.
-    ok = storm.SFileCreateArchive(str(dest), flags, 4096, ctypes.byref(h))
-    if not ok:
-        raise SystemExit(f"SFileCreateArchive failed for {dest} err={ctypes.GetLastError()}")
+    h = storm.create_archive(dest, flags, 4096)
 
     MPQ_FILE_COMPRESS = 0x00000200
     MPQ_FILE_REPLACEEXISTING = 0x80000000
     MPQ_COMPRESSION_ZLIB = 0x02
     for local, archived in files:
-        ok = storm.SFileAddFileEx(
+        if not storm.add_file(
             h,
-            str(local),
+            local,
             archived,
             MPQ_FILE_COMPRESS | MPQ_FILE_REPLACEEXISTING,
             MPQ_COMPRESSION_ZLIB,
             MPQ_COMPRESSION_ZLIB,
-        )
-        if not ok:
-            storm.SFileCloseArchive(h)
-            raise SystemExit(f"Failed to add {local} as {archived!r} err={ctypes.GetLastError()}")
+        ):
+            err = storm.last_error()
+            storm.close_archive(h)
+            raise SystemExit(f"Failed to add {local} as {archived!r} err={err}")
         print(f"Added {archived.decode()} <- {local.name}")
 
-    storm.SFileCloseArchive(h)
+    storm.close_archive(h)
     print(f"Built {dest} ({dest.stat().st_size} bytes)")
 
 
@@ -996,6 +1356,10 @@ def build_mpq():
         ],
     )
     locale_files = [
+        *[
+            (GLUE_DIR / n, ("Interface" + BS + "GlueXML" + BS + n).encode())
+            for n in GLUE_FILES
+        ],
         (FRAME_TOC, b"Interface\\FrameXML\\FrameXML.toc"),
         (UI_LUA, b"Interface\\FrameXML\\LivingGear.lua"),
         (AURA_LUA, b"Interface\\FrameXML\\BonesawAuras.lua"),
@@ -1006,12 +1370,18 @@ def build_mpq():
 
 
 def main():
+    args = sys.argv[1:]
+    if args and args[0] == "--refresh-glue-bases":
+        if len(args) < 2:
+            raise SystemExit("usage: build_patch.py --refresh-glue-bases <client>/Data")
+        return refresh_glue_bases(Path(args[1]))
     check_lua_limits()
     patch_spell_dbc()
     verify_dbc()
     patch_skill_line_ability()
     patch_areatable()
     patch_framexml()
+    patch_gluexml()
     sys.path.insert(0, str(ROOT))
     from patch_lfg_raids import patch as patch_lfg
     patch_lfg()
