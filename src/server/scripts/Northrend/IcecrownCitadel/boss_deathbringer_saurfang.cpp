@@ -248,8 +248,27 @@ public:
             ASSERT(creature->GetVehicleKit()); // we dont actually use it, just check if exists
         }
 
+        // Report #255: third recurrence of "resets on pull" with zero evade
+        // lines in the log, so the evade model behind #237/#240 cannot be what
+        // players are hitting. Every path that can leave him unattackable now
+        // reports the state that decides it.
+        void LogSaurfangState(char const* where)
+        {
+            uint32 doorState = 0xFF;
+            if (GameObject* door = ObjectAccessor::GetGameObject(*me, instance->GetGuidData(GO_SAURFANG_S_DOOR)))
+                doorState = uint32(door->GetGoState());
+
+            LOG_INFO("scripts.icc.saurfang",
+                "Saurfang {}: introDone {} unitFlags {:#x} immunePC {} react {} death {} combat {} bossState {} door {} dist {:.1f}",
+                where, _introDone ? 1 : 0, uint32(me->GetUnitFlags()), me->IsImmuneToPC() ? 1 : 0,
+                uint32(me->GetReactState()), uint32(me->getDeathState()), me->IsInCombat() ? 1 : 0,
+                uint32(instance->GetBossState(DATA_DEATHBRINGER_SAURFANG)), doorState,
+                me->GetDistance(deathbringerPos));
+        }
+
         void Reset() override
         {
+            LogSaurfangState("Reset enter");
             _Reset();
             me->SetImmuneToAll(true);
             me->SetReactState(REACT_DEFENSIVE);
@@ -269,13 +288,33 @@ public:
             instance->DoRemoveAurasDueToSpellOnPlayers(SPELL_MARK_OF_THE_FALLEN_CHAMPION);
         }
 
+        void JustRespawned() override
+        {
+            LogSaurfangState("JustRespawned");
+            BossAI::JustRespawned();
+        }
+
+        bool CanRespawn() override
+        {
+            bool const allowed = BossAI::CanRespawn();
+            // A refusal is re-asked on every world update, so only the
+            // allowing answer is logged.
+            if (allowed)
+                LogSaurfangState("CanRespawn allowed");
+
+            return allowed;
+        }
+
         void JustEngagedWith(Unit* who) override
         {
             if (!_introDone)
             {
+                LogSaurfangState("JustEngagedWith shed (intro not done)");
                 me->CombatStop();
                 return;
             }
+
+            LogSaurfangState("JustEngagedWith");
 
             // pussywizard: without this, the aura is not recalculated the first time
             me->RemoveAurasDueToSpell(SPELL_BLOOD_POWER);
@@ -333,6 +372,7 @@ public:
 
         void JustReachedHome() override
         {
+            LogSaurfangState("JustReachedHome");
             _JustReachedHome();
             instance->SetBossState(DATA_DEATHBRINGER_SAURFANG, FAIL);
         }
@@ -377,6 +417,7 @@ public:
             if (type != POINT_MOTION_TYPE || id != POINT_SAURFANG)
                 return;
 
+            LogSaurfangState("MovementInform POINT_SAURFANG");
             instance->HandleGameObject(instance->GetGuidData(GO_SAURFANG_S_DOOR), false);
 
             // Report #237: the fight may only start once Saurfang is in
@@ -490,9 +531,13 @@ public:
                     // place with the door closed, and is idempotent so the
                     // intro NPC's re-check can race it safely.
                     if (_introDone)
+                    {
+                        LogSaurfangState("ACTION_INTRO_DONE ignored (already done)");
                         break;
+                    }
                     _introDone = true;
                     me->SetImmuneToPC(false);
+                    LogSaurfangState("ACTION_INTRO_DONE applied");
                     if (Player* target = me->SelectNearestPlayer(100.0f))
                         AttackStart(target);
                     break;
@@ -518,7 +563,8 @@ public:
         {
             // Report #240: still resetting on pull after the 0.1.126 start
             // fix -- make every evade tell us why it happened.
-            LOG_INFO("scripts.icc.saurfang", "Deathbringer Saurfang evade: reason {} introDone {}", uint32(why), _introDone ? 1 : 0);
+            LOG_INFO("scripts.icc.saurfang", "Deathbringer Saurfang evade: reason {}", uint32(why));
+            LogSaurfangState("EnterEvadeMode");
             BossAI::EnterEvadeMode(why);
             if (Creature* creature = ObjectAccessor::GetCreature(*me, instance->GetGuidData(DATA_SAURFANG_EVENT_NPC)))
                 creature->AI()->DoAction(ACTION_EVADE);
@@ -594,6 +640,8 @@ public:
                         // when it lands -- the fight starts while the speeches
                         // would still be going.
                         _events.ScheduleEvent(EVENT_INTRO_FINISH, 4s, 0, PHASE_INTRO_H);
+                        LOG_INFO("scripts.icc.saurfang", "Saurfang intro START (horde): boss unitFlags {:#x} dist {:.1f}",
+                            uint32(deathbringer->GetUnitFlags()), deathbringer->GetDistance(deathbringerPos));
                         _instance->HandleGameObject(_instance->GetGuidData(GO_SAURFANG_S_DOOR), true);
 
                         if (GameObject* teleporter = ObjectAccessor::GetGameObject(*me, _instance->GetGuidData(GO_SCOURGE_TRANSPORTER_SAURFANG)))
@@ -758,6 +806,8 @@ public:
                         float finishX = deathbringerPos.GetPositionX();
                         float finishY = deathbringerPos.GetPositionY();
                         float finishZ = deathbringerPos.GetPositionZ();
+                        LOG_INFO("scripts.icc.saurfang", "Saurfang intro FINISH (horde): retries {} dist {:.1f} unitFlags {:#x}",
+                            _finishRetries, deathbringer->GetDistance(finishX, finishY, finishZ), uint32(deathbringer->GetUnitFlags()));
                         if (deathbringer->IsWithinDist3d(finishX, finishY, finishZ, 3.0f))
                             deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
                         else if (++_finishRetries >= 15)
@@ -890,6 +940,8 @@ public:
                         // Report #215: see the horde side -- the fight starts
                         // after 4s instead of after the full walk-and-speech RP.
                         _events.ScheduleEvent(EVENT_INTRO_FINISH, 4s, 0, PHASE_INTRO_A);
+                        LOG_INFO("scripts.icc.saurfang", "Saurfang intro START (alliance): boss unitFlags {:#x} dist {:.1f}",
+                            uint32(deathbringer->GetUnitFlags()), deathbringer->GetDistance(deathbringerPos));
                         _instance->HandleGameObject(_instance->GetGuidData(GO_SAURFANG_S_DOOR), true);
 
                         if (GameObject* teleporter = ObjectAccessor::GetGameObject(*me, _instance->GetGuidData(GO_SCOURGE_TRANSPORTER_SAURFANG)))
@@ -1030,6 +1082,8 @@ public:
                         float finishX = deathbringerPos.GetPositionX();
                         float finishY = deathbringerPos.GetPositionY();
                         float finishZ = deathbringerPos.GetPositionZ();
+                        LOG_INFO("scripts.icc.saurfang", "Saurfang intro FINISH (alliance): retries {} dist {:.1f} unitFlags {:#x}",
+                            _finishRetries, deathbringer->GetDistance(finishX, finishY, finishZ), uint32(deathbringer->GetUnitFlags()));
                         if (deathbringer->IsWithinDist3d(finishX, finishY, finishZ, 3.0f))
                             deathbringer->AI()->DoAction(ACTION_INTRO_DONE);
                         else if (++_finishRetries >= 15)
