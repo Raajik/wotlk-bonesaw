@@ -1,0 +1,85 @@
+# Tables that exist in the live databases and are created by nothing in this
+# repository. Living Gear, the attunement system, the bug tracker, and a
+# handful of world-content tables.
+#
+# HOW THIS LIST WAS DERIVED (and how to regenerate it):
+#   1. Point db-import at a completely empty MySQL instance so it builds the
+#      databases from data/sql/base + data/sql/updates alone.
+#   2. Diff the resulting table list against the live databases.
+#   3. Whatever is only in live belongs here.
+# Doing that on 2026-09-02 produced 111/174 acore_characters tables from the
+# repo alone; the 63 below are the shortfall, plus 8 in acore_world.
+#
+# Format: <database>.<table>
+
+acore_characters.ap_account_progress
+acore_characters.ap_aether_sinks
+acore_characters.ap_item_attune
+acore_characters.ap_item_snapshot
+acore_characters.ap_reagent_archive
+acore_characters.ap_talents
+acore_characters.lg_absorb
+acore_characters.lg_account_currency
+acore_characters.lg_account_exalted_faction
+acore_characters.lg_account_key
+acore_characters.lg_account_meta
+acore_characters.lg_account_mount
+acore_characters.lg_account_perk
+acore_characters.lg_account_perk_purchase
+acore_characters.lg_account_recipe
+acore_characters.lg_account_rep
+acore_characters.lg_account_reputation
+acore_characters.lg_account_skill
+acore_characters.lg_account_taxi_maps
+acore_characters.lg_achievement_value
+acore_characters.lg_attune_milestone
+acore_characters.lg_autoloot_rule
+acore_characters.lg_bug_report
+acore_characters.lg_char_class_grant
+acore_characters.lg_char_class_perk
+acore_characters.lg_char_class_perk_spec
+acore_characters.lg_char_rep_down
+acore_characters.lg_char_spec
+acore_characters.lg_class_buff_unlock
+acore_characters.lg_combo
+acore_characters.lg_item
+acore_characters.lg_perk_cost
+acore_characters.lg_quest_complete
+acore_characters.lg_vault
+acore_characters.lg_vault_reagent
+acore_characters.lg_wayfarer
+acore_characters.z_archive_ap_account_progress
+acore_characters.z_archive_ap_account_taxi
+acore_characters.z_archive_ap_aether_milestones
+acore_characters.z_archive_ap_aether_sinks
+acore_characters.z_archive_ap_attunements
+acore_characters.z_archive_ap_aura_test_results
+acore_characters.z_archive_ap_bg_objectives
+acore_characters.z_archive_ap_dissolved_items
+acore_characters.z_archive_ap_dungeon_leaderboard
+acore_characters.z_archive_ap_dungeon_pb
+acore_characters.z_archive_ap_item_attune
+acore_characters.z_archive_ap_item_snapshot
+acore_characters.z_archive_ap_mastery
+acore_characters.z_archive_ap_mastery_spend
+acore_characters.z_archive_ap_milestone_defs
+acore_characters.z_archive_ap_milestones
+acore_characters.z_archive_ap_quest_rewarded
+acore_characters.z_archive_ap_rack
+acore_characters.z_archive_ap_reagent_archive
+acore_characters.z_archive_ap_residue
+acore_characters.z_archive_ap_resonant_drops
+acore_characters.z_archive_ap_session_state
+acore_characters.z_archive_ap_sink_allocation
+acore_characters.z_archive_ap_slot_mastery
+acore_characters.z_archive_ap_talents
+acore_characters.z_archive_ap_telemetry
+acore_characters.z_archive_ap_visage
+acore_world.charsections_dbc
+acore_world.creature_multispawn
+acore_world.creature_text_option_sets
+acore_world.creature_text_options
+acore_world.emotetextsound_dbc
+acore_world.lg_dungeon_par
+acore_world.lg_zone_scale
+acore_world.playerbots_rpg_races
