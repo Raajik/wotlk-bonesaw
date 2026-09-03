@@ -1252,6 +1252,11 @@ struct boss_thorim_runic_colossus : public ScriptedAI
 
         void Reset() override
         {
+            // Report #248: the template ships UNIT_FLAG_NON_ATTACKABLE and
+            // nothing in the gauntlet ever cleared it, so the colossus stood
+            // at the end of the tunnel untouchable no matter how far players
+            // walked down. It is the tunnel mini-boss -- attackable on sight.
+            me->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
             _nextTriggerPos = 0.0f;
             _leftHand = false;
             _checkTarget = false;

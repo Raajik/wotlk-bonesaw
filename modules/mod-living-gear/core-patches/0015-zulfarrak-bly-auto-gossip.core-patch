@@ -1,0 +1,46 @@
+Sergeant Bly (Zul'Farrak) auto-gossip: talking to him starts the fight.
+Touches: src/server/scripts/Kalimdor/ZulFarrak/zulfarrak.cpp,
+npc_sergeant_blyAI::sGossipHello()
+
+Why: player request. Once the pyramid event has reached
+PYRAMID_MOVED_DOWNSTAIRS, Bly's gossip has exactly one option on it --
+"That's it! I'm tired of helping you out." -- and picking it is the only
+thing he can still do. Requiring the click bought nothing and cost a lot:
+playerbots never select a gossip option at all, so a bot-filled group had
+no way to trigger Bly's Band, and the encounter plus its loot was simply
+unreachable unless a human was standing in front of him at the right
+moment. This runs the same three statements sGossipSelect ran on that one
+option (close the menu, remember who talked, DoAction(0)) directly from
+sGossipHello instead.
+
+Note that NPCHandler.cpp's HandleGossipHelloOpcode calls
+PrepareGossipMenu/SendPreparedGossip *before* AI()->sGossipHello, so the
+default menu is already on its way to the client by the time this runs --
+CloseGossipMenuFor() is what collapses it, exactly as the old
+sGossipSelect path did.
+
+The two flavour-text branches (PYRAMID_NOT_STARTED -> menu 1515,
+otherwise -> 1516) are untouched: before the event is available Bly still
+just talks.
+
+--- a/src/server/scripts/Kalimdor/ZulFarrak/zulfarrak.cpp
++++ b/src/server/scripts/Kalimdor/ZulFarrak/zulfarrak.cpp
+@@ -270,8 +270,16 @@
+         {
+             if (instance->GetData(DATA_PYRAMID) >= PYRAMID_MOVED_DOWNSTAIRS && !startedFight)
+             {
+-                AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_BLY, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
+-                SendGossipMenuFor(player, 1517, me->GetGUID());
++                // Bonesaw: auto-gossip. Once the pyramid event is done the
++                // menu here had exactly one option on it, and picking it was
++                // the only thing Bly could still do -- so talking to him now
++                // just starts the fight instead of asking first. Playerbots
++                // never click a gossip option at all, which left the whole
++                // Bly's Band encounter (and its loot) unreachable for any
++                // group not led by a human standing in front of him.
++                CloseGossipMenuFor(player);
++                PlayerGUID = player->GetGUID();
++                DoAction(0);
+             }
+             else
+             {

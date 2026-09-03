@@ -35,6 +35,7 @@
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "ScriptMgr.h"
 #include "TemporarySummon.h"
 #include "Unit.h"
 #include "UnitAI.h"
@@ -416,7 +417,13 @@ void ThreatManager::AddThreat(Unit* target, float amount, SpellInfo const* spell
 
     // apply threat modifiers to the amount
     if (!ignoreModifiers)
+    {
         amount = CalculateModifiedThreat(amount, target, spell);
+        // Living Gear tanking (#91): let the module scale threat further
+        // (e.g. +1000% aggro gen for the Protection warrior perk). target is
+        // the unit generating threat, _owner the unit holding the list.
+        sScriptMgr->OnCalculateThreat(target, _owner, amount, spell);
+    }
 
     // if we're increasing threat, send some/all of it to redirection targets instead if applicable
     if (!ignoreRedirects && amount > 0.0f)

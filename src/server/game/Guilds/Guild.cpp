@@ -1471,53 +1471,88 @@ void Guild::HandleBuyBankTab(WorldSession* session, uint8 tabId)
 
 void Guild::HandleInviteMember(WorldSession* session, std::string const& name)
 {
-    Player* pInvitee = ObjectAccessor::FindPlayerByName(name, false);
-    if (!pInvitee)
-    {
-        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_PLAYER_NOT_FOUND_S, name);
-        return;
-    }
-
     Player* player = session->GetPlayer();
-    // Do not show invitations from ignored players
-    if (pInvitee->GetSocial()->HasIgnore(player->GetGUID()))
-        return;
-
-    uint32 memberLimit = sWorld->getIntConfig(CONFIG_GUILD_MEMBER_LIMIT);
-    if (memberLimit > 0 && player->GetGuild()->GetMemberCount() >= memberLimit)
-    {
-        ChatHandler(player->GetSession()).PSendSysMessage("Your guild has reached the maximum amount of members ({}). You cannot send another invite until the guild member count is lower.", memberLimit);
-        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_INTERNAL, name);
-        return;
-    }
-
-    if (!sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GUILD) && pInvitee->GetTeamId(true) != player->GetTeamId(true))
-    {
-        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_NOT_ALLIED, name);
-        return;
-    }
-    // Invited player cannot be in another guild
-    if (pInvitee->GetGuildId())
-    {
-        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_ALREADY_IN_GUILD_S, name);
-        return;
-    }
-    // Invited player cannot be invited
-    if (pInvitee->GetGuildIdInvited())
-    {
-        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_ALREADY_INVITED_TO_GUILD_S, name);
-        return;
-    }
-    // Inviting player must have rights to invite
     if (!HasRankRight(player, GR_RIGHT_INVITE))
     {
         SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_PERMISSIONS);
         return;
     }
 
-    SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_COMMAND_SUCCESS, name);
+    uint32 memberLimit = sWorld->getIntConfig(CONFIG_GUILD_MEMBER_LIMIT);
+    if (memberLimit > 0 && GetMemberCount() >= memberLimit)
+    {
+        ChatHandler(player->GetSession()).PSendSysMessage("Your guild has reached the maximum amount of members ({}). You cannot send another invite until the guild member count is lower.", memberLimit);
+        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_INTERNAL, name);
+        return;
+    }
 
-    LOG_DEBUG("guild", "Player {} invited {} to join his Guild", player->GetName(), pInvitee->GetName());
+    Player* pInvitee = ObjectAccessor::FindPlayerByName(name, false);
+    ObjectGuid inviteeGuid;
+    uint32 inviteeAccount = 0;
+    uint8 inviteeRace = 0;
+    uint32 inviteeGuildId = 0;
+
+    if (pInvitee)
+    {
+        if (pInvitee->GetSocial()->HasIgnore(player->GetGUID())
+            && (!pInvitee->GetSession() || pInvitee->GetSession()->GetAccountId() != session->GetAccountId()))
+            return;
+        inviteeGuid = pInvitee->GetGUID();
+        inviteeAccount = pInvitee->GetSession() ? pInvitee->GetSession()->GetAccountId() : 0;
+        inviteeRace = pInvitee->getRace();
+        inviteeGuildId = pInvitee->GetGuildId();
+        if (pInvitee->GetGuildIdInvited() && inviteeAccount != session->GetAccountId())
+        {
+            SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_ALREADY_INVITED_TO_GUILD_S, name);
+            return;
+        }
+    }
+    else if (CharacterCacheEntry const* cache = sCharacterCache->GetCharacterCacheByName(name))
+    {
+        inviteeGuid = cache->Guid;
+        inviteeAccount = cache->AccountId;
+        inviteeRace = cache->Race;
+        inviteeGuildId = cache->GuildId;
+        if (inviteeAccount != session->GetAccountId())
+        {
+            SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_PLAYER_NOT_FOUND_S, name);
+            return;
+        }
+    }
+    else
+    {
+        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_PLAYER_NOT_FOUND_S, name);
+        return;
+    }
+
+    if (!sWorld->getBoolConfig(CONFIG_ALLOW_TWO_SIDE_INTERACTION_GUILD)
+        && Player::TeamIdForRace(inviteeRace) != player->GetTeamId(true))
+    {
+        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_NOT_ALLIED, name);
+        return;
+    }
+
+    if (inviteeGuildId)
+    {
+        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_ALREADY_IN_GUILD_S, name);
+        return;
+    }
+
+    if (inviteeAccount == session->GetAccountId())
+    {
+        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_COMMAND_SUCCESS, name);
+        LOG_DEBUG("guild", "Player {} added same-account alt {} to guild {}", player->GetName(), name, GetName());
+        AddMember(inviteeGuid);
+        return;
+    }
+
+    if (!pInvitee)
+    {
+        SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_PLAYER_NOT_FOUND_S, name);
+        return;
+    }
+
+    SendCommandResult(session, GUILD_COMMAND_INVITE, ERR_GUILD_COMMAND_SUCCESS, name);
 
     pInvitee->SetGuildIdInvited(m_id);
     _LogEvent(GUILD_EVENT_LOG_INVITE_PLAYER, player->GetGUID(), pInvitee->GetGUID());

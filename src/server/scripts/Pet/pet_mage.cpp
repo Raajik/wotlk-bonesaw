@@ -30,6 +30,7 @@
 
 enum MageSpells
 {
+    SPELL_MAGE_ARCANE_PERK              = 910032,
     SPELL_MAGE_CLONE_ME                 = 45204,
     SPELL_MAGE_MASTERS_THREAT_LIST      = 58838,
     SPELL_PET_HIT_SCALING               = 61013,
@@ -66,15 +67,31 @@ struct npc_pet_mage_mirror_image : CasterAI
     uint32 dist = urand(1, 5);
     bool _delayAttack;
 
+    bool OwnerHasArcanePerk() const
+    {
+        Unit* owner = me->GetOwner();
+        return owner && owner->HasSpell(SPELL_MAGE_ARCANE_PERK);
+    }
+
+    bool IsUsableImageTarget(Unit* target) const
+    {
+        return target && target->IsAlive() && me->IsValidAttackTarget(target)
+            && me->CanSeeOrDetect(target)
+            && !target->HasBreakableByDamageCrowdControlAura(me);
+    }
+
     void InitializeAI() override
     {
         CasterAI::InitializeAI();
 
-        _delayAttack = true;
-        me->m_Events.AddEventAtOffset([this]()
+        _delayAttack = !OwnerHasArcanePerk();
+        if (_delayAttack)
         {
-            _delayAttack = false;
-        }, 1200ms);
+            me->m_Events.AddEventAtOffset([this]()
+            {
+                _delayAttack = false;
+            }, 1200ms);
+        }
 
         Unit* owner = me->GetOwner();
         if (!owner)
@@ -98,13 +115,14 @@ struct npc_pet_mage_mirror_image : CasterAI
                 break;
         }
 
-        ((Minion*)me)->SetFollowAngle(angle);
+        if (me->IsGuardian())
+            static_cast<Minion*>(me)->SetFollowAngle(angle);
         if (owner->IsInCombat())
             me->NearTeleportTo(me->GetPositionX() + cos(angle)*dist, me->GetPositionY() + std::sin(angle)*dist, me->GetPositionZ(), me->GetOrientation(), false, false, false, false);
         else
             me->GetMotionMaster()->MoveFollow(owner, PET_FOLLOW_DIST, me->GetFollowAngle(), MOTION_SLOT_ACTIVE);
 
-        me->SetReactState(REACT_DEFENSIVE);
+        me->SetReactState(OwnerHasArcanePerk() ? REACT_AGGRESSIVE : REACT_DEFENSIVE);
 
         // Xinef: Inherit Master's Threat List (not yet implemented)
         //owner->CastSpell((Unit*)nullptr, SPELL_MAGE_MASTERS_THREAT_LIST, true);
@@ -138,7 +156,8 @@ struct npc_pet_mage_mirror_image : CasterAI
                     newAura->SetDuration(visAura->GetDuration());
             }
 
-        me->m_Events.AddEventAtOffset(new DeathEvent(*me), 29500ms);
+        if (!OwnerHasArcanePerk())
+            me->m_Events.AddEventAtOffset(new DeathEvent(*me), 29500ms);
     }
 
     // Do not reload Creature templates on evade mode enter - prevent visual lost
@@ -169,7 +188,27 @@ struct npc_pet_mage_mirror_image : CasterAI
         Unit* owner = me->GetOwner();
         if (owner && owner->IsPlayer())
         {
-            Unit* selection = owner->ToPlayer()->GetSelectedUnit();
+            Unit* selection = nullptr;
+            if (OwnerHasArcanePerk())
+            {
+                if (IsUsableImageTarget(owner->GetVictim()))
+                    selection = owner->GetVictim();
+                else if (IsUsableImageTarget(owner->ToPlayer()->GetSelectedUnit()))
+                    selection = owner->ToPlayer()->GetSelectedUnit();
+                else
+                {
+                    for (Unit* attacker : owner->getAttackers())
+                    {
+                        if (IsUsableImageTarget(attacker))
+                        {
+                            selection = attacker;
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+                selection = owner->ToPlayer()->GetSelectedUnit();
 
             if (selection && me->CanSeeOrDetect(selection))
             {
@@ -238,12 +277,27 @@ struct npc_pet_mage_mirror_image : CasterAI
         // Never start a new cast on a target under a breakable-by-damage CC aura (Polymorph,
         // Dragon's Breath, ...) - that is what would break the crowd control.
         if (me->GetVictim()->HasBreakableByDamageCrowdControlAura(me))
+        {
+            if (OwnerHasArcanePerk())
+                MySelectNextTarget();
             return;
+        }
 
         if (uint32 spellId = events.ExecuteEvent())
         {
-            events.RescheduleEvent(spellId, spellId == SPELL_MAGE_MIRROR_IMAGE_FIRE_BLAST ? 6500ms : 2500ms);
+            uint32 const delay = spellId == SPELL_MAGE_MIRROR_IMAGE_FIRE_BLAST
+                ? 6500 : (OwnerHasArcanePerk() ? 0 : 2500);
+            events.RescheduleEvent(spellId, Milliseconds(delay));
             me->CastSpell(me->GetVictim(), spellId, false);
+        }
+        else if (OwnerHasArcanePerk())
+        {
+            if (events.Empty())
+            {
+                events.ScheduleEvent(SPELL_MAGE_MIRROR_IMAGE_FROSTBOLT, 0ms);
+                events.ScheduleEvent(SPELL_MAGE_MIRROR_IMAGE_FIRE_BLAST, 0ms);
+            }
+            me->CastSpell(me->GetVictim(), SPELL_MAGE_MIRROR_IMAGE_FROSTBOLT, false);
         }
     }
 };

@@ -1,0 +1,8 @@
+s = open('modules/mod-living-gear/conf/living_gear.conf.dist', encoding='utf-8', errors='replace').read()
+lines = s.split('\n')
+print('conf total lines:', len(lines))
+print('\n'.join('%4d %s' % (i + 1, lines[i]) for i in range(185, min(len(lines), 200))))
+print('=== support cpp 1070-1092:')
+s2 = open('modules/mod-living-gear/src/LivingGear_Support.cpp', encoding='utf-8', errors='replace').read()
+L2 = s2.split('\n')
+print('\n'.join('%4d %s' % (i + 1, L2[i]) for i in range(1070, min(1094, len(L2)))))

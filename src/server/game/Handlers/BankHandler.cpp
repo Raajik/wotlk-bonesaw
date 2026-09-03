@@ -20,6 +20,7 @@
 #include "Item.h"
 #include "Log.h"
 #include "Player.h"
+#include "ScriptMgr.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
@@ -186,6 +187,7 @@ void WorldSession::HandleBuyBankSlotOpcode(WorldPackets::Bank::BuyBankSlot& buyB
 void WorldSession::SendShowBank(ObjectGuid guid)
 {
     m_currentBankerGUID = guid;
+    sScriptMgr->OnPlayerOpenBank(_player, guid);
     WorldPackets::Bank::ShowBank packet;
     packet.Banker = guid;
     SendPacket(packet.Write());

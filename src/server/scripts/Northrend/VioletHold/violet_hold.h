@@ -24,6 +24,16 @@
 
 #define VioletHoldScriptName "instance_violet_hold"
 
+enum VHWaves
+{
+    // Report #173 wave plan: odd waves are trash portals ("monster groups"),
+    // even waves 2..12 each release one prison boss (six total), wave 13 is
+    // Cyanigosa.
+    VH_WAVE_FIRST_BOSS = 2,
+    VH_WAVE_LAST_BOSS  = 12,
+    VH_WAVE_CYANIGOSA  = 13,
+};
+
 enum VHData
 {
     // Creature ObjectData IDs
@@ -54,6 +64,10 @@ enum VHData
     // Manual GUID tracking (multi-instance entries)
     DATA_EREKEM_GUARD_1_GUID,
     DATA_EREKEM_GUARD_2_GUID,
+
+    // Computed: which of the six prison bosses releases on the current wave
+    // (boss waves are the even ones, 2..12; 0 when the wave has no boss)
+    DATA_BOSS_FOR_CURRENT_WAVE      = 38,
 };
 
 enum VHActions
@@ -66,8 +80,14 @@ enum VHActions
 
 enum VHPersistentData
 {
-    PERSISTENT_DATA_FIRST_BOSS,
-    PERSISTENT_DATA_SECOND_BOSS,
+    PERSISTENT_DATA_FIRST_BOSS,     // legacy (pre-rework runs stored 2 bosses)
+    PERSISTENT_DATA_SECOND_BOSS,    // legacy
+    PERSISTENT_DATA_BOSS_ORDER_0,   // release order: one slot per boss wave,
+    PERSISTENT_DATA_BOSS_ORDER_1,   // wave 2 -> slot 0, wave 4 -> slot 1,
+    PERSISTENT_DATA_BOSS_ORDER_2,   // ... wave 12 -> slot 5 (report #173)
+    PERSISTENT_DATA_BOSS_ORDER_3,
+    PERSISTENT_DATA_BOSS_ORDER_4,
+    PERSISTENT_DATA_BOSS_ORDER_5,
     PERSISTENT_DATA_COUNT
 };
 

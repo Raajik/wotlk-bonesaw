@@ -1,0 +1,5 @@
+s = open('src/server/scripts/Northrend/zone_wintergrasp.cpp', encoding='utf-8', errors='replace').read()
+lines = s.split('\n')
+print('\n'.join('%4d %s' % (i + 1, ln) for i, ln in enumerate(lines[1080:1130])))
+print('...')
+print('\n'.join('%4d %s' % (i + 1, ln) for i, ln in enumerate(lines[1190:1205])))

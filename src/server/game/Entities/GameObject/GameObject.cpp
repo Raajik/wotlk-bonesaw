@@ -1518,6 +1518,45 @@ void GameObject::Use(Unit* user)
                 player->SendPreparedGossip(this);
                 return;
             }
+        case GAMEOBJECT_TYPE_CHEST:                         //3
+            {
+                if (!user->IsPlayer())
+                    return;
+                Player* player = user->ToPlayer();
+                bool handled = false;
+                sScriptMgr->OnPlayerUseGameObject(player, this, handled);
+                if (handled)
+                    return;
+                // Keys, lockpicking, and gather nodes stay on the spell path.
+                // OPEN / TREASURE style locks loot here so combat damage cannot cancel Opening.
+                if (uint32 lockId = GetGOInfo()->GetLockId())
+                {
+                    if (LockEntry const* lockInfo = sLockStore.LookupEntry(lockId))
+                    {
+                        for (int i = 0; i < MAX_LOCK_CASE; ++i)
+                        {
+                            if (lockInfo->Type[i] == LOCK_KEY_ITEM)
+                                return;
+                            if (lockInfo->Type[i] != LOCK_KEY_SKILL)
+                                continue;
+                            switch (lockInfo->Index[i])
+                            {
+                            case LOCKTYPE_PICKLOCK:
+                            case LOCKTYPE_HERBALISM:
+                            case LOCKTYPE_MINING:
+                            case LOCKTYPE_DISARM_TRAP:
+                            case LOCKTYPE_INSCRIPTION:
+                            case LOCKTYPE_BLASTING:
+                                return;
+                            default:
+                                break;
+                            }
+                        }
+                    }
+                }
+                player->SendLoot(GetGUID(), LOOT_CORPSE);
+                return;
+            }
         case GAMEOBJECT_TYPE_TRAP:                          //6
             {
                 GameObjectTemplate const* goInfo = GetGOInfo();

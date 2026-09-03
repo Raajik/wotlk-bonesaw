@@ -114,12 +114,10 @@ struct boss_anub_arak : public BossAI
         _remainingLargeSummonsBeforeEmerge = 0;
         _submergePhase = SUBMERGE_NONE;
 
-        ScheduleHealthCheckEvent({ 75, 50, 25 }, [&]{
-            events.CancelEventGroup(GROUP_EMERGED);
-            Talk(SAY_SUBMERGE);
-            DoCastSelf(SPELL_CLEAR_ALL_DEBUFFS, true);
-            DoCastSelf(SPELL_SUBMERGE, false);
-        }, false);
+        // Feature #196: Anub'arak no longer burrows at 75/50/25% health --
+        // the fight runs continuously on the surfaced rotation instead.
+        // The SpellHitTarget submerge branch below is now dead but
+        // harmless; keep it so a per-phase burrow re-enable is one line.
     }
 
     void SpellHitTarget(Unit* /*caster*/, SpellInfo const* spellInfo) override

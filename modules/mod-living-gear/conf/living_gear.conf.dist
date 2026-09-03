@@ -1,0 +1,221 @@
+###############################################
+# Living Gear
+###############################################
+
+# Enable the module
+LivingGear.Enable = 1
+
+# XP per kill type
+LivingGear.XpPerKill = 1
+LivingGear.XpEliteKill = 3
+LivingGear.XpBossKill = 10
+
+# Hard cap on item level
+LivingGear.MaxLevel = 50
+
+# Power per level: (base + roll) * (1 + (level-1) * this)
+# 0.10 = +100% every 10 levels. Only used now as a fallback for items with no
+# measurable stat budget (tabards, shirts) -- see IlvlCeiling below.
+LivingGear.GrowthPerLevel = 0.10
+
+# Item level every piece converges on at MaxLevel. Levelling raises an item's
+# EFFECTIVE item level toward this, and its stats become the budget for that
+# level, kept in the item's own proportions -- heirloom-style.
+#
+# It interpolates toward the ceiling rather than adding a fixed amount per
+# level, and the difference matters: a flat gain per level leaves a level 50
+# green at 417 stats and a level 50 epic at 850, because the epic stays ~180
+# ilvl ahead forever. Interpolating means everything lands on the same number
+# and better gear simply STARTS closer. The loot ladder decides how fast you
+# get there, not where you end up.
+#
+# 284 is Icecrown 25-heroic, the top of WotLK. Raise it for higher ceilings;
+# the budget curve extrapolates past the measured data using its top slope.
+LivingGear.IlvlCeiling = 284
+
+# Legacy: fraction of grown stats banked by the old one-time "Attune"
+# sacrifice. Unused by the 2026-08-20 continuous-attunement redesign (see
+# LivingGear.Attune.* below) -- kept only because the underlying
+# sacrifice code path still technically exists, even though nothing in the
+# client sends it anymore.
+LivingGear.AbsorbPct = 0.10
+
+# Chance (0-100) that a new eligible item rolls bonus random stats
+LivingGear.RollChance = 25
+
+# Continuous attunement (2026-08-20): equipped (and Curator-tracked) gear
+# banks a live slice of its own current stats into the account on every
+# level-up, instead of being destroyed via a manual "Attune" button. The
+# banked slice ramps from 1% of the item's current stats at level 1 to
+# 100% at CapLevel -- past CapLevel the item keeps growing its own worn
+# stats (up to LivingGear.MaxLevel) but stops adding anything further to
+# the account.
+LivingGear.Attune.CapLevel = 25
+
+# The real WoW item level at which the level-1..CapLevel XP curve hits its
+# "designed" pace -- an item at this ilvl should reach CapLevel in roughly
+# 15-30 min of casual kill-grinding. Lower-ilvl items cost proportionally
+# less XP per level (faster to max), higher-ilvl items cost more
+# (slower) -- see LivingGear.Attune.IlvlFloorScale for the floor.
+LivingGear.Attune.IlvlBaseline = 70.0
+
+# Floor on the ilvl scaling factor above (as a fraction of the baseline
+# item's per-level cost) -- keeps very low ilvl items from costing an
+# unrealistic near-zero XP to max out.
+LivingGear.Attune.IlvlFloorScale = 0.15
+
+# How many primary stats a successful roll adds (1-5)
+LivingGear.RollStatCount = 1
+
+# Zone scaling: overleveled players deal less and take more in open world.
+LivingGear.ZoneScale.Enable = 1
+LivingGear.ZoneScale.CombatBuffer = 3
+# 2, not 10 (bug report #57, "mobs aren't scaling upward to match my level" --
+# filed by a level 9, for whom scaling was switched off by this very setting).
+# Level 1 is left alone deliberately: a brand new character's first fight should
+# be exactly what the game shipped, and scaling a level 1 mob to level 2 buys
+# nothing anyway.
+LivingGear.ZoneScale.MinPlayerLevel = 2
+LivingGear.ZoneScale.RewardFloor = 0.35
+LivingGear.ZoneScale.RewardGapDecay = 12.0
+LivingGear.ZoneScale.IncomingPerLevel = 0.12
+
+# Mount: instant cast, use highest known mount speed, auto-mount after combat.
+LivingGear.InstantMount = 1
+LivingGear.UniformMountSpeed = 1
+LivingGear.AutoMount = 1
+
+# Dungeon clear timer par (seconds) when lg_dungeon_par has no row.
+LivingGear.DungeonTimer.DefaultParSec = 1800
+
+# Curator: Living Gear XP tick to 5 lowest stored pieces.
+LivingGear.CollectionPassive.TickMs = 60000
+
+# Quest XP scaling. Quest rewards are recomputed as though the quest had been
+# authored for the player's own level, so outlevelling a zone does not turn its
+# quest chains into scraps. FloorPct then guarantees a minimum payout as a
+# percentage of the current level's XP bar, which catches quests whose rescaled
+# value still reads as noise. Repeat turn-ins of a repeatable quest are always
+# left at zero and never get the floor.
+LivingGear.QuestScale.Enable = 1
+LivingGear.QuestScale.FloorPct = 10
+
+# Creature damage-school immunity from creature_template is downgraded to an
+# 80% resist, so "immune to Frost" mobs stop existing while still shrugging off
+# most of the hit. Boss-script invulnerability (a real aura) and every player
+# immunity are unaffected. See core-patch 0017.
+LivingGear.SoftenCreatureImmunity = 1
+
+# Waive weapon, positioning and reagent requirements on spells players cast.
+# All three are the same rule wearing different hats -- "not with that weapon",
+# "not from in front", "not without the component" -- and none of them make a
+# fight more interesting here. Ambush and Backstab work without a dagger and
+# from any angle, and buffs stop demanding you carry a bag of components.
+# Crafting still costs its materials -- profession spells list those as
+# reagents, so waiving them there would mean free Titansteel, not less
+# errand. Creature casts are untouched; disarm still works. Core-patch 0020.
+LivingGear.IgnoreSpellRequirements = 1
+
+# Learn, at login, any CASTABLE perk the account owns that this character is
+# missing. Perks belong to the account but spells are learned per character,
+# and for a long time only the first character on an account ever got them --
+# *Quests - Finish was missing from 894 characters, Auto-Mount from 733,
+# Solo Queue from 723. Those are real buttons the player earned and could not
+# see.
+#
+# Castable only, deliberately. The rest of the 910xxx range is badges with no
+# SkillLineAbility row, so learning one puts nothing in the spellbook and
+# changes no behaviour -- HasPerk reads the account set either way. Learning
+# all of them would just mean ~100 "you have learnt" packets per login for
+# nothing. Bounded to the 15 castable perks it is at most 15, once.
+LivingGear.ReconcilePerkSpells = 1
+
+# Paying gold to skip the Complete Quest cooldown -- a deliberate gold sink.
+#
+# Cost = BaseCost * (seconds left / 600) * Multiplier ^ (buyouts this window).
+# It scales with the time actually being skipped, so buying out nine minutes
+# costs more than buying out twenty seconds, and it escalates with repeated
+# use so it stays meaningful to a rich account. WindowSeconds is how long
+# before the price decays back to base -- without it the price would ratchet
+# upward forever and the feature would be dead after one bad afternoon.
+#
+# BaseCost is copper. 5000000 = 500 gold. With Multiplier 2.0 a second
+# buyout inside the window is 1000g and a third is 2000g.
+LivingGear.QuestBypass.BaseCost = 5000000
+LivingGear.QuestBypass.Multiplier = 2.0
+LivingGear.QuestBypass.WindowSeconds = 3600
+
+# Kill XP floor (bug report #11). Every kill is worth at least this percentage
+# of the killer's current level bar, so trash far below you still pays
+# something. 2% is 50 kills a level at every level; elites are worth double.
+#
+# Applies to creature kills through KillXpFor (LivingGear_Perks.cpp) and to
+# battleground honorable kills through SupportKillXp, so levelling in a
+# battleground is viable. Anything worth more than the floor keeps its own
+# value. Quest XP has its own separate floor above and is not affected.
+LivingGear.KillXpFloor.Enable = 1
+LivingGear.KillXpFloor.Pct = 2
+LivingGear.KillXpFloor.ElitePct = 4
+
+# Share a kill the engine paid nobody for with the whole party rather than
+# only whoever landed the killing blow. AzerothCore zeroes a grey kill for
+# every member of a group at once, so with this off a party -- or a party of
+# playerbots -- gets nothing at all from a scaled-up low-level zone.
+LivingGear.GroupKillXp = 1
+
+# Party XP (bug report #107). With NoLowLevelPenalty on, grouping with
+# lower-level players no longer cuts your kill XP (the engine's
+# level/sum-of-levels share factor is skipped; the group size rate still
+# applies). With EqualBonus on, every party member earns the highest
+# member's XP bonus (the leveling-perk multiplier from account max-level
+# alts), not just their own. Kill XP only -- quest XP is untouched.
+LivingGear.PartyXp.NoLowLevelPenalty = 1
+LivingGear.PartyXp.EqualBonus = 1
+
+# Quest items always drop (bug report #12). Covers loot entries flagged as quest
+# drops, and ordinary items that are an objective of a quest the looting player
+# is currently on. Players not on the quest see normal drop rates.
+LivingGear.QuestDropAlways = 1
+
+# Zone scaling inside dungeons (bug report #6). Scales UP only: a dungeon you
+# have outlevelled is brought up to you, one above your level is left alone.
+# Battlegrounds and arenas are never scaled.
+LivingGear.ZoneScale.Dungeons = 1
+
+# Learn every class ability your trainer would teach, free, on level up
+# (bug report #1).
+LivingGear.AutoTrainClassSpells = 1
+
+# Siege vehicle damage (bug reports #3 and #162). Every hit a siege vehicle
+# (or its rider) lands -- on destructible walls and towers, and on anything
+# else -- is multiplied by VehicleDamageMult on every map: Wintergrasp,
+# Strand of the Ancients, Isle of Conquest, the Ulduar vehicle fights. Flat
+# and permanent; SiegeScale = 0 turns the whole thing off.
+LivingGear.Wintergrasp.SiegeScale = 1
+LivingGear.Wintergrasp.VehicleDamageMult = 10.0
+
+# Daily and weekly quests are infinitely repeatable (bug report #164). A
+# daily or weekly can be accepted again the moment it is turned in -- no
+# reset wait, no hourly rotation boundary to sit through. Dailies are also
+# freed from the 25-per-day slot cap as each reward releases its slot.
+# = 0 restores the normal daily/weekly reset schedule.
+LivingGear.Quests.InfiniteDailyWeekly = 1
+
+# Playerbots fill Wintergrasp when real players are in the war (report #170).
+# A war real players are fighting gains bots on both sides -- PerRealPlayer x
+# the real players engaged on either side, capped by MaxPerSide -- teleporting
+# in at their faction home graveyard and joining through the normal war path.
+# A war with no real players in it stays bot-free.
+LivingGear.WGBots.Enable = 1
+LivingGear.WGBots.PerRealPlayer = 3
+LivingGear.WGBots.MaxPerSide = 15
+LivingGear.WGBots.SweepSeconds = 5
+
+
+# Perk tuning defaults (documented so fresh installs do not warn)
+LivingGear.Perks.SkillPointDivisor = 10
+LivingGear.Perks.RespecCooldown = 300
+LivingGear.Perks.CostEpoch = 1
+
+# Dungeon loot tuning (documented so fresh installs do not warn)
+LivingGear.DungeonLoot.UncommonMult = 4

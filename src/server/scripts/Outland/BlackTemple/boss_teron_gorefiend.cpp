@@ -217,7 +217,12 @@ class spell_teron_gorefiend_spirit_lance : public AuraScript
     void CalculateAmount(AuraEffect const* /*aurEff*/, int32& amount, bool& /*canBeRecalculated*/)
     {
         if (AuraEffect* effect = GetAura()->GetEffect(EFFECT_2))
-            amount -= (amount / effect->GetTotalTicks()) * effect->GetTickNumber();
+        {
+            // A permanent aura reports zero total ticks.
+            int32 const totalTicks = effect->GetTotalTicks();
+            if (totalTicks > 0)
+                amount -= (amount / totalTicks) * effect->GetTickNumber();
+        }
     }
 
     void Update(AuraEffect const*  /*effect*/)

@@ -247,7 +247,7 @@ namespace lfg
         return filtered;
     }
 
-    LFGDungeonData const* LFGMgr::GetLFGDungeon(uint32 id)
+    LFGDungeonData const* LFGMgr::GetLFGDungeon(uint32 id) const
     {
         LFGDungeonContainer::const_iterator itr = LfgDungeonStore.find(id);
         if (itr != LfgDungeonStore.end())
@@ -502,15 +502,32 @@ namespace lfg
                 lockData = LFG_LOCKSTATUS_RAID_LOCKED;
             else if (dungeon->difficulty > DUNGEON_DIFFICULTY_NORMAL && (!mapEntry || !mapEntry->IsRaid()) && sInstanceSaveMgr->PlayerIsPermBoundToInstance(player->GetGUID(), dungeon->map, Difficulty(dungeon->difficulty)))
                 lockData = LFG_LOCKSTATUS_RAID_LOCKED;
+            // Bonesaw: scale UP, not down.
+            //
+            // TOO_LOW_LEVEL is kept exactly as it was: a dungeon above your
+            // level is still listed (a locked dungeon is shown greyed out
+            // with its reason, not hidden) but cannot be queued for. Nothing
+            // scales content down to a player who is under it.
+            //
+            // TOO_HIGH_LEVEL is removed. Outlevelling a dungeon is not a
+            // reason to lock it -- zone scaling already re-bases open-world
+            // creatures and their rewards onto the player's own level, and
+            // the same reasoning applies to a dungeon a group deliberately
+            // chose to walk into. This is also what keeps a small queue
+            // usable: without it, every level bracket slices the handful of
+            // people online into pieces that never fill.
+            //
+            // Every other lock reason is untouched -- expansion, disabled
+            // dungeons, raid/instance binds, seasonal, the Death Knight
+            // starting quest, and all the item/quest/achievement/gear-score
+            // access requirements below still apply exactly as before.
             else if ((dungeon->minlevel > level && !sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE)) || (sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE) && ar && ar->levelMin > 0 && ar->levelMin > level))
                 lockData = LFG_LOCKSTATUS_TOO_LOW_LEVEL;
-            else if ((dungeon->maxlevel < level && !sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE)) || (sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE) && ar && ar->levelMax > 0 && ar->levelMax < level))
-                lockData = LFG_LOCKSTATUS_TOO_HIGH_LEVEL;
             else if (dungeon->seasonal && !IsSeasonActive(dungeon->id))
                 lockData = LFG_LOCKSTATUS_NOT_IN_SEASON;
             else if (player->IsClass(CLASS_DEATH_KNIGHT) && !player->IsGameMaster() &&!(player->IsQuestRewarded(13188) || player->IsQuestRewarded(13189)))
                 lockData = LFG_LOCKSTATUS_QUEST_NOT_COMPLETED;
-            else if (ar)
+            else if (ar && !(mapEntry && mapEntry->IsRaid()))
             {
                 // Check required items
                 for (ProgressionRequirement const* itemRequirement : ar->items)
@@ -656,12 +673,18 @@ namespace lfg
 
         // Check if all dungeons are valid
         bool isRaid = false;
+        bool hasRaidMap = false;
+        bool hasNonRaidMap = false;
         if (joinData.result == LFG_JOIN_OK)
         {
             bool isDungeon = false;
             for (LfgDungeonSet::const_iterator it = dungeons.begin(); it != dungeons.end() && joinData.result == LFG_JOIN_OK; ++it)
             {
                 LfgType type = GetDungeonType(*it);
+                if (IsRaidDungeon(*it))
+                    hasRaidMap = true;
+                else if (type == LFG_TYPE_DUNGEON || type == LFG_TYPE_HEROIC || type == LFG_TYPE_RANDOM)
+                    hasNonRaidMap = true;
                 switch (type)
                 {
                     case LFG_TYPE_RANDOM:
@@ -696,6 +719,8 @@ namespace lfg
                         break;
                 }
             }
+            if (joinData.result == LFG_JOIN_OK && hasRaidMap && hasNonRaidMap)
+                joinData.result = LFG_JOIN_MIXED_RAID_DUNGEON;
         }
 
         if (!isRaid && joinData.result == LFG_JOIN_OK)
@@ -709,7 +734,7 @@ namespace lfg
             {
                 joinData.result = LFG_JOIN_USING_BG_SYSTEM;
             }
-            else if (player->HasAura(LFG_SPELL_DUNGEON_DESERTER))
+            else if (player->HasAura(LFG_SPELL_DUNGEON_DESERTER) && !sScriptMgr->OnPlayerCanSoloQueue(player))
             {
                 joinData.result = LFG_JOIN_DESERTER;
             }
@@ -719,7 +744,8 @@ namespace lfg
             }
             else if (grp)
             {
-                if (grp->GetMembersCount() > MAXGROUPSIZE)
+                uint32 maxMembers = hasRaidMap ? MAXRAIDSIZE : MAXGROUPSIZE;
+                if (grp->GetMembersCount() > maxMembers)
                     joinData.result = LFG_JOIN_TOO_MUCH_MEMBERS;
                 else
                 {
@@ -755,7 +781,7 @@ namespace lfg
 
             // Xinef: Check dungeon cooldown only for random dungeons
             // Xinef: Moreover check this only if dungeon is not started, afterwards its obvious that players will have the cooldown
-            if (joinData.result == LFG_JOIN_OK && !isContinue && rDungeonId)
+            if (joinData.result == LFG_JOIN_OK && !isContinue && rDungeonId && !sScriptMgr->OnPlayerCanSoloQueue(player))
             {
                 if (player->HasAura(LFG_SPELL_DUNGEON_COOLDOWN)) // xinef: added !isContinue
                     joinData.result = LFG_JOIN_RANDOM_COOLDOWN;
@@ -1797,10 +1823,56 @@ namespace lfg
         if (!grp)
             return;
 
-        grp->SetDungeonDifficulty(Difficulty(dungeon->difficulty));
+        MapEntry const* mapEntry = sMapStore.LookupEntry(dungeon->map);
+        bool const raidMap = mapEntry && mapEntry->IsRaid();
+        bool soloQueue = false;
+        if (raidMap)
+        {
+            if (!grp->isRaidGroup())
+                grp->ConvertToRaid();
+            grp->SetRaidDifficulty(Difficulty(dungeon->difficulty));
+
+            for (GroupReference* itr = grp->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                if (Player* member = itr->GetSource())
+                {
+                    if (sScriptMgr->OnPlayerCanSoloQueue(member))
+                    {
+                        soloQueue = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!soloQueue)
+            {
+                uint32 maxPlayers = GetDungeonMaxPlayers(dungeon->id);
+                sScriptMgr->OnPlayerbotFillLfgRaid(grp, maxPlayers, dungeon->minlevel, dungeon->maxlevel);
+            }
+        }
+        else
+        {
+            grp->SetDungeonDifficulty(Difficulty(dungeon->difficulty));
+            if (grp->GetMembersCount() < MAXGROUPSIZE)
+            {
+                sScriptMgr->OnPlayerbotFillLfgDungeon(grp, MAXGROUPSIZE, dungeon->minlevel, dungeon->maxlevel);
+            }
+        }
         ObjectGuid gguid = grp->GetGUID();
         SetDungeon(gguid, dungeon->Entry());
         SetState(gguid, LFG_STATE_DUNGEON);
+
+        if (raidMap && !soloQueue)
+        {
+            for (GroupReference* itr = grp->GetFirstMember(); itr != nullptr; itr = itr->next())
+            {
+                if (Player* member = itr->GetSource())
+                {
+                    playersToTeleport.insert(member->GetGUID());
+                    SetupGroupMember(member->GetGUID(), gguid);
+                }
+            }
+        }
 
         _SaveToDB(gguid);
 
@@ -1847,16 +1919,18 @@ namespace lfg
                 if (player->GetGroup() != grp) // pussywizard: could not add because group was full
                     continue;
 
-                // Add the cooldown spell if queued for a random dungeon
-                // xinef: add aura
-                if ((randomDungeon || selectedRandomLfgDungeon(player->GetGUID())) && !player->HasAura(LFG_SPELL_DUNGEON_COOLDOWN))
+                // Bonesaw: the 15 minute Deserter-style cooldown for having
+                // COMPLETED a random dungeon is not applied. On a server this
+                // size the cooldown does nothing but stop the handful of
+                // people online from running another dungeon together, which
+                // is the opposite of what the finder is for. randomDungeon is
+                // still tracked because the teleport bookkeeping below reads
+                // it. The separate 150 second penalty for DECLINING a
+                // proposal is deliberately left in place -- that one exists to
+                // stop a player repeatedly collapsing other people's groups.
+                if (randomDungeon || selectedRandomLfgDungeon(player->GetGUID()))
                 {
                     randomDungeon = true;
-                    // if player is debugging, don't add dungeon cooldown
-                    if (!m_Testing)
-                    {
-                        player->AddAura(LFG_SPELL_DUNGEON_COOLDOWN, player);
-                    }
                 }
 
                 if (player->GetMapId() == uint32(dungeon->map))
@@ -2476,6 +2550,33 @@ namespace lfg
         return LfgType(dungeon->type);
     }
 
+    bool LFGMgr::IsRaidDungeon(uint32 dungeonId) const
+    {
+        LFGDungeonData const* dungeon = GetLFGDungeon(dungeonId);
+        if (!dungeon)
+            return false;
+
+        MapEntry const* mapEntry = sMapStore.LookupEntry(dungeon->map);
+        return mapEntry && mapEntry->IsRaid();
+    }
+
+    uint32 LFGMgr::GetDungeonMaxPlayers(uint32 dungeonId) const
+    {
+        LFGDungeonData const* dungeon = GetLFGDungeon(dungeonId);
+        if (!dungeon)
+            return MAXGROUPSIZE;
+
+        if (MapDifficulty const* mapDiff = GetMapDifficultyData(dungeon->map, dungeon->difficulty))
+            if (mapDiff->maxPlayers)
+                return mapDiff->maxPlayers;
+
+        if (MapEntry const* mapEntry = sMapStore.LookupEntry(dungeon->map))
+            if (mapEntry->maxPlayers)
+                return mapEntry->maxPlayers;
+
+        return MAXGROUPSIZE;
+    }
+
     LfgState LFGMgr::GetState(ObjectGuid guid)
     {
         LfgState state;
@@ -2949,8 +3050,14 @@ namespace lfg
         for (lfg::LFGDungeonContainer::const_iterator itr = LfgDungeonStore.begin(); itr != LfgDungeonStore.end(); ++itr)
         {
             lfg::LFGDungeonData const& dungeon = itr->second;
+            // Bonesaw: only the UPPER bound is dropped, so every tier of
+            // Random Dungeon the player has outlevelled stays on offer while
+            // tiers above them still do not appear. Same rule as the
+            // individual dungeons in InitializeLockedDungeons(): scale up,
+            // never down. Expansion is still enforced either way -- an
+            // account without the expansion genuinely cannot enter those maps.
             if ((dungeon.type == lfg::LFG_TYPE_RANDOM || (dungeon.seasonal && sLFGMgr->IsSeasonActive(dungeon.id)))
-                    && dungeon.expansion <= expansion && dungeon.minlevel <= level && level <= dungeon.maxlevel)
+                    && dungeon.expansion <= expansion && dungeon.minlevel <= level)
                 randomDungeons.insert(dungeon.Entry());
         }
         return randomDungeons;

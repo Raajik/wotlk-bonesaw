@@ -1,0 +1,36 @@
+Bots filled into an LFG group are re-attempted every 5 seconds until they
+reach the dungeon, instead of dying quietly with the group unfilled.
+
+Touches: modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.{h,cpp}
+         (new UpdateLfgFillTeleports, ProcessLfgFillTeleports deadline 600s)
+         modules/mod-playerbots/src/Script/Playerbots.cpp
+         (PlayerbotsScript::OnUpdate calls UpdateLfgFillTeleports)
+No tracked src/server/ files change -- no core diff in this record; it
+documents gitignored module edits.
+
+Why: report #165 / issue (fill-teleport follow-up to #149/#151) -- "playerbots
+still not teleporting into dungeons immediately via LFD, need to have it
+retry every 5 seconds until they're in party range of the character".
+
+Two stacked causes, one per fix:
+
+1. CADENCE. The retry pass (ProcessLfgFillTeleports, from 0041) ran from
+   RandomPlayerbotMgr::UpdateAIInternal, whose pass re-arms at
+   randomBotUpdateInterval * (onlineBotFocus + 25) * 10 ms -- 30-60s in the
+   live config. The old 10s deadline (later bumped to 90s in the working
+   tree, never built) usually saw ZERO or one attempt before expiry; live
+   evidence: 48 "LFG fill teleport expired" vs 13 delivered in five hours,
+   with the big fills (10/25-man) losing every bot. UpdateLfgFillTeleports
+   is now called from PlayerbotsScript::OnUpdate -- every world tick -- and
+   internally spaces attempts 5s apart (lfgFillTeleportRetryAt), exactly as
+   the report asks. The UpdateAIInternal call is gone; its comment explains
+   why it must not come back.
+
+2. WINDOW. The deadline is 600s. Entries drop on arrival (bot's map == the
+   group dungeon's map -- the entrance square MakeNewGroup put the party on,
+   i.e. "in party range"), on logout, or when the group stops being an LFG
+   group, so the list cannot leak; the deadline only bounds a bot that
+   genuinely cannot go for the whole window (dead and never revived,
+   endless combat). The guards still mirror LFGMgr::TeleportPlayer's
+   refusals: dead, combat, falling, mid-teleport, charmed, fatigued bots
+   are re-attempted on the next 5s pass, not dropped.

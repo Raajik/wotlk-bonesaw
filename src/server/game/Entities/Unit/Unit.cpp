@@ -2363,6 +2363,17 @@ void Unit::CalcAbsorbResist(DamageInfo& dmgInfo, bool Splited)
         while (r >= probabilitySum && i < 10)
             probabilitySum += discreteResistProbability[++i];
 
+        // Bonesaw: cap magic resistance at 80% and forbid full (100%) immunity.
+        if (i > 8)
+            i = 8;
+
+        // Bonesaw: a creature whose template says it is flat-out immune to
+        // this school resists 80% instead. Without this it would take FULL
+        // damage, since the immunity checks upstream now deliberately report
+        // "not immune" in order to get the hit this far.
+        if (victim->LivingGearSoftenedSchoolImmunity(schoolMask))
+            i = 8;
+
         float damageResisted = float(damage * i / 10);
 
         if (damageResisted) // if equal to 0, checking these is pointless
@@ -9845,6 +9856,95 @@ int32 Unit::SpellBaseHealingBonusDone(SpellSchoolMask schoolMask)
     return AdvertisedBenefit;
 }
 
+// Living Gear core-patch: config gate, LivingGear_Perks.cpp.
+bool LivingGear_SoftenCreatureImmunity();
+
+// Damage-over-time mechanics, as opposed to control mechanics. A creature
+// flagged immune to these is not protecting itself from being controlled, it
+// is protecting itself from being hurt in a particular flavour -- which is the
+// thing the realm has decided should not exist.
+//
+// Everything absent from this set stays enforced on purpose. Softening
+// MECHANIC_STUN or MECHANIC_FEAR would let a rogue kidney-shot a raid boss;
+// "nothing is immune to damage" is not the same request as "nothing is immune
+// to crowd control", and conflating them would quietly delete encounter
+// design across the whole game.
+static bool LivingGear_IsDamageMechanic(uint32 mechanic)
+{
+    switch (mechanic)
+    {
+        case MECHANIC_BLEED:     // Rend, Rupture, Garrote, Lacerate
+        case MECHANIC_INFECTED:  // disease damage-over-time
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool Unit::LivingGearSoftenedMechanicImmunity(uint32 mechanic) const
+{
+    static uint32 constexpr templateSpellId = std::numeric_limits<uint32>::max();
+
+    if (!mechanic || !IsCreature() || !LivingGear_IsDamageMechanic(mechanic))
+        return false;
+    if (!LivingGear_SoftenCreatureImmunity())
+        return false;
+
+    // Same template-versus-aura split as the school version: a scripted
+    // invulnerability phase is a real aura and keeps working. Only the flat
+    // "this creature type does not bleed" from creature_template is dropped.
+    bool fromTemplate = false;
+    for (auto const& [immunityMechanic, immunityAuraId] : m_spellImmune[IMMUNITY_MECHANIC])
+    {
+        if (immunityMechanic != mechanic)
+            continue;
+        if (immunityAuraId == templateSpellId)
+            fromTemplate = true;
+        else
+            return false;
+    }
+
+    return fromTemplate;
+}
+
+// Living Gear core-patch: "mobs that are outright immune to a damage school
+// should not exist -- they should just resist most of it instead."
+//
+// Scoped deliberately to immunity that came from creature_template. Creature::
+// LoadTemplateImmunities registers those under a sentinel spell id (uint32
+// max) precisely so template-sourced entries can be told apart from ones an
+// aura put there, and that distinction is what keeps this safe: a boss whose
+// script makes it invulnerable for a phase does so with a real spell, so its
+// immunity is left completely alone. Player immunities never reach here at
+// all (IsCreature() below).
+//
+// An aura-sourced immunity covering the same school also wins -- a template
+// Fire-immune mob that additionally gains a real Fire-immunity aura is still
+// genuinely immune for as long as that aura is up.
+bool Unit::LivingGearSoftenedSchoolImmunity(SpellSchoolMask schoolMask) const
+{
+    static uint32 constexpr templateSpellId = std::numeric_limits<uint32>::max();
+
+    if (schoolMask == SPELL_SCHOOL_MASK_NONE || !IsCreature())
+        return false;
+    if (!LivingGear_SoftenCreatureImmunity())
+        return false;
+
+    uint32 templateMask = 0;
+    uint32 auraMask = 0;
+    for (uint32 op : { uint32(IMMUNITY_SCHOOL), uint32(IMMUNITY_DAMAGE) })
+        for (auto const& [immunitySchoolMask, immunityAuraId] : m_spellImmune[op])
+        {
+            if (immunityAuraId == templateSpellId)
+                templateMask |= immunitySchoolMask;
+            else
+                auraMask |= immunitySchoolMask;
+        }
+
+    return Unit::IsImmuneMaskFully(SpellSchoolMask(templateMask), schoolMask)
+        && !Unit::IsImmuneMaskFully(SpellSchoolMask(auraMask), schoolMask);
+}
+
 uint32 Unit::GetDamageImmunityMask() const
 {
     uint32 mask = 0;
@@ -9897,6 +9997,12 @@ bool Unit::IsImmunedToDamage(SpellSchoolMask schoolMask) const
     if (schoolMask == SPELL_SCHOOL_MASK_NONE)
         return false;
 
+    // Bonesaw: creature_template immunity becomes an 80% resist, applied in
+    // CalcAbsorbResist. Reporting "not immune" here is what lets the damage
+    // reach that code path at all.
+    if (LivingGearSoftenedSchoolImmunity(schoolMask))
+        return false;
+
     // If m_immuneToSchool type contains all requested schools, IMMUNE damage.
     SpellImmuneContainer const& schoolList = m_spellImmune[IMMUNITY_SCHOOL];
     for (auto const& itr : schoolList)
@@ -9921,6 +10027,10 @@ bool Unit::IsImmunedToDamage(Unit const* caster, SpellInfo const* spellInfo) con
 
     SpellSchoolMask schoolMask = SpellSchoolMask(spellInfo->GetSchoolMask());
     if (schoolMask == SPELL_SCHOOL_MASK_NONE)
+        return false;
+
+    // Bonesaw: see LivingGearSoftenedSchoolImmunity.
+    if (LivingGearSoftenedSchoolImmunity(schoolMask))
         return false;
 
     auto hasImmunity = [&](SpellImmuneContainer const& container)
@@ -9956,6 +10066,10 @@ bool Unit::IsImmunedToDamage(Unit const* caster, SpellInfo const* spellInfo) con
 bool Unit::IsImmunedToSchool(SpellSchoolMask schoolMask) const
 {
     if (schoolMask == SPELL_SCHOOL_MASK_NONE)
+        return false;
+
+    // Bonesaw: see LivingGearSoftenedSchoolImmunity.
+    if (LivingGearSoftenedSchoolImmunity(schoolMask))
         return false;
 
     // Check IMMUNITY_SCHOOL: returns true if ALL schools in the mask are covered by at least one immunity
@@ -10048,7 +10162,7 @@ bool Unit::IsImmunedToSpell(SpellInfo const* spellInfo, Unit const* caster, Spel
     if (uint32 mechanic = spellInfo->Mechanic)
     {
         SpellImmuneContainer const& mechanicList = m_spellImmune[IMMUNITY_MECHANIC];
-        if (mechanicList.count(mechanic) > 0)
+        if (mechanicList.count(mechanic) > 0 && !LivingGearSoftenedMechanicImmunity(mechanic))
             return true;
     }
 
@@ -10123,7 +10237,7 @@ bool Unit::IsImmunedToSpellEffect(SpellInfo const* spellInfo, uint32 index, Unit
     if (uint32 mechanic = spellInfo->Effects[index].Mechanic)
     {
         auto const& mechanicList = m_spellImmune[IMMUNITY_MECHANIC];
-        if (mechanicList.count(mechanic) > 0)
+        if (mechanicList.count(mechanic) > 0 && !LivingGearSoftenedMechanicImmunity(mechanic))
             return true;
     }
 
@@ -11197,6 +11311,21 @@ void Unit::UpdateSpeed(UnitMoveType mtype, bool forced)
 
     // now we ready for speed calculation
     float speed = std::max(non_stack_bonus, stack_bonus);
+    if (IsPlayer() && (mtype == MOVE_RUN || mtype == MOVE_SWIM || mtype == MOVE_FLIGHT) && !IsMounted())
+    {
+        AuraType speedAura = SPELL_AURA_MOD_INCREASE_SPEED;
+        if (mtype == MOVE_SWIM)
+            speedAura = SPELL_AURA_MOD_INCREASE_SWIM_SPEED;
+        else if (mtype == MOVE_FLIGHT)
+            speedAura = SPELL_AURA_MOD_INCREASE_FLIGHT_SPEED;
+        int32 additive = 0;
+        Unit::AuraEffectList const& speedAuras = GetAuraEffectsByType(speedAura);
+        for (AuraEffect const* aurEff : speedAuras)
+            if (aurEff && aurEff->GetAmount() > 0)
+                additive += aurEff->GetAmount();
+        if (additive)
+            main_speed_mod = additive;
+    }
     if (main_speed_mod)
         AddPct(speed, main_speed_mod);
 
@@ -11266,6 +11395,12 @@ void Unit::UpdateSpeed(UnitMoveType mtype, bool forced)
     int32 slow = GetMaxNegativeAuraModifier(SPELL_AURA_MOD_DECREASE_SPEED);
     if (slow)
         AddPct(speed, slow);
+
+    if (IsPlayer() && (mtype == MOVE_RUN || mtype == MOVE_SWIM || mtype == MOVE_FLIGHT))
+    {
+        if (speed > 5.0f)
+            speed = 5.0f;
+    }
 
     if (float minSpeedMod = (float)GetMaxPositiveAuraModifier(SPELL_AURA_MOD_MINIMUM_SPEED))
     {
@@ -13232,13 +13367,14 @@ void Unit::AddComboPoints(Unit* target, int8 count)
     if (target && target != m_comboTarget)
     {
         if (m_comboTarget)
-        {
             m_comboTarget->RemoveComboPointHolder(this);
-        }
 
         m_comboTarget = target;
-        m_comboPoints = count;
         target->AddComboPointHolder(this);
+        if (HasGlobalComboPoints())
+            m_comboPoints = std::max<int8>(std::min<int8>(m_comboPoints + count, 5), 0);
+        else
+            m_comboPoints = count;
     }
     else
     {
@@ -13250,10 +13386,8 @@ void Unit::AddComboPoints(Unit* target, int8 count)
 
 void Unit::ClearComboPoints()
 {
-    if (!m_comboTarget)
-    {
+    if (!m_comboTarget && !m_comboPoints)
         return;
-    }
 
     // remove Premed-like effects
     // (NB: this Aura retains the CP while it's active - now that CP have reset, it shouldn't be there anymore)
@@ -13261,8 +13395,34 @@ void Unit::ClearComboPoints()
 
     m_comboPoints = 0;
     SendComboPoints();
+    if (m_comboTarget)
+    {
+        m_comboTarget->RemoveComboPointHolder(this);
+        m_comboTarget = nullptr;
+    }
+}
+
+void Unit::DetachComboTarget()
+{
+    if (!m_comboTarget)
+        return;
+
     m_comboTarget->RemoveComboPointHolder(this);
     m_comboTarget = nullptr;
+    SendComboPoints();
+}
+
+void Unit::RetargetComboPoints(Unit* target)
+{
+    if (!target || target == m_comboTarget || !m_comboPoints)
+        return;
+
+    if (m_comboTarget)
+        m_comboTarget->RemoveComboPointHolder(this);
+
+    m_comboTarget = target;
+    target->AddComboPointHolder(this);
+    SendComboPoints();
 }
 
 void Unit::SendComboPoints()
@@ -13307,7 +13467,11 @@ void Unit::ClearComboPointHolders()
 {
     while (!m_ComboPointHolders.empty())
     {
-        (*m_ComboPointHolders.begin())->ClearComboPoints(); // this also removes it from m_comboPointHolders
+        Unit* holder = *m_ComboPointHolders.begin();
+        if (holder->HasGlobalComboPoints() && holder->GetComboPoints())
+            holder->DetachComboTarget();
+        else
+            holder->ClearComboPoints();
     }
 }
 
@@ -14050,11 +14214,18 @@ void Unit::Kill(Unit* killer, Unit* victim, bool durabilityLoss, WeaponAttackTyp
             Loot* loot = &creature->loot;
             loot->clear();
 
-            if (uint32 lootid = creature->GetCreatureTemplate()->lootid)
-                loot->FillLoot(lootid, LootTemplates_Creature, looter, false, false, creature->GetLootMode(), creature);
+            if (group && group->GetLootMethod() == PERSONAL_LOOT && Group::IsPersonalLootBoss(creature))
+            {
+                group->PersonalLoot(creature, looter ? looter : player);
+            }
+            else
+            {
+                if (uint32 lootid = creature->GetCreatureTemplate()->lootid)
+                    loot->FillLoot(lootid, LootTemplates_Creature, looter, false, false, creature->GetLootMode(), creature);
 
-            if (creature->GetLootMode())
-                loot->generateMoneyLoot(creature->GetCreatureTemplate()->mingold, creature->GetCreatureTemplate()->maxgold);
+                if (creature->GetLootMode())
+                    loot->generateMoneyLoot(creature->GetCreatureTemplate()->mingold, creature->GetCreatureTemplate()->maxgold);
+            }
 
             if (group)
             {

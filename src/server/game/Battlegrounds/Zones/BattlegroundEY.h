@@ -50,6 +50,11 @@ enum BG_EY_ProgressBarConsts
     BG_EY_PROGRESS_BAR_ALI_CONTROLLED   = 100
 };
 
+// Capture speed 25x (GitHub #167): the data-driven capture points read their
+// speed from GO Data16 (rev_pvp_capture_25x.sql); Eye of the Storm's progress
+// bar is code-driven, so its per-tick bar delta is multiplied by this instead.
+uint32 const BG_EY_CAPTURE_SPEED_MULT = 25;
+
 enum BG_EY_Sounds
 {
     BG_EY_SOUND_FLAG_PICKED_UP_ALLIANCE = 8212,

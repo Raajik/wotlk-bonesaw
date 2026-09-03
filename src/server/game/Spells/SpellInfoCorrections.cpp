@@ -21,6 +21,8 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 
+#include <unordered_set>
+
 inline void ApplySpellFix(std::initializer_list<uint32> spellIds, void(*fix)(SpellInfo*))
 {
     for (uint32 spellId : spellIds)
@@ -3280,6 +3282,25 @@ void SpellMgr::LoadSpellInfoCorrections()
         spellInfo->AuraInterruptFlags |= AURA_INTERRUPT_FLAG_CHANGE_MAP;
     });
 
+    // Report #212: Putricide's trap gauntlet (the corridor between the
+    // Festergut and Rotface doors) casts Giant Insect Swarm, whose periodic
+    // damage wipes bot-filled raids because bots never heal through it.
+    // Keep the swarm's cosmetic/summon behavior; gut only its damage so the
+    // gauntlet is survivable (ticks drop to effectively zero).
+    ApplySpellFix({ 70475 }, [](SpellInfo* spellInfo)
+    {
+        for (uint8 i = 0; i < 3; ++i)
+        {
+            if (spellInfo->Effects[i].IsEffect(SPELL_EFFECT_SCHOOL_DAMAGE) ||
+                spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                spellInfo->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE_PERCENT)
+            {
+                spellInfo->Effects[i].BasePoints = 0;
+                spellInfo->Effects[i].DieSides = 0;
+            }
+        }
+    });
+
     // Leap to a Random Location
     ApplySpellFix({ 70485 }, [](SpellInfo* spellInfo)
     {
@@ -5335,6 +5356,27 @@ void SpellMgr::LoadSpellInfoCorrections()
             else if (areaEntry->ID == 2102)
                 areaEntry->flags |= AREA_FLAG_REST_ZONE_ALLIANCE;
         }
+
+    // Bug #199: flying mounts rejected in Dalaran with "You can't use that here".
+    // The 0.1.111 fix dropped the Flightless (58600) spell_area rows, but the
+    // AreaTable rows for Dalaran City and its sub-areas still carry
+    // AREA_FLAG_NO_FLY_ZONE, which Spell::CheckCast checks directly for mount
+    // Clear it for the Dalaran area tree: start with Dalaran City itself, then
+    // repeatedly add every sub-area whose parent is already in the set.
+    {
+        std::unordered_set<uint32> dalaranAreas = {4395};
+        for (uint32 pass = 0; pass < 4; ++pass)
+            for (uint32 i = 0; i < sAreaTableStore.GetNumRows(); ++i)
+                if (AreaTableEntry* areaEntry = const_cast<AreaTableEntry*>(sAreaTableStore.LookupEntry(i)))
+                    // Dalaran City (4395) is a top-level zone, so its own
+                    // parent id is 0 -- it must be cleared explicitly or the
+                    // streets themselves still reject mount casts (report #218).
+                    if (areaEntry->mapid == 571 && (areaEntry->ID == 4395 || dalaranAreas.count(areaEntry->zone)))
+                    {
+                        areaEntry->flags &= ~AREA_FLAG_NO_FLY_ZONE;
+                        dalaranAreas.insert(areaEntry->ID);
+                    }
+    }
 
     // Xinef: fix for something?
     SummonPropertiesEntry* properties = const_cast<SummonPropertiesEntry*>(sSummonPropertiesStore.LookupEntry(121));

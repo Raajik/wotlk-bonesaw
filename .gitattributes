@@ -1,30 +1,10 @@
-# Auto detect text files and perform LF normalization
-* text eol=lf
-
-# Whitespace rules
-# strict (no trailing, no tabs)
-*.cpp    whitespace=trailing-space,space-before-tab,tab-in-indent,cr-at-eol
-*.h      whitespace=trailing-space,space-before-tab,tab-in-indent,cr-at-eol
-
-# normal (no trailing)
-*.sql    whitespace=trailing-space,space-before-tab,cr-at-eol
-*.txt    whitespace=trailing-space,space-before-tab,cr-at-eol
-
-# special files which must ignore whitespace
-*.patch  whitespace=-trailing-space eol=lf
-*.diff   whitespace=-trailing-space eol=lf
-
-# Standard to msysgit
-*.doc    diff=astextplain
-*.DOC    diff=astextplain
-*.docx   diff=astextplain
-*.DOCX   diff=astextplain
-*.dot    diff=astextplain
-*.DOT    diff=astextplain
-*.pdf    diff=astextplain
-*.PDF    diff=astextplain
-*.rtf    diff=astextplain
-*.RTF    diff=astextplain
-
-# Ignore sql/* files
-data/sql/*    linguist-documentation
+# Every tracked file in this repo is text, and every blob is already stored
+# with LF. What was drifting was the working tree: core.autocrlf=true rewrites
+# files to CRLF on checkout, while any file a tool or editor rewrites stays
+# LF. The result was a 50/50 mix on disk -- LivingGear_Perks.cpp sat as the
+# only CRLF file in a directory of LF files, which quietly breaks exact-text
+# tooling (patch application, generated diffs, anything matching across
+# files) for no visible reason.
+#
+# This pins the working tree to LF too, so checkout stops undoing it.
+* text=auto eol=lf

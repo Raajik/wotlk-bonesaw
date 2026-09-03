@@ -1379,7 +1379,7 @@ void OpcodeTable::Initialize()
     /*0x4E0*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_BATTLEFIELD_MGR_ENTERED,                            STATUS_NEVER);
     /*0x4E1*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_BATTLEFIELD_MGR_QUEUE_INVITE,                       STATUS_NEVER);
     /*0x4E2*/ DEFINE_HANDLER(CMSG_BATTLEFIELD_MGR_QUEUE_INVITE_RESPONSE,                            STATUS_LOGGEDIN,   PROCESS_THREADUNSAFE,   &WorldSession::HandleBfQueueInviteResponse              );
-    /*0x4E3*/ DEFINE_HANDLER(CMSG_BATTLEFIELD_MGR_QUEUE_REQUEST,                                    STATUS_NEVER,      PROCESS_INPLACE,        &WorldSession::Handle_NULL                              );
+    /*0x4E3*/ DEFINE_HANDLER(CMSG_BATTLEFIELD_MGR_QUEUE_REQUEST,                                    STATUS_LOGGEDIN,   PROCESS_THREADUNSAFE,   &WorldSession::HandleBfQueueRequest                     );
     /*0x4E4*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_BATTLEFIELD_MGR_QUEUE_REQUEST_RESPONSE,             STATUS_NEVER);
     /*0x4E5*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_BATTLEFIELD_MGR_EJECT_PENDING,                      STATUS_NEVER);
     /*0x4E6*/ DEFINE_SERVER_OPCODE_HANDLER(SMSG_BATTLEFIELD_MGR_EJECTED,                            STATUS_NEVER);

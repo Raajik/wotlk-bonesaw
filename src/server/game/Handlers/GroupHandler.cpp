@@ -529,7 +529,7 @@ void WorldSession::HandleLootMethodOpcode(WorldPacket& recvData)
     if (!group->IsLeader(GetPlayer()->GetGUID()) || group->isLFGGroup(true))
         return;
 
-    if (lootMethod > NEED_BEFORE_GREED)
+    if (lootMethod > PERSONAL_LOOT)
         return;
 
     if (lootThreshold < ITEM_QUALITY_UNCOMMON || lootThreshold > ITEM_QUALITY_ARTIFACT)

@@ -64,7 +64,7 @@ ARG CCACHE_LOGFILE=""
 
 RUN apt-get update                                                     \
     && apt-get install -y --no-install-recommends                         \
-        build-essential ccache libtool cmake-data ninja-build cmake clang    \
+        build-essential ccache libtool cmake-data make cmake clang    \
         git lsb-base curl unzip default-mysql-client openssl                  \
         default-libmysqlclient-dev libboost-all-dev libssl-dev libmysql++-dev \
         libreadline-dev zlib1g-dev libbz2-dev libncurses5-dev liblzma-dev  \
@@ -75,6 +75,13 @@ COPY conf /azerothcore/conf
 COPY deps /azerothcore/deps
 COPY src /azerothcore/src
 COPY modules /azerothcore/modules
+# modules/mod-living-gear/src/*.cpp is the single source of truth (git-tracked).
+# Do NOT re-add an archive/*-override here: a prior version of this Dockerfile
+# silently discarded any edits to LivingGear.cpp/_loader/_Next/_Gather by
+# overwriting them from frozen archive/living-gear-backups/*.stub-compile-target
+# copies on every build, which is how ~10,000 lines of perk logic went missing
+# without anyone noticing for days. If a stub is ever needed again, edit the
+# real file in modules/ directly.
 
 ARG CACHEBUST=1
 
@@ -89,7 +96,6 @@ RUN --mount=type=cache,target=/ccache,sharing=locked \
     --mount=type=bind,target=/azerothcore/.git,source=.git \
     git config --global --add safe.directory /azerothcore \
     && cmake /azerothcore \
-       -G Ninja \
        -DCMAKE_INSTALL_PREFIX="/azerothcore/env/dist"  \
        -DAPPS_BUILD="all"                              \
        -DTOOLS_BUILD="$CTOOLS_BUILD"                   \
@@ -183,6 +189,18 @@ ENV AC_UPDATES_ENABLE_DATABASES=0
 ENV AC_DISABLE_INTERACTIVE=1
 ENV AC_CLOSE_IDLE_CONNECTIONS=0
 
+# AC_UPDATES_ENABLE_DATABASES=0 above only silences the CORE updater. Module
+# updaters have their own switches -- playerbots.conf has
+# Playerbots.Updates.EnableDatabases -- and when one is on, worldserver resolves
+# its SQL against /azerothcore/modules at runtime. Without these sources the
+# image only has the empty dir made in the skeleton stage, so the updater aborts
+# with "the given source directory does not exist" and restart: unless-stopped
+# turns that into a crash loop. A long-running container hides it completely; it
+# only surfaces on the next `docker compose down` + `up`, which is how it cost an
+# outage during unrelated disk maintenance on 2026-09-01.
+COPY --chown=$DOCKER_USER:$DOCKER_USER \
+    modules modules
+
 COPY --chown=$DOCKER_USER:$DOCKER_USER \
      --from=build \
      /azerothcore/env/dist/bin/worldserver /azerothcore/env/dist/bin/worldserver
@@ -226,20 +244,8 @@ LABEL description="AzerothCore client-data"
 ENV DATAPATH=/azerothcore/env/dist/data
 
 RUN apt-get update && \
-    apt-get install -y curl unzip adduser && \
+    apt-get install -y curl unzip && \
     rm -rf /var/lib/apt/lists/*
-
-ARG USER_ID=1000
-ARG GROUP_ID=1000
-ARG DOCKER_USER=acore
-
-# To use GID/UID 1000 in ubuntu > 23.04 the existing user must be deleted
-# See https://bugs.launchpad.net/cloud-images/+bug/2005129
-RUN userdel --remove ubuntu \
-  && addgroup --gid "$GROUP_ID" "$DOCKER_USER" \
-  && adduser --disabled-password --gecos '' --uid "$USER_ID" --gid "$GROUP_ID" "$DOCKER_USER" \
-  && passwd -d "$DOCKER_USER" \
-  && chown -R "$DOCKER_USER:$DOCKER_USER" /azerothcore
 
 COPY --chown=$DOCKER_USER:$DOCKER_USER apps apps
 

@@ -1,0 +1,18 @@
+[Unit]
+Description=ydotool daemon (keyboard injection for the Bonesaw launcher)
+Documentation=man:ydotoold(8)
+
+[Service]
+Type=simple
+Restart=always
+# Keyboard only, and the control socket is owned by the desktop user, so the
+# daemon runs as root but only that user can inject input. Replace 1000:1000
+# with your own `id -u`:`id -g` if it differs.
+#
+# Deliberately NOT the usual "add yourself to the input group" advice: that
+# grants read access to every input device on the machine, which is a
+# keylogging surface. This grants injection through one 0600 socket instead.
+ExecStart=/usr/bin/ydotoold --socket-path=/run/ydotoold.socket --socket-own=1000:1000 --socket-perm=0600 --mouse-off
+
+[Install]
+WantedBy=multi-user.target

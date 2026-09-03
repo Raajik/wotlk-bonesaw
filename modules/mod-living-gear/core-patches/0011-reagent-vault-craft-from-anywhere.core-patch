@@ -1,0 +1,35 @@
+Let reagents/tools auto-banked into the account-wide vault still count
+as "in your backpack" when crafting, instead of needing a manual
+withdraw first.
+Touches: src/server/game/Spells/Spell.cpp, Spell::CheckCast()
+
+Why: reagents and profession tools now auto-bank into the account vault
+(ACT_REAGENT_VAULT, LivingGear_Vault.cpp), which is exactly what "reagent
+bank should also include tool items... consider them as contained in your
+backpack so you can craft wherever you want" asked for -- but the vault
+itself is just DB-backed bookkeeping with zero connection to the real
+crafting system. Without this patch, the engine's own reagent check
+(player->HasItemCount(itemid, itemcount, true)) only ever sees the
+player's actual bags, so anything banked became invisible to crafting --
+profession windows showed the reagent as known/available (client-side
+count comes from a different source) but casting the actual craft spell
+failed with SPELL_FAILED_REAGENTS every time.
+
+--- a/src/server/game/Spells/Spell.cpp
++++ b/src/server/game/Spells/Spell.cpp
+@@ (near the top, alongside the existing Living Gear forward-declares)
+ bool LivingGear_BypassStealthRequirement(Unit* caster);
++void LivingGear_TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed);
+
+@@ Spell::CheckCast(bool strict) -- inside the MAX_SPELL_REAGENTS loop
+-                if (!player->HasItemCount(itemid, itemcount, true))
++                LivingGear_TopUpReagentFromVault(player, itemid, itemcount);
++                if (!player->HasItemCount(itemid, itemcount, true))
+                     return SPELL_FAILED_REAGENTS;
+
+LivingGear_TopUpReagentFromVault (LivingGear_Vault.cpp) checks the
+player's current bag count against what's needed; if short, withdraws
+just the shortfall from the account-wide reagent vault into the bag
+(putting it back if the bag turns out to be full) -- the engine's own
+HasItemCount check right after then passes normally, and normal
+consumption/inventory logic handles the rest completely unmodified.

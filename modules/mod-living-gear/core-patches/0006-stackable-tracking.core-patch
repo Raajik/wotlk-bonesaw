@@ -1,0 +1,27 @@
+Let multiple minimap tracking types be active at once (Find Minerals + Find
+Herbs simultaneously, etc.), instead of applying one cancelling the other.
+Touches: src/server/game/Spells/SpellInfo.cpp, SpellInfo::IsAuraExclusiveBySpecificWith()
+
+Why: WotLK's native minimap tracking can only show one type at a time
+purely because of this one switch case -- SPELL_SPECIFIC_TRACKER is listed
+as "exclusive with itself," so Aura::CanStackWith (SpellAuras.cpp) refuses
+to let a second tracking aura coexist with an existing one, regardless of
+which specific resource/creature type each tracks. The client-facing data
+model this maps to (PLAYER_TRACK_RESOURCES / PLAYER_TRACK_CREATURES,
+AuraEffect::HandleAuraTrackResources/HandleAuraTrackCreatures in
+SpellAuraEffects.cpp) already stores tracking state as individual bits
+(SetFlag(field, 1 << (MiscValue-1))) -- i.e. it already natively supports
+multiple simultaneous tracking types; only this exclusivity check was
+stopping more than one from ever being applied. Player wanted Track Ore
+and Track Herbs (Living Gear perks) to both show at once, alongside
+whatever native tracking (Track Humanoids, etc.) they also have active --
+this restores that instead of building a custom minimap-icon system.
+
+--- a/src/server/game/Spells/SpellInfo.cpp
++++ b/src/server/game/Spells/SpellInfo.cpp
+@@ SpellInfo::IsAuraExclusiveBySpecificWith(SpellInfo const* spellInfo)
+     switch (spellSpec1)
+     {
+-        case SPELL_SPECIFIC_TRACKER:
+         case SPELL_SPECIFIC_WARLOCK_ARMOR:
+         case SPELL_SPECIFIC_MAGE_ARMOR:

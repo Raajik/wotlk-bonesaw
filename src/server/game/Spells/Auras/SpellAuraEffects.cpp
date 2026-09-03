@@ -647,8 +647,16 @@ void AuraEffect::CalculatePeriodic(Unit* caster, bool create, bool load)
 
         if (caster)
         {
-            if (caster->HasAuraTypeWithAffectMask(SPELL_AURA_PERIODIC_HASTE, m_spellInfo) || m_spellInfo->HasAttribute(SPELL_ATTR5_SPELL_HASTE_AFFECTS_PERIODIC))
-                m_amplitude = int32(m_amplitude * caster->GetFloatValue(UNIT_MOD_CAST_SPEED));
+            // Bonesaw (core-patch 0027): haste scales EVERY periodic's tick
+            // interval, not just spells tagged
+            // SPELL_ATTR5_SPELL_HASTE_AFFECTS_PERIODIC. UNIT_MOD_CAST_SPEED is
+            // the caster's spell haste (<1 = faster). Because totalTicks is
+            // derived as MaxDuration/amplitude, shrinking the amplitude gives
+            // MORE ticks within the SAME duration -- DoTs/HoTs land faster and
+            // deal/heal more over an unchanged window, instead of just
+            // finishing early. Matches the "haste helps everything" feel of
+            // the Living Gear server.
+            m_amplitude = int32(m_amplitude * caster->GetFloatValue(UNIT_MOD_CAST_SPEED));
         }
     }
 

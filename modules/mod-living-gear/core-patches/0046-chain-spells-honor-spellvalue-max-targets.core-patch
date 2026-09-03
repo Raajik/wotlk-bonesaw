@@ -1,0 +1,22 @@
+Report #166 (shaman Elemental: Chain Lightning "doesn't work at all,
+unusable"): two stacked causes, both fixed.
+
+1. Data: the DBC's ChainTarget field is 0 on ranks 49238/49239/49240
+   (the per-level ranks between rank 1's 421 [3] and the WotLK-end
+   49271 [3]). Spell::SelectImplicitChainTargets reads that field and
+   skips chain selection entirely when maxTargets <= 1, so the spell hit
+   exactly one target for anyone who learned those ranks. Fixed by
+   rev_chain_lightning_chaintarget.sql (pending_db_world) restoring
+   EffectChainTargets_2 = 3.
+
+2. Core: SPELLVALUE_MAX_TARGETS was honored only by
+   SelectImplicitAreaTargets, so the module's Elemental-perk raise
+   (SetSpellValue(SPELLVALUE_MAX_TARGETS, 99) in
+   ApplyShamanElementalChainLightningTargets, ClassPerks.cpp:2508) was
+   silently ignored for chain spells. SelectImplicitChainTargets now
+   lets an explicit spell value win over the DBC ChainTarget, keeping
+   SPELLMOD_JUMP_TARGETS as the fallback when no value is set.
+
+Both halves are needed: the migration fixes every shaman (and any other
+class whose learned chain ranks carry the broken 0), the core change
+makes the perk's 99-target reach actually take effect.

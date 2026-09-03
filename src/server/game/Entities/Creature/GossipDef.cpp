@@ -533,7 +533,10 @@ void PlayerMenu::SendQuestQueryResponse(Quest const* quest) const
 
     data << uint32(quest->GetQuestId());                    // quest id
     data << uint32(quest->GetQuestMethod());                // Accepted values: 0, 1 or 2. 0 == IsAutoComplete() (skip objectives/details)
-    data << uint32(quest->GetQuestLevel());                 // may be -1, static data, in other cases must be used dynamic level: Player::GetQuestLevel (0 is not known, but assuming this is no longer valid for quest intended for client)
+    int32 queryQuestLevel = quest->GetQuestLevel();
+    if (Player* player = _session->GetPlayer())
+        sScriptMgr->OnPlayerBeforeQuestQueryResponse(player, quest, queryQuestLevel);
+    data << uint32(queryQuestLevel);                        // may be -1, static data, in other cases must be used dynamic level: Player::GetQuestLevel (0 is not known, but assuming this is no longer valid for quest intended for client)
     data << uint32(quest->GetMinLevel());                   // min level
     data << uint32(quest->GetZoneOrSort());                 // zone or sort to display in quest log
 
@@ -764,27 +767,23 @@ void PlayerMenu::SendQuestGiverRequestItems(Quest const* quest, ObjectGuid npcGU
     if (QuestRequestItemsLocale const* questRequestItemsLocale = sObjectMgr->GetQuestRequestItemsLocale(quest->GetQuestId()))
         ObjectMgr::GetLocaleString(questRequestItemsLocale->CompletionText, locale, requestItemsText);
 
-    if (!quest->GetReqItemsCount() && canComplete)
+    // Recheck stored objective progress (kills / talks / items credited while
+    // the quest is in the log). Do not copy live bag/bank/vault stacks into
+    // ItemCount here: that marked newly accepted quests complete.
+    Player* _player = _session->GetPlayer();
+    if (_player->GetQuestStatus(quest->GetQuestId()) == QUEST_STATUS_INCOMPLETE
+        && _player->CanCompleteQuest(quest->GetQuestId()))
+    {
+        _player->CompleteQuest(quest->GetQuestId());
+        canComplete = true;
+    }
+
+    // Vaulted quest items never sit in bags. The 3.3.5 progress frame only
+    // counts inventory, so skip it once the server has really completed the quest.
+    if (canComplete || _player->GetQuestStatus(quest->GetQuestId()) == QUEST_STATUS_COMPLETE)
     {
         SendQuestGiverOfferReward(quest, npcGUID, true);
         return;
-    }
-
-    // Xinef: recheck completion on reward display
-    Player* _player = _session->GetPlayer();
-    QuestStatusMap::iterator qsitr = _player->getQuestStatusMap().find(quest->GetQuestId());
-    if (qsitr != _player->getQuestStatusMap().end() && qsitr->second.Status == QUEST_STATUS_INCOMPLETE)
-    {
-        for (uint8 i = 0; i < 6; ++i)
-            if (quest->RequiredItemId[i] && qsitr->second.ItemCount[i] < quest->RequiredItemCount[i])
-                if (_player->GetItemCount(quest->RequiredItemId[i], false) >= quest->RequiredItemCount[i])
-                    qsitr->second.ItemCount[i] = quest->RequiredItemCount[i];
-
-        if (_player->CanCompleteQuest(quest->GetQuestId()))
-        {
-            _player->CompleteQuest(quest->GetQuestId());
-            canComplete = true;
-        }
     }
 
     WorldPacket data(SMSG_QUESTGIVER_REQUEST_ITEMS, 300);   // guess size

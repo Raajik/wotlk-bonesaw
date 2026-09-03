@@ -1,0 +1,48 @@
+Bots filled into an LFG dungeon group reach the dungeon and the group keeps
+1 tank / 1 healer / 3 dps (supersedes the per-add teleport in 0037).
+
+Touches: modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.{h,cpp}
+         (FillLfgRaidGroup, new ProcessLfgFillTeleports, RespecBotForRole log)
+No tracked src/server/ files change -- no core diff in this record; it documents
+gitignored module edits.
+
+Why: report #151 / issue #149 (post-ship 0.1.104) -- "playerbots still not being
+summoned on joining a LFD group, nor are we getting 1 tank, 1 healer, 3 dps
+(seems to be 1 tank/healer and 4 dps usually)".
+
+Summon gap root cause: 0037's per-add teleport read the destination from the
+LEADER's selected dungeons (LFGMgr::GetSelectedDungeons). A random-queue group
+(the common case) stores the RANDOM entry there (e.g. 258 Random Classic), and
+random entries never get entrance coords: LFGMgr::LoadLFGDungeons fills coords
+for every type EXCEPT LFG_TYPE_RANDOM (LFGMgr.cpp ~325) and lfg_dungeon_template
+has no rows for 258/259/260 -- so the fill teleported bots to (0, 0, 0) on
+map 0. The PROPOSAL dungeon, by contrast, is always a specific dungeon (the
+queue expands random selections via GetDungeonsByRandom, LFGQueue.cpp ~481), so
+the real player teleported fine and the bots did not.
+
+Fix: the per-add teleport is replaced by a deferred pass. FillLfgRaidGroup
+enqueues each added bot; ProcessLfgFillTeleports (called from UpdateAIInternal
+every pass) re-reads the group's OWN dungeon id, which MakeNewGroup writes
+(LFGMgr.cpp:1862, right after the fill hook returns) and which is the specific
+proposal dungeon even for random queues. Guards mirror LFGMgr::TeleportPlayer's
+refusals (dead, combat, falling, fatigue, charm, mid-teleport) but RETRY each
+pass until a 10s deadline instead of dropping the bot with a client-side error
+the bot never sees. A bot MakeNewGroup already teleported (raid fills) is left
+alone.
+
+Role gap root cause: the fill's fallback path added any idle bot when no tank/
+healer-shaped bot existed in the level band, silently padding groups with dps.
+Fix: the fallback now prefers a class that CAN play the wanted role
+(ClassCanFillRole) and respeccs it via the existing RespecBotForRole (talents
++ gear, verified against the resulting talent tab) before being added.
+
+Diagnostics: the fill instrumentation previously logged on the "playerbots"
+category, which is NOT configured in live worldserver.conf (Logger.root=2) --
+no "Filled LFG raid group" / "Respecced bot" line could EVER appear in
+Server.log, which is why #151 arrived with zero log evidence. All fill lines
+now use "module.playerbots.lfg", which inherits the live Logger.module=4:
+  - "LFG fill: added {} bot(s) to a group of {}/{} ({} tank, {} healer, {} dps;
+    wanted {}/{} tank/healer)"
+  - "LFG fill: teleported bot {} to dungeon {}"
+  - "LFG fill: respecced bot {} to '{}' to cover a wanted role"
+  - WARN "LFG fill teleport expired: bot {} never reached the dungeon"

@@ -1,0 +1,32 @@
+Make Lockpicking account-wide, matching how Riding already works.
+Touches: src/server/game/Spells/Spell.cpp, Spell::CanOpenLock()
+
+Why: player request -- an alt with 0 Lockpicking should be able to open
+anything a higher-Lockpicking character on the same account could, the
+same way Riding is already account-wide in this module. The native
+LOCK_KEY_SKILL check in CanOpenLock() only ever reads the casting
+character's own GetSkillValue(skillId); this patch swaps that read for an
+account-wide max (LivingGear_AccountLockpickSkill(), defined in
+modules/mod-living-gear/src/LivingGear_Gather.cpp, reusing the same
+AccountSkill() query already proven for gathering professions) but only
+when skillId == SKILL_LOCKPICKING specifically -- every other
+LOCK_KEY_SKILL type (Herbalism/Mining/Blasting/Disarm Trap/Inscription)
+keeps the normal per-character check, since those gathering locks are
+already handled entirely by Living Gear's own scan-based auto-gather
+system and never need this path to begin with.
+
+--- a/src/server/game/Spells/Spell.cpp
++++ b/src/server/game/Spells/Spell.cpp
+@@ near the top, after the #include block
+ #include <cmath>
+
++// Living Gear core-patch: makes Lockpicking account-wide (LivingGear_Gather.cpp).
++uint32 LivingGear_AccountLockpickSkill(Player* player);
++
+@@ Spell::CanOpenLock(uint32 effIndex, uint32 lockId, SkillType& skillId, int32& reqSkillValue, int32& skillValue)
+                         // castitem check: rogue using skeleton keys. the skill values should not be added in this case.
+-                        skillValue = m_CastItem || !m_caster->IsPlayer() ?
+-                                     0 : m_caster->ToPlayer()->GetSkillValue(skillId);
++                        skillValue = m_CastItem || !m_caster->IsPlayer() ? 0 :
++                                     skillId == SKILL_LOCKPICKING ? int32(LivingGear_AccountLockpickSkill(m_caster->ToPlayer())) :
++                                     m_caster->ToPlayer()->GetSkillValue(skillId);

@@ -1011,15 +1011,31 @@ public:
     [[nodiscard]] uint32 GetLastExtraAttackSpell() const { return _lastExtraAttackSpell; }
     void AddExtraAttacks(uint32 count);
 
-    // Combot points system
-    [[nodiscard]] uint8 GetComboPoints(Unit const* who = nullptr) const { return (who && m_comboTarget != who) ? 0 : m_comboPoints; }
-    [[nodiscard]] uint8 GetComboPoints(ObjectGuid const& guid) const { return (m_comboTarget && m_comboTarget->GetGUID() == guid) ? m_comboPoints : 0; }
+    // Combo points system
+    [[nodiscard]] bool HasGlobalComboPoints() const
+    {
+        return IsPlayer() && (getClass() == CLASS_ROGUE || getClass() == CLASS_DRUID);
+    }
+    [[nodiscard]] uint8 GetComboPoints(Unit const* who = nullptr) const
+    {
+        if (who && m_comboTarget != who && !HasGlobalComboPoints())
+            return 0;
+        return m_comboPoints;
+    }
+    [[nodiscard]] uint8 GetComboPoints(ObjectGuid const& guid) const
+    {
+        if (guid && (!m_comboTarget || m_comboTarget->GetGUID() != guid) && !HasGlobalComboPoints())
+            return 0;
+        return m_comboPoints;
+    }
     [[nodiscard]] Unit* GetComboTarget() const { return m_comboTarget; }
     [[nodiscard]] ObjectGuid const GetComboTargetGUID() const { return m_comboTarget ? m_comboTarget->GetGUID() : ObjectGuid::Empty; }
 
     void AddComboPoints(Unit* target, int8 count);
     void AddComboPoints(int8 count) { AddComboPoints(nullptr, count); }
     void ClearComboPoints();
+    void DetachComboTarget();
+    void RetargetComboPoints(Unit* target);
 
     void AddComboPointHolder(Unit* unit) { m_ComboPointHolders.insert(unit); }
     void RemoveComboPointHolder(Unit* unit) { m_ComboPointHolders.erase(unit); }
@@ -1651,6 +1667,16 @@ public:
 
     [[nodiscard]] uint32 GetSchoolImmunityMask() const;
     [[nodiscard]] uint32 GetDamageImmunityMask() const;
+
+    // Living Gear core-patch: true "this school cannot hurt me at all"
+    // invulnerability coming from creature_template is downgraded to an 80%
+    // resist. Template-sourced immunity only -- see the implementation.
+    [[nodiscard]] bool LivingGearSoftenedSchoolImmunity(SpellSchoolMask schoolMask) const;
+
+    // Living Gear core-patch: the same treatment for damage-dealing MECHANIC
+    // immunity, which is what actually makes a creature bleed-proof. Control
+    // mechanics (stun, fear, root) are deliberately not covered.
+    [[nodiscard]] bool LivingGearSoftenedMechanicImmunity(uint32 mechanic) const;
 
     [[nodiscard]] bool IsImmunedToDamageOrSchool(SpellSchoolMask schoolMask) const;
     [[nodiscard]] bool IsImmunedToAuraPeriodicTick(Unit const* caster, SpellInfo const* spellInfo) const;

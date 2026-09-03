@@ -1,0 +1,22 @@
+An addclass bot never opens a trade on its own either.
+Touches: modules/mod-playerbots/src/Ai/Base/Actions/TradeAction.cpp,
+TradeAction::Execute(); and
+modules/mod-playerbots/src/Ai/World/Rpg/Action/RpgSubActions.cpp,
+RpgTradeUsefulAction::Execute()
+
+Why: report #118 (recurring after #92/#93). The 0024 gate covered only
+IsRandomBot, but the addclass bot family (alt companions) routes through the
+same RpgTradeUsefulTrigger -> TradeAction path, and IsAddclassBot passed
+straight through it. A companion bot with no master could still open trades
+at nearby real players.
+
+Two sites:
+- TradeAction keeps its position as the enforcement point (every path into
+  CMSG_INITIATE_TRADE goes through it); the gate now refuses both bot kinds.
+- RpgTradeUsefulAction returns early before doing any work, so the trigger
+  stops selecting an action that can only end in a refusal -- without this
+  the AI re-evaluates the same refusal every tick for as long as the
+  trigger's friendship roll passes.
+
+Trades the player opens are untouched: TradeStatusAction already handled
+completion for both bot kinds, and neither gate reaches it.

@@ -1,0 +1,64 @@
+ Image acore/ac-wotlk-worldserver:master Building 
+ Image acore/ac-wotlk-db-import:master Building 
+Dockerfile:90
+
+--------------------
+
+  89 |     
+
+  90 | >>> RUN --mount=type=cache,target=/ccache,sharing=locked \
+
+  91 | >>>     # This may seem silly (and it is), but AzerothCore wants the git repo at
+
+  92 | >>>     # build time. The git repo is _huge_ and it's not something that really
+
+  93 | >>>     # makes sense to mount into the container, but this way we can let the build
+
+  94 | >>>     # have the information it needs without including the hundreds of megabytes
+
+  95 | >>>     # of git repo into the container.
+
+  96 | >>>     --mount=type=bind,target=/azerothcore/.git,source=.git \
+
+  97 | >>>     git config --global --add safe.directory /azerothcore \
+
+  98 | >>>     && cmake /azerothcore \
+
+  99 | >>>        -DCMAKE_INSTALL_PREFIX="/azerothcore/env/dist"  \
+
+ 100 | >>>        -DAPPS_BUILD="all"                              \
+
+ 101 | >>>        -DTOOLS_BUILD="$CTOOLS_BUILD"                   \
+
+ 102 | >>>        -DSCRIPTS="$CSCRIPTS"                           \
+
+ 103 | >>>        -DMODULES="$CMODULES"                           \
+
+ 104 | >>>        -DWITH_WARNINGS="$CWITH_WARNINGS"               \
+
+ 105 | >>>        -DCMAKE_BUILD_TYPE="$CTYPE"                     \
+
+ 106 | >>>        -DCMAKE_CXX_COMPILER="clang++"                  \
+
+ 107 | >>>        -DCMAKE_C_COMPILER="clang"                      \
+
+ 108 | >>>        -DCMAKE_CXX_COMPILER_LAUNCHER="ccache"          \
+
+ 109 | >>>        -DCMAKE_C_COMPILER_LAUNCHER="ccache"            \
+
+ 110 | >>>        -DBoost_USE_STATIC_LIBS="ON"                    \
+
+ 111 | >>>     && cmake --build . --config "$CTYPE" -j $(($(nproc) + 1)) \
+
+ 112 | >>>     && cmake --install . --config "$CTYPE"
+
+ 113 |     
+
+--------------------
+
+target ac-worldserver: failed to solve: process "/bin/sh -c git config --global --add safe.directory /azerothcore     && cmake /azerothcore        -DCMAKE_INSTALL_PREFIX=\"/azerothcore/env/dist\"         -DAPPS_BUILD=\"all\"                                     -DTOOLS_BUILD=\"$CTOOLS_BUILD\"                          -DSCRIPTS=\"$CSCRIPTS\"                                  -DMODULES=\"$CMODULES\"                                  -DWITH_WARNINGS=\"$CWITH_WARNINGS\"                      -DCMAKE_BUILD_TYPE=\"$CTYPE\"                            -DCMAKE_CXX_COMPILER=\"clang++\"                         -DCMAKE_C_COMPILER=\"clang\"                             -DCMAKE_CXX_COMPILER_LAUNCHER=\"ccache\"                 -DCMAKE_C_COMPILER_LAUNCHER=\"ccache\"                   -DBoost_USE_STATIC_LIBS=\"ON\"                        && cmake --build . --config \"$CTYPE\" -j $(($(nproc) + 1))     && cmake --install . --config \"$CTYPE\"" did not complete successfully: exit code: 2
+
+
+
+View build details: docker-desktop://dashboard/build/default/default/wg178a5jo48i2xqkdj1r4is3f
+

@@ -16,6 +16,7 @@
  */
 
 #include "KillRewarder.h"
+#include "Config.h"
 #include "Creature.h"
 #include "Formulas.h"
 #include "Group.h"
@@ -223,7 +224,19 @@ void KillRewarder::_RewardPlayer(Player* player, bool isDungeon)
     // Give reputation and kill credit only in PvE.
     if (!_isPvP || _isBattleGround)
     {
-        float xpRate = _group ? _groupRate * float(_GetPlayerLevel(player)) / _aliveSumLevel : /*Personal rate is 100%.*/ 1.0f; // Group rate depends on the sum of levels.
+        // [Bonesaw #107] Party XP: the engine's level-share factor
+        // (level / aliveSumLevel) penalised anyone grouped with lower-level
+        // players. With LivingGear.PartyXp.NoLowLevelPenalty (default on) the
+        // factor is always 1.0, so every member earns the plain group size
+        // rate (xp_in_group_rate); the victim's grey cutoff is untouched.
+        float xpRate;
+        if (_group)
+        {
+            static bool const noLevelSharePenalty = sConfigMgr->GetOption<bool>("LivingGear.PartyXp.NoLowLevelPenalty", true);
+            xpRate = _groupRate * (noLevelSharePenalty ? 1.0f : float(_GetPlayerLevel(player)) / _aliveSumLevel);
+        }
+        else
+            xpRate = 1.0f; // Personal rate is 100%.
         sScriptMgr->OnPlayerRewardKillRewarder(player, this, isDungeon, xpRate);                                                // Personal rate is 100%.
 
         if (_xp)

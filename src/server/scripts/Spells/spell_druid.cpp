@@ -622,8 +622,12 @@ class spell_dru_innervate : public AuraScript
 
     void CalculateAmount(AuraEffect const* aurEff, int32& amount, bool& /*canBeRecalculated*/)
     {
-        if (Unit* caster = GetCaster())
-            amount = int32(CalculatePct(caster->GetCreatePowers(POWER_MANA), amount) / aurEff->GetTotalTicks());
+        // A permanent (maxDuration -1) Innervate restored from character_aura yields
+        // zero total ticks, which used to divide by zero and take down the process.
+        int32 const totalTicks = aurEff->GetTotalTicks();
+        Unit* caster = GetCaster();
+        if (caster && totalTicks > 0)
+            amount = int32(CalculatePct(caster->GetCreatePowers(POWER_MANA), amount) / totalTicks);
         else
             amount = 0;
     }
@@ -2007,9 +2011,13 @@ class spell_dru_insect_swarm : public AuraScript
 
     void CalculateAmount(AuraEffect const* aurEff, int32& amount, bool& /*canBeRecalculated*/)
     {
+        // A permanent aura reports zero total ticks.
+        int32 const totalTicks = aurEff->GetTotalTicks();
+        if (totalTicks <= 0)
+            return;
         if (Unit* caster = GetCaster())
             if (AuraEffect const* relicAurEff = caster->GetAuraEffect(SPELL_DRUID_ITEM_T8_BALANCE_RELIC, EFFECT_0))
-                amount += relicAurEff->GetAmount() / aurEff->GetTotalTicks();
+                amount += relicAurEff->GetAmount() / totalTicks;
     }
 
     void Register() override

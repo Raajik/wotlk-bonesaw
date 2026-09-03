@@ -19,8 +19,11 @@
 #include "CommandScript.h"
 #include "GroupMgr.h"
 #include "Language.h"
+#include "LootMgr.h"
 #include "Player.h"
 #include "RBAC.h"
+
+#include <algorithm>
 
 using namespace Acore::ChatCommands;
 
@@ -39,7 +42,8 @@ public:
             { "disband", HandleGroupDisbandCommand, rbac::RBAC_PERM_COMMAND_GROUP_DISBAND, Console::No },
             { "revive",  HandleGroupReviveCommand,  rbac::RBAC_PERM_COMMAND_GROUP_REVIVE,  Console::No },
             { "leader",  HandleGroupLeaderCommand,  rbac::RBAC_PERM_COMMAND_GROUP_LEADER,  Console::No },
-            { "invites", HandleGroupInvitesCommand, rbac::RBAC_PERM_COMMAND_GROUP_INVITES, Console::No }
+            { "invites", HandleGroupInvitesCommand, rbac::RBAC_PERM_COMMAND_GROUP_INVITES, Console::No },
+            { "loot",    HandleGroupLootCommand,    rbac::RBAC_PERM_COMMAND_GROUP_INVITES, Console::No }
         };
 
         static ChatCommandTable commandTable =
@@ -306,6 +310,80 @@ public:
 
         player->SetAcceptGroupInvites(*args);
         handler->SendSysMessage(*args ? LANG_COMMAND_GROUP_INVITES_ON : LANG_COMMAND_GROUP_INVITES_OFF);
+        return true;
+    }
+
+    static bool HandleGroupLootCommand(ChatHandler* handler, std::string mode)
+    {
+        Player* player = handler->GetPlayer();
+        if (!player)
+            return false;
+
+        Group* group = player->GetGroup();
+        if (!group)
+        {
+            handler->SendSysMessage("You are not in a group.");
+            return true;
+        }
+
+        if (!group->IsLeader(player->GetGUID()))
+        {
+            handler->SendSysMessage("Only the group leader can change loot mode.");
+            return true;
+        }
+
+        if (group->isLFGGroup(true))
+        {
+            handler->SendSysMessage("Loot mode is locked for LFG groups.");
+            return true;
+        }
+
+        std::transform(mode.begin(), mode.end(), mode.begin(), ::tolower);
+
+        LootMethod method = FREE_FOR_ALL;
+        char const* label = "Free For All";
+
+        if (mode == "personal" || mode == "pl")
+        {
+            method = PERSONAL_LOOT;
+            label = "Personal Loot";
+        }
+        else if (mode == "freeforall" || mode == "ffa")
+        {
+            method = FREE_FOR_ALL;
+            label = "Free For All";
+        }
+        else if (mode == "roundrobin" || mode == "rr")
+        {
+            method = ROUND_ROBIN;
+            label = "Round Robin";
+        }
+        else if (mode == "master" || mode == "ml")
+        {
+            method = MASTER_LOOT;
+            label = "Master Loot";
+        }
+        else if (mode == "group" || mode == "gl")
+        {
+            method = GROUP_LOOT;
+            label = "Group Loot";
+        }
+        else if (mode == "needbeforegreed" || mode == "nbg")
+        {
+            method = NEED_BEFORE_GREED;
+            label = "Need Before Greed";
+        }
+        else
+        {
+            handler->SendSysMessage("Usage: .group loot personal|ffa|roundrobin|master|group|needbeforegreed");
+            return true;
+        }
+
+        group->SetLootMethod(method);
+        if (method != MASTER_LOOT)
+            group->SetMasterLooterGuid(ObjectGuid::Empty);
+        group->SendUpdate();
+        handler->PSendSysMessage("Loot mode set to {}.", label);
         return true;
     }
 };

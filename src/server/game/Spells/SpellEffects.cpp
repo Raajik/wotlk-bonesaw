@@ -19,6 +19,8 @@
 #include "BattlegroundIC.h"
 #include "BattlegroundMgr.h"
 #include "BattlegroundSA.h"
+#include "Battlefield.h"
+#include "BattlefieldMgr.h"
 #include "CellImpl.h"
 #include "Chat.h"
 #include "Common.h"
@@ -1342,6 +1344,12 @@ void Spell::EffectUnlearnSpecialization(SpellEffIndex effIndex)
         return;
     }
 
+    // Learn-spec spells also unlearn siblings (armorsmith/weaponsmith, leatherworking).
+    // Account-wide specs can stack, so only dedicated unlearn spells may strip a spec.
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (m_spellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL)
+            return;
+
     uint32 spellToUnlearn = m_spellInfo->Effects[effIndex].TriggerSpell;
 
     player->removeSpell(spellToUnlearn, SPEC_MASK_ALL, false);
@@ -1689,12 +1697,18 @@ void Spell::DoCreateItem(uint8 /*effIndex*/, uint32 itemId)
             SelfCast = true;
             break;
         case SPELL_WG_MARK_WINNER:
+            // Feature #145 (report id 145): Wintergrasp marks are a match-end
+            // reward, not a quest/loot item, so the only lever is this code --
+            // the DBC base points are ignored for WG marks. Baseline payouts
+            // are 1 mark for showing up, 2 at Corporal rank, 3 at Lieutenant;
+            // multiply all three by 10. 43589 stacks to ~2 billion, so no
+            // clamp concern below.
             if (player->HasAura(55629 /*SPELL_LIEUTENANT*/))
-                addNumber = 3;
+                addNumber = 30;
             else if (player->HasAura(33280 /*SPELL_CORPORAL*/))
-                addNumber = 2;
+                addNumber = 20;
             else
-                addNumber = 1;
+                addNumber = 10;
             SelfCast = true;
             break;
     }
@@ -2172,8 +2186,22 @@ void Spell::EffectOpenLock(SpellEffIndex effIndex)
         return;
     }
 
+    sScriptMgr->OnPlayerOpenLock(player, lockId);
+
     if (gameObjTarget)
-        SendLoot(guid, LOOT_SKINNING);
+    {
+        // Living Gear: locked chests (Lockpicking/key) never reach
+        // GameObject::Use() at all -- a successful unlock here goes
+        // straight to SendLoot below, entirely bypassing the CHEST case in
+        // Use() (and therefore TryAutolootChest/OnPlayerUseGameObject) that
+        // unlocked/no-lock chests go through. Give autoloot the same shot
+        // at it here that it already gets for unlocked chests, falling
+        // back to the normal loot window only if it declines.
+        bool handled = false;
+        sScriptMgr->OnPlayerUseGameObject(player, gameObjTarget, handled);
+        if (!handled)
+            SendLoot(guid, LOOT_SKINNING);
+    }
     else if (itemTarget)
     {
         itemTarget->SetFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_UNLOCKED);
@@ -2728,12 +2756,18 @@ void Spell::EffectDistract(SpellEffIndex /*effIndex*/)
     unitTarget->GetMotionMaster()->MoveDistract(damage * IN_MILLISECONDS);
 }
 
+// Living Gear core-patch: pickpocket junkbox autoloot.
+bool LivingGear_TryAutolootPickpocket(Player* player, Unit* target);
+
 void Spell::EffectPickPocket(SpellEffIndex /*effIndex*/)
 {
     if (effectHandleMode != SPELL_EFFECT_HANDLE_HIT_TARGET)
         return;
 
     if (!m_caster->IsPlayer())
+        return;
+
+    if (LivingGear_TryAutolootPickpocket(m_caster->ToPlayer(), unitTarget))
         return;
 
     m_caster->ToPlayer()->SendLoot(unitTarget->GetGUID(), LOOT_PICKPOCKETING);
@@ -3889,6 +3923,7 @@ void Spell::EffectScriptEffect(SpellEffIndex effIndex)
                     case 54640:
                         {
                             if (Player* player = unitTarget->ToPlayer())
+                            {
                                 if (player->GetBattleground() && player->GetBattleground()->GetBgTypeID(true) == BATTLEGROUND_SA)
                                 {
                                     if (GameObject* dportal = player->FindNearestGameObject(192819, 10.0f))
@@ -3897,9 +3932,25 @@ void Spell::EffectScriptEffect(SpellEffIndex effIndex)
                                         bg->DefendersPortalTeleport(dportal, player);
                                     }
                                 }
+                                // Wintergrasp defender teleport (report #163): the
+                                // spell_linked_spell row 54640 -> 54643 used to fire
+                                // here, and 54643 only ever teleported the user to
+                                // their own feet (its TARGET_DEST_DEST resolves to the
+                                // caster position when the chain has no destination)
+                                // before stacking a 30s [Teleport] dummy aura on them.
+                                // That row is deleted in pending SQL; the WG case is
+                                // handled here instead, the same rule
+                                // spell_wintergrasp_portal (58622) applies: defenders
+                                // level 75+ are teleported to the fortress (59096,
+                                // coords in spell_target_position) with no aura.
+                                else if (Battlefield* wintergrasp = sBattlefieldMgr->GetBattlefieldByBattleId(BATTLEFIELD_BATTLEID_WG))
+                                {
+                                    if (wintergrasp->GetDefenderTeam() == player->GetTeamId() && player->GetLevel() >= 75)
+                                        player->CastSpell(player, 59096, true);
+                                }
+                            }
                             return;
-                        }
-                    /*// Mug Transformation
+                        }                    /*// Mug Transformation
                     case 41931:
                     {
                         if (!m_caster->IsPlayer())
@@ -4743,6 +4794,11 @@ void Spell::EffectReputation(SpellEffIndex effIndex)
         return;
 
     repChange = player->CalculateReputationGain(REPUTATION_SOURCE_SPELL, 0, repChange, factionId);
+    // Report #204: item-granted reputation (Zandalari Honor Token and every
+    // other SPELL_EFFECT_REPUTATION item) never reached the rep-perk multiplier
+    // -- only kill/quest paths called the script hook. Route spell rep through
+    // it too (see core-patch 0052).
+    sScriptMgr->OnPlayerGiveReputation(player, int32(factionId), repChange, REPUTATION_SOURCE_SPELL);
     player->GetReputationMgr().ModifyReputation(factionEntry, repChange);
 }
 

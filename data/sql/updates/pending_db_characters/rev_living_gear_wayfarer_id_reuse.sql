@@ -1,0 +1,21 @@
+-- Clear stale account rows for 910039 and 910040.
+--
+-- Those two ids used to be SPELL_JUMP_DOUBLE and SPELL_JUMP_TRIPLE, the extra
+-- jump perk, which is retired and disabled. 0.1.81 reassigned them to Wayfarer
+-- ranks 4 and 5 without checking whether anything still held them -- and
+-- lg_account_perk is append-only and never cleaned, so every account that had
+-- earned double or triple jump silently acquired a free Wayfarer rank, out of
+-- sequence, skipping the ranks and the cost in between.
+--
+-- Three rows across three accounts. They are not in lg_account_perk_purchase,
+-- so nobody paid for them and no refund is owed.
+--
+-- The wider lesson, recorded in the wiki: an id is not free just because no
+-- source file mentions it any more. Check lg_account_perk (and any other
+-- append-only account table) for live rows before reusing one. 910041 was
+-- SPELL_AUTO_ATTUNE and still has rows; it is deliberately NOT reused.
+--
+-- Idempotent: re-running matches nothing, which matters because a file under
+-- pending_db_* is re-executed whenever it is edited.
+
+DELETE FROM `lg_account_perk` WHERE `spell_id` IN (910039, 910040);

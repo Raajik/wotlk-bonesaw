@@ -103,6 +103,13 @@
 //  see: https://github.com/azerothcore/azerothcore-wotlk/issues/9766
 #include "GridNotifiersImpl.h"
 
+// Living Gear core-patch 0049 (report #182): the shared account currency
+// pool. Currency tokens live in the account pool, not bags -- vendor
+// purchases that cost those tokens validate against AND pay from the pool
+// after the bags are drained (LivingGear_Vault.cpp).
+bool LivingGear_AccountCurrencyCovers(Player* player, uint32 itemId, uint32 count);
+void LivingGear_AccountCurrencyPay(Player* player, uint32 itemId, uint32 count);
+
 enum CharacterFlags
 {
     CHARACTER_FLAG_NONE                 = 0x00000000,
@@ -6313,7 +6320,7 @@ bool Player::RewardHonor(Unit* uVictim, uint32 groupsize, int32 honor, bool awar
         {
             Player* victim = uVictim->ToPlayer();
 
-            if (GetTeamId() == victim->GetTeamId() && !sWorld->IsFFAPvPRealm())
+            if (GetTeamId() == victim->GetTeamId() && !sWorld->IsFFAPvPRealm() && !IsFFAPvP())
                 return false;
 
             uint8 k_level = GetLevel();
@@ -6363,6 +6370,7 @@ bool Player::RewardHonor(Unit* uVictim, uint32 groupsize, int32 honor, bool awar
     }
 
     honor_f *= sWorld->getRate(RATE_HONOR);
+    sScriptMgr->OnPlayerRewardHonor(this, honor_f);
     // Back to int now
     honor = int32(honor_f);
     // honor - for show honor points in log
@@ -8078,7 +8086,7 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
             {
                 if (Group* group = GetGroup())
                 {
-                    switch (group->GetLootMethod())
+                    switch (group->GetEffectiveLootMethod())
                     {
                         case GROUP_LOOT:
                             // GroupLoot: rolls items over threshold. Items with quality < threshold, round robin
@@ -8103,7 +8111,10 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
         {
             if (Group* group = GetGroup())
             {
-                switch (group->GetLootMethod())
+                // Personal loot (#114/#126): consult the effective (override)
+                // method here too - reopening an activated chest must not fall
+                // back to the group's stored Round Robin / Master Loot method.
+                switch (group->GetEffectiveLootMethod())
                 {
                     case MASTER_LOOT:
                         permission = group->GetMasterLooterGuid() == GetGUID() ? MASTER_PERMISSION : RESTRICTED_PERMISSION;
@@ -8262,7 +8273,7 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                 // for creature, loot is filled when creature is killed.
                 if (recipientGroup)
                 {
-                    switch (recipientGroup->GetLootMethod())
+                    switch (recipientGroup->GetEffectiveLootMethod())
                     {
                         case GROUP_LOOT:
                             // GroupLoot: rolls items over threshold. Items with quality < threshold, round robin
@@ -8273,6 +8284,8 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                             break;
                         case MASTER_LOOT:
                             recipientGroup->MasterLoot(loot, creature);
+                            break;
+                        case PERSONAL_LOOT:
                             break;
                         default:
                             break;
@@ -8308,12 +8321,15 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                 {
                     if (GetGroup() == recipientGroup)
                     {
-                        switch (recipientGroup->GetLootMethod())
+                        switch (recipientGroup->GetEffectiveLootMethod())
                         {
                             case MASTER_LOOT:
                                 permission = recipientGroup->GetMasterLooterGuid() == GetGUID() ? MASTER_PERMISSION : RESTRICTED_PERMISSION;
                                 break;
                             case FREE_FOR_ALL:
+                                permission = ALL_PERMISSION;
+                                break;
+                            case PERSONAL_LOOT:
                                 permission = ALL_PERMISSION;
                                 break;
                             case ROUND_ROBIN:
@@ -8331,6 +8347,17 @@ void Player::SendLoot(ObjectGuid guid, LootType loot_type)
                     permission = OWNER_PERMISSION;
                 else
                     permission = NONE_PERMISSION;
+
+                // True personal loot (#126): make sure this viewer has their
+                // own per-member FFA view even when they were not within loot
+                // reward distance when the loot was generated (late join, ran
+                // in late). FillNotNormalLootFor is a no-op for a viewer who
+                // already has their views; without this a freeforall-flagged
+                // corpse would show nothing to anyone not filled at kill time.
+                if (loot_type == LOOT_CORPSE && sWorld->getBoolConfig(CONFIG_PERSONAL_LOOT_DUPLICATE))
+                {
+                    loot->FillNotNormalLootFor(this);
+                }
             }
         }
     }
@@ -10473,6 +10500,19 @@ bool Player::ActivateTaxiPathTo(std::vector<uint32> const& nodes, Creature* npc 
         return false;
     }
 
+    TaxiNodesEntry const* destNode = sTaxiNodesStore.LookupEntry(nodes[nodes.size() - 1]);
+    if (destNode && destNode->map_id == GetMapId())
+    {
+        uint32 const destZone = sMapMgr->GetZoneId(GetPhaseMask(), destNode->map_id, destNode->x, destNode->y, destNode->z);
+        if (destZone && destZone == GetZoneId())
+        {
+            m_taxi.ClearTaxiDestinations();
+            GetSession()->SendActivateTaxiReply(ERR_TAXIOK);
+            TeleportTo(destNode->map_id, destNode->x, destNode->y, destNode->z, GetOrientation());
+            return true;
+        }
+    }
+
     // Prepare to flight start now
 
     // stop combat at start taxi flight if any
@@ -10848,7 +10888,9 @@ inline bool Player::_StoreOrEquipNewItem(uint32 vendorslot, uint32 item, uint8 c
         for (uint8 i = 0; i < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++i)
         {
             if (iece->reqitem[i])
-                DestroyItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count), true);
+                // Living Gear core-patch 0049 (report #182): drain bags first,
+                // then the shared account currency pool for the remainder.
+                LivingGear_AccountCurrencyPay(this, iece->reqitem[i], (iece->reqitemcount[i] * count));
         }
     }
 
@@ -11002,7 +11044,12 @@ bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uin
         // item base price
         for (uint8 i = 0; i < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++i)
         {
-            if (iece->reqitem[i] && !HasItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count)))
+            // Living Gear core-patch 0049 (report #182): currency tokens pool
+            // to the account, so the requirement is met when bags + pool
+            // together cover it (validated again at pay time below).
+            if (iece->reqitem[i] && !HasItemCount(iece->reqitem[i], (iece->reqitemcount[i] * count))
+                && !LivingGear_AccountCurrencyCovers(this, iece->reqitem[i],
+                    (iece->reqitemcount[i] * count) - std::min<uint32>(GetItemCount(iece->reqitem[i], true), iece->reqitemcount[i] * count)))
             {
                 SendEquipError(EQUIP_ERR_VENDOR_MISSING_TURNINS, nullptr, nullptr);
                 return false;
@@ -11743,6 +11790,11 @@ void Player::SetSelection(ObjectGuid guid)
 
     if (NeedSendSpectatorData())
         ArenaSpectator::SendCommand_GUID(FindMap(), GetGUID(), "TRG", guid);
+
+    if (HasGlobalComboPoints() && GetComboPoints())
+        if (Unit* target = ObjectAccessor::GetUnit(*this, guid))
+            if (IsValidAttackTarget(target))
+                RetargetComboPoints(target);
 }
 
 void Player::SetGroup(Group* group, int8 subgroup)
@@ -13850,7 +13902,7 @@ LootItem* Player::StoreLootItem(uint8 lootSlot, Loot* loot, InventoryResult& msg
 
     // Xinef: exploit protection, dont allow to loot normal items if player is not master loot and not below loot threshold
     // Xinef: only quest, ffa and conditioned items
-    if (!item->is_underthreshold && loot->roundRobinPlayer && !GetLootGUID().IsItem() && GetGroup() && GetGroup()->GetLootMethod() == MASTER_LOOT && GetGUID() != GetGroup()->GetMasterLooterGuid())
+    if (!item->is_underthreshold && loot->roundRobinPlayer && !GetLootGUID().IsItem() && GetGroup() && GetGroup()->GetEffectiveLootMethod() == MASTER_LOOT && GetGUID() != GetGroup()->GetMasterLooterGuid())
         if (!qitem && !ffaitem && !conditem)
         {
             SendLootRelease(GetLootGUID());
@@ -15657,7 +15709,7 @@ void Player::ActivateSpec(uint8 spec)
     SetPower(pw, 0);
 
     // xinef: remove titan grip if player had it set and does not have appropriate talent
-    if (!HasTalent(46917, GetActiveSpec()) && m_canTitanGrip)
+    if (!HasTalent(46917, GetActiveSpec()) && !HasSpell(46917) && m_canTitanGrip)
         SetCanTitanGrip(false);
     // xinef: remove dual wield if player does not have dual wield spell (shamans)
     if (!HasSpell(674) && CanDualWield())

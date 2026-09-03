@@ -19,9 +19,12 @@
 #include "AreaDefines.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
+#include "Chat.h"
 #include "Config.h"
+#include "Creature.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
+#include "Map.h"
 #include "GroupMgr.h"
 #include "InstanceSaveMgr.h"
 #include "LFG.h"
@@ -1498,6 +1501,115 @@ void Group::MasterLoot(Loot* loot, WorldObject* pLootedObject)
     }
 }
 
+bool Group::IsPersonalLootBoss(Creature const* creature)
+{
+    if (!creature)
+        return false;
+
+    if (creature->IsDungeonBoss() || creature->isWorldBoss())
+        return true;
+
+    if (Map const* map = creature->GetMap())
+        if (map->IsDungeon() && creature->GetCreatureTemplate()->rank >= CREATURE_ELITE_ELITE)
+            return true;
+
+    return false;
+}
+
+static void GrantPersonalLootItem(Player* player, Creature* creature, LootItem& item)
+{
+    if (item.is_looted || !player || !creature)
+        return;
+
+    if (!item.AllowedForPlayer(player, creature->GetGUID()))
+        return;
+
+    ItemPosCountVec dest;
+    InventoryResult msg = player->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, item.itemid, item.count);
+    if (msg == EQUIP_ERR_OK)
+    {
+        AllowedLooterSet looters = item.GetAllowedLooters();
+        Item* newItem = player->StoreNewItem(dest, item.itemid, true, item.randomPropertyId, looters);
+        if (newItem)
+        {
+            player->SendNewItem(newItem, item.count, false, false);
+            sScriptMgr->OnPlayerLootItem(player, newItem, item.count, creature->GetGUID());
+        }
+        item.is_looted = true;
+        return;
+    }
+
+    uint32 mailOnFull = sWorld->getIntConfig(CONFIG_LFG_MAIL_ITEM_ON_FULL_INVENTORY);
+    if (msg == EQUIP_ERR_INVENTORY_FULL
+        && (mailOnFull == MAIL_ITEM_ON_FULL_INVENTORY_EVERYWHERE
+            || (mailOnFull == MAIL_ITEM_ON_FULL_INVENTORY_LFG_ONLY && player->GetGroup() && player->GetGroup()->isLFGGroup())))
+    {
+        SendRollWonItemViaMail(player, &item, item.itemid);
+        item.is_looted = true;
+        player->SendEquipError(msg, nullptr, nullptr, item.itemid);
+        return;
+    }
+
+    player->SendEquipError(msg, nullptr, nullptr, item.itemid);
+}
+
+void Group::PersonalLoot(Creature* creature, Player* reference)
+{
+    if (!creature || !reference)
+        return;
+
+    uint32 const lootId = creature->GetCreatureTemplate()->lootid;
+    uint16 const lootMode = creature->GetLootMode();
+    uint32 const minGold = creature->GetCreatureTemplate()->mingold;
+    uint32 const maxGold = creature->GetCreatureTemplate()->maxgold;
+
+    Loot* sharedLoot = &creature->loot;
+    sharedLoot->clear();
+    sharedLoot->loot_type = LOOT_CORPSE;
+    sharedLoot->sourceWorldObjectGUID = creature->GetGUID();
+
+    bool const hasAllowedLooters = !creature->GetAllowedLooters().empty();
+    ObjectGuid const creatureGuid = creature->GetGUID();
+
+    for (GroupReference* itr = GetFirstMember(); itr != nullptr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->IsInWorld())
+            continue;
+
+        bool canLoot = member->IsAtLootRewardDistance(creature);
+        if (!canLoot && hasAllowedLooters)
+            canLoot = creature->HasAllowedLooter(member->GetGUID());
+
+        if (!canLoot)
+            continue;
+
+        Loot personalLoot;
+        personalLoot.loot_type = LOOT_CORPSE;
+        personalLoot.sourceWorldObjectGUID = creatureGuid;
+
+        if (lootId)
+            personalLoot.FillLoot(lootId, LootTemplates_Creature, member, true, true, lootMode, creature);
+
+        if (lootMode)
+            personalLoot.generateMoneyLoot(minGold, maxGold);
+
+        if (personalLoot.gold > 0)
+        {
+            sScriptMgr->OnPlayerBeforeLootMoney(member, &personalLoot);
+            member->ModifyMoney(int32(personalLoot.gold));
+            sScriptMgr->OnLootMoney(member, personalLoot.gold);
+            sScriptMgr->OnPlayerAfterCreatureLootMoney(member);
+        }
+
+        for (LootItem& item : personalLoot.items)
+            GrantPersonalLootItem(member, creature, item);
+
+        for (LootItem& item : personalLoot.quest_items)
+            GrantPersonalLootItem(member, creature, item);
+    }
+}
+
 bool Group::CountRollVote(ObjectGuid playerGUID, ObjectGuid Guid, uint8 Choice)
 {
     Rolls::iterator rollI = GetRoll(Guid);
@@ -2327,36 +2439,27 @@ void Group::SetRaidDifficulty(Difficulty difficulty)
 
 void Group::ResetInstances(uint8 method, bool isRaid, Player* leader)
 {
-    if (isBGGroup() || isBFGroup() || isLFGGroup())
+    if (isBGGroup() || isBFGroup())
         return;
 
     switch (method)
     {
         case INSTANCE_RESET_ALL:
             {
-                if (leader->GetDifficulty(false) != DUNGEON_DIFFICULTY_NORMAL)
-                    break;
                 std::vector<InstanceSave*> toUnbind;
-                BoundInstancesMap const& m_boundInstances = sInstanceSaveMgr->PlayerGetBoundInstances(leader->GetGUID(), Difficulty(DUNGEON_DIFFICULTY_NORMAL));
-                for (BoundInstancesMap::const_iterator itr = m_boundInstances.begin(); itr != m_boundInstances.end(); ++itr)
+                for (uint8 d = 0; d < MAX_DIFFICULTY; ++d)
                 {
-                    InstanceSave* instanceSave = itr->second.save;
-                    MapEntry const* entry = sMapStore.LookupEntry(itr->first);
-                    if (!entry || entry->IsRaid() || !instanceSave->CanReset())
-                        continue;
-
-                    Map* map = sMapMgr->FindMap(instanceSave->GetMapId(), instanceSave->GetInstanceId());
-                    if (!map || map->ToInstanceMap()->Reset(method))
+                    BoundInstancesMap const& m_boundInstances = sInstanceSaveMgr->PlayerGetBoundInstances(leader->GetGUID(), Difficulty(d));
+                    for (BoundInstancesMap::const_iterator itr = m_boundInstances.begin(); itr != m_boundInstances.end(); ++itr)
                     {
+                        InstanceSave* instanceSave = itr->second.save;
+                        Map* map = sMapMgr->FindMap(instanceSave->GetMapId(), instanceSave->GetInstanceId());
+                        if (map)
+                            map->ToInstanceMap()->Reset(method);
                         leader->SendResetInstanceSuccess(instanceSave->GetMapId());
                         toUnbind.push_back(instanceSave);
+                        sInstanceSaveMgr->DeleteInstanceSavedData(instanceSave->GetInstanceId());
                     }
-                    else
-                    {
-                        leader->SendResetInstanceFailed(INSTANCE_RESET_FAILED, instanceSave->GetMapId());
-                    }
-
-                    sInstanceSaveMgr->DeleteInstanceSavedData(instanceSave->GetInstanceId());
                 }
                 for (std::vector<InstanceSave*>::const_iterator itr = toUnbind.begin(); itr != toUnbind.end(); ++itr)
                     sInstanceSaveMgr->UnbindAllFor(*itr);
@@ -2370,20 +2473,14 @@ void Group::ResetInstances(uint8 method, bool isRaid, Player* leader)
                 {
                     InstanceSave* instanceSave = itr->second.save;
                     MapEntry const* entry = sMapStore.LookupEntry(itr->first);
-                    if (!entry || entry->IsRaid() != isRaid || !instanceSave->CanReset())
+                    if (!entry || entry->IsRaid() != isRaid)
                         continue;
 
                     Map* map = sMapMgr->FindMap(instanceSave->GetMapId(), instanceSave->GetInstanceId());
-                    if (!map || map->ToInstanceMap()->Reset(method))
-                    {
-                        leader->SendResetInstanceSuccess(instanceSave->GetMapId());
-                        toUnbind.push_back(instanceSave);
-                    }
-                    else
-                    {
-                        leader->SendResetInstanceFailed(INSTANCE_RESET_FAILED, instanceSave->GetMapId());
-                    }
-
+                    if (map)
+                        map->ToInstanceMap()->Reset(method);
+                    leader->SendResetInstanceSuccess(instanceSave->GetMapId());
+                    toUnbind.push_back(instanceSave);
                     sInstanceSaveMgr->DeleteInstanceSavedData(instanceSave->GetInstanceId());
                 }
                 for (std::vector<InstanceSave*>::const_iterator itr = toUnbind.begin(); itr != toUnbind.end(); ++itr)
@@ -2528,6 +2625,29 @@ char const* Group::GetLeaderName() const
 
 LootMethod Group::GetLootMethod() const
 {
+    return m_lootMethod;
+}
+
+LootMethod Group::GetEffectiveLootMethod() const
+{
+    // Personal loot (#114): when enabled, bypass all shared/group loot rules -
+    // every method behaves as FREE_FOR_ALL (each member may loot everything
+    // personally, first come first served; no rolls, no master looter).
+    // FREE_FOR_ALL and PERSONAL_LOOT are already personal and pass through.
+    if (sWorld->getBoolConfig(CONFIG_PERSONAL_LOOT_ALL))
+    {
+        switch (m_lootMethod)
+        {
+            case ROUND_ROBIN:
+            case MASTER_LOOT:
+            case GROUP_LOOT:
+            case NEED_BEFORE_GREED:
+                return FREE_FOR_ALL;
+            default:
+                break;
+        }
+    }
+
     return m_lootMethod;
 }
 

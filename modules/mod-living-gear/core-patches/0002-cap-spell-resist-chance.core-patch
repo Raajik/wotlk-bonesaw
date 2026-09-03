@@ -1,0 +1,21 @@
+Cap magic-school resist chance at 80%, forbid full (100%) immunity.
+Touches: src/server/game/Entities/Unit/Unit.cpp, Unit::CalcAbsorbResist()
+
+Why: WotLK's discrete-resist-bucket formula (11 buckets, 0%-100% in 10%
+steps, weighted around GetEffectiveResistChance()) lets very high victim
+resistance push real weight onto the 100% bucket, letting a caster be
+fully, completely resisted/immune on a given cast. Player report: enemies
+were sometimes shrugging off spell damage entirely. Clamp the selected
+bucket index to 8 (80%) so the roll can never land on 90%/100%.
+
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ Unit::CalcAbsorbResist(DamageInfo& dmgInfo, bool Splited)
+         while (r >= probabilitySum && i < 10)
+             probabilitySum += discreteResistProbability[++i];
+
++        // Bonesaw: cap magic resistance at 80% and forbid full (100%) immunity.
++        if (i > 8)
++            i = 8;
++
+         float damageResisted = float(damage * i / 10);

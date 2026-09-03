@@ -69,6 +69,16 @@ void ScriptMgr::OnBeforeRollMeleeOutcomeAgainst(Unit const* attacker, Unit const
     CALL_ENABLED_HOOKS(UnitScript, UNITHOOK_ON_BEFORE_ROLL_MELEE_OUTCOME_AGAINST, script->OnBeforeRollMeleeOutcomeAgainst(attacker, victim, attType, attackerMaxSkillValueForLevel, victimMaxSkillValueForLevel, attackerWeaponSkill, victimDefenseSkill, crit_chance, miss_chance, dodge_chance, parry_chance, block_chance));
 }
 
+void ScriptMgr::OnCreatureLevelForTarget(Unit const* creature, WorldObject const* target, uint8& outLevel)
+{
+    CALL_ENABLED_HOOKS(UnitScript, UNITHOOK_ON_CREATURE_LEVEL_FOR_TARGET, script->OnCreatureLevelForTarget(creature, target, outLevel));
+}
+
+void ScriptMgr::OnCalculateThreat(Unit* attacker, Unit* victim, float& threat, SpellInfo const* spell)
+{
+    CALL_ENABLED_HOOKS(UnitScript, UNITHOOK_ON_CALCULATE_THREAT, script->OnCalculateThreat(attacker, victim, threat, spell));
+}
+
 void ScriptMgr::OnAuraApply(Unit* unit, Aura* aura)
 {
     CALL_ENABLED_HOOKS(UnitScript, UNITHOOK_ON_AURA_APPLY, script->OnAuraApply(unit, aura));

@@ -1,0 +1,60 @@
+Report #124: "Haunt can only apply CoE or CoA, would like it to do both
+please." Haunt seeds the target with the Affliction DoT set including Curse
+of Agony and Curse of the Elements, but the engine kept only one of the two.
+
+Root cause, read not guessed: Aura::CanStackWith
+(src/server/game/Spells/Auras/SpellAuras.cpp) rejects a new aura when
+IsAuraExclusiveBySpecificPerCasterWith() says the existing one conflicts and
+the caster is the same. SpellInfo::GetSpellSpecific() maps every spell with
+DispelType CURSE to SPELL_SPECIFIC_CURSE (SpellInfo.cpp:2136), so Curse of
+Agony and Curse of the Elements -- different curse *types* (doom/agony DoT vs
+spell-damage-taken debuff, with no overlapping effects) -- were treated as
+exclusive per caster. The cast itself succeeds; the second aura application
+replaces the first. This is engine stacking logic, not module application
+order, and it is not a spell_group rule (the curse groups in
+acore_world.spell_group cover Immolate/UA and spell-damage debuffs, not the
+Agony/Elements pair), so no data-only fix exists: GetSpellSpecific() is
+computed from DispelType in code, not read from a table.
+
+Fix: an exception in Aura::CanStackWith -- if the two spells are the Curse of
+Agony chain (first spell 980) and the Curse of the Elements chain (first
+spell 1490), in either order, the pair can stack. Chain heads are resolved
+through sSpellMgr->GetFirstSpellInChain so higher ranks (47867 Agony,
+47865 Elements) behave identically. Every other curse pairing keeps vanilla
+one-curse-per-caster exclusivity, and cross-caster behaviour is unchanged
+(two different warlocks could already curse both).
+
+Touching an engine stacking rule for a specific pair is deliberately narrow:
+the alternative (handing CoE out as a different DispelType via spell_dbc)
+would make the curse dispellable as magic and change dispel behaviour realm-
+wide. The module hook is Aura::CanStackWith because both auras are applied
+from the same Haunt-triggered path (LivingGear_ClassPerks.cpp,
+TryWarlockAfflictionOnCast) and no module hook sits between the engine's
+stack check and the aura list.
+
+--- a/src/server/game/Spells/Auras/SpellAuras.cpp
++++ b/src/server/game/Spells/Auras/SpellAuras.cpp
+@@ -1973,6 +1973,23 @@
+             return true;
+     }
+
++    // Living Gear core-patch 0034 (report #124): Curse of Agony (980 chain)
++    // and Curse of the Elements (1490 chain) are different curse types --
++    // agony is a doom/agony DoT, elements is a spell-damage-taken debuff --
++    // but both carry DispelType CURSE, so GetSpellSpecific() maps both to
++    // SPELL_SPECIFIC_CURSE and the per-caster rule below let a Haunt-seeded
++    // pair keep only one of them. The two effects do not overlap, so allow
++    // exactly this pair to coexist from the same caster; every other curse
++    // pairing keeps the vanilla one-curse-per-caster exclusivity.
++    {
++        bool const newIsAgony = sSpellMgr->GetFirstSpellInChain(GetId()) == 980;
++        bool const newIsElements = sSpellMgr->GetFirstSpellInChain(GetId()) == 1490;
++        bool const existIsAgony = sSpellMgr->GetFirstSpellInChain(existingSpellInfo->Id) == 980;
++        bool const existIsElements = sSpellMgr->GetFirstSpellInChain(existingSpellInfo->Id) == 1490;
++        if ((newIsAgony && existIsElements) || (newIsElements && existIsAgony))
++            return true;
++    }
++
+     // check spell specific stack rules
+     if (m_spellInfo->IsAuraExclusiveBySpecificWith(existingSpellInfo)
+             || (sameCaster && m_spellInfo->IsAuraExclusiveBySpecificPerCasterWith(existingSpellInfo)))

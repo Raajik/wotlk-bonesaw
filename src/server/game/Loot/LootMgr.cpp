@@ -433,11 +433,8 @@ bool LootItem::AllowedForPlayer(Player const* player, ObjectGuid source) const
     if (pProto->HasFlag2(ITEM_FLAG2_FACTION_ALLIANCE) && player->GetTeamId(true) != TEAM_ALLIANCE)
         return false;
 
-    // profession / recipe checks
-    if (pProto->HasFlag(ITEM_FLAG_HIDE_UNUSABLE_RECIPE) && (!player->HasSkill(pProto->RequiredSkill) || player->HasSpell(pProto->Spells[1].SpellId)))
-        return false;
-
-    if (pProto->Class == ITEM_CLASS_RECIPE && pProto->Bonding == BIND_WHEN_PICKED_UP && pProto->Spells[1].SpellId != 0 && player->HasSpell(pProto->Spells[1].SpellId))
+    // Hide recipes the player cannot use yet. Already-known recipes still drop so they can be vendored.
+    if (pProto->HasFlag(ITEM_FLAG_HIDE_UNUSABLE_RECIPE) && pProto->RequiredSkill && !player->HasSkill(pProto->RequiredSkill))
         return false;
 
     // check quest requirements
@@ -566,6 +563,21 @@ bool Loot::FillLoot(uint32 lootId, LootStore const& store, Player* lootOwner, bo
     Group* group = lootOwner->GetGroup();
     if (!personal && group)
     {
+        // True personal loot (#126): with Loot.PersonalLootDuplicate on, every
+        // dropped item becomes multi-lootable (the ITEM_FLAG_MULTI_DROP
+        // behaviour): each eligible group member gets their OWN view of the
+        // full drop table via FillFFALoot()/PlayerFFAItems and can loot each
+        // item once without that removing it for anyone else. Marking items
+        // freeforall routes them through the per-player FFA views instead of
+        // the shared one-take path in Player::StoreLootItem. Gold still drops
+        // once and splits (HandleLootMoneyOpcode). Skinning loot is generated
+        // through a separate personal FillLoot call (Player::SendLoot, LOOT_
+        // SKINNING) and never enters this branch, so skinning stays
+        // first-come one-taker.
+        if (sWorld->getBoolConfig(CONFIG_PERSONAL_LOOT_DUPLICATE))
+            for (LootItem& lootItem : items)
+                lootItem.freeforall = true;
+
         roundRobinPlayer = lootOwner->GetGUID();
 
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())

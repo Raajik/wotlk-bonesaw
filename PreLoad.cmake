@@ -21,3 +21,7 @@
 #      "" CACHE PATH "Default install path")
 #  endif()
 #endif()
+
+if(IS_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}/modules/mod-playerbots/src")
+  add_compile_definitions(MOD_PLAYERBOTS)
+endif()

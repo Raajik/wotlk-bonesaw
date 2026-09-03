@@ -16,6 +16,7 @@
  */
 
 #include "CreatureScript.h"
+#include "DatabaseEnv.h"
 #include "GameObjectScript.h"
 #include "Player.h"
 #include "ScriptedCreature.h"
@@ -167,6 +168,50 @@ enum ProfessionSpells
     S_UNLEARN_ELIXIR        = 41564,
     S_UNLEARN_POTION        = 41563,
 };
+
+uint32 const AlchemySpecs[] = { S_TRANSMUTE, S_ELIXIR, S_POTION };
+uint32 const SmithSpecs[] = { S_WEAPON, S_ARMOR };
+uint32 const WeaponSubSpecs[] = { S_HAMMER, S_AXE, S_SWORD };
+uint32 const LeatherSpecs[] = { S_DRAGON, S_ELEMENTAL, S_TRIBAL };
+uint32 const TailorSpecs[] = { S_SPELLFIRE, S_MOONCLOTH, S_SHADOWEAVE };
+uint32 const EngineerSpecs[] = { S_GOBLIN, S_GNOMISH };
+
+bool CanEarnProfessionSpec(Player* player, uint32 specSpell, uint32 const* family, uint8 familySize)
+{
+    if (!player || player->HasSpell(specSpell))
+        return false;
+
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT `spec_spell` FROM `lg_char_spec` WHERE `guid` = {}", player->GetGUID().GetCounter());
+    if (!result)
+        return true;
+
+    bool earnedThis = false;
+    bool earnedOther = false;
+    do
+    {
+        uint32 const earned = (*result)[0].Get<uint32>();
+        bool inFamily = false;
+        for (uint8 i = 0; i < familySize; ++i)
+        {
+            if (family[i] == earned)
+            {
+                inFamily = true;
+                break;
+            }
+        }
+        if (!inFamily)
+            continue;
+        if (earned == specSpell)
+            earnedThis = true;
+        else
+            earnedOther = true;
+    } while (result->NextRow());
+
+    if (earnedThis)
+        return true;
+    return !earnedOther;
+}
 
 /*###
 # specialization trainers
@@ -458,11 +503,6 @@ class npc_prof_alchemy : public CreatureScript
 public:
     npc_prof_alchemy() : CreatureScript("npc_prof_alchemy") { }
 
-    inline bool HasAlchemySpell(Player* player)
-    {
-        return (player->HasSpell(S_TRANSMUTE) || player->HasSpell(S_ELIXIR) || player->HasSpell(S_POTION));
-    }
-
     bool OnGossipHello(Player* player, Creature* creature) override
     {
         if (creature->IsQuestGiver())
@@ -476,29 +516,29 @@ public:
 
         if (player->HasSkill(SKILL_ALCHEMY) && player->GetBaseSkillValue(SKILL_ALCHEMY) >= 325 && player->GetLevel() > 67)
         {
-            if (player->GetQuestRewardStatus(Q_MASTER_TRANSMUTE) || player->GetQuestRewardStatus(Q_MASTER_ELIXIR) || player->GetQuestRewardStatus(Q_MASTER_POTION))
+            switch (creature->GetEntry())
             {
-                switch (creature->GetEntry())
-                {
-                    case N_TRAINER_TRANSMUTE:                                 //Zarevhi
-                        if (!HasAlchemySpell(player))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_TRANSMUTE,    GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 1);
-                        if (player->HasSpell(S_TRANSMUTE))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_TRANSMUTE,  GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 4);
-                        break;
-                    case N_TRAINER_ELIXIR:                                 //Lorokeem
-                        if (!HasAlchemySpell(player))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_ELIXIR,       GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 2);
-                        if (player->HasSpell(S_ELIXIR))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_ELIXIR,     GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 5);
-                        break;
-                    case N_TRAINER_POTION:                                 //Lauranna Thar'well
-                        if (!HasAlchemySpell(player))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_POTION,       GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 3);
-                        if (player->HasSpell(S_POTION))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_POTION,     GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 6);
-                        break;
-                }
+                case N_TRAINER_TRANSMUTE:                                 //Zarevhi
+                    if (player->GetQuestRewardStatus(Q_MASTER_TRANSMUTE)
+                        && CanEarnProfessionSpec(player, S_TRANSMUTE, AlchemySpecs, 3))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_TRANSMUTE,    GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 1);
+                    if (player->HasSpell(S_TRANSMUTE))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_TRANSMUTE,  GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 4);
+                    break;
+                case N_TRAINER_ELIXIR:                                 //Lorokeem
+                    if (player->GetQuestRewardStatus(Q_MASTER_ELIXIR)
+                        && CanEarnProfessionSpec(player, S_ELIXIR, AlchemySpecs, 3))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_ELIXIR,       GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 2);
+                    if (player->HasSpell(S_ELIXIR))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_ELIXIR,     GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 5);
+                    break;
+                case N_TRAINER_POTION:                                 //Lauranna Thar'well
+                    if (player->GetQuestRewardStatus(Q_MASTER_POTION)
+                        && CanEarnProfessionSpec(player, S_POTION, AlchemySpecs, 3))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_POTION,       GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 3);
+                    if (player->HasSpell(S_POTION))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_POTION,     GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 6);
+                    break;
             }
         }
 
@@ -518,13 +558,16 @@ public:
                 break;
             //Learn Alchemy
             case GOSSIP_ACTION_INFO_DEF + 1:
-                ProcessCastaction(player, creature, S_TRANSMUTE, S_LEARN_TRANSMUTE, DoLearnCost(player));
+                if (CanEarnProfessionSpec(player, S_TRANSMUTE, AlchemySpecs, 3))
+                    ProcessCastaction(player, creature, S_TRANSMUTE, S_LEARN_TRANSMUTE, DoLearnCost(player));
                 break;
             case GOSSIP_ACTION_INFO_DEF + 2:
-                ProcessCastaction(player, creature, S_ELIXIR, S_LEARN_ELIXIR, DoLearnCost(player));
+                if (CanEarnProfessionSpec(player, S_ELIXIR, AlchemySpecs, 3))
+                    ProcessCastaction(player, creature, S_ELIXIR, S_LEARN_ELIXIR, DoLearnCost(player));
                 break;
             case GOSSIP_ACTION_INFO_DEF + 3:
-                ProcessCastaction(player, creature, S_POTION, S_LEARN_POTION, DoLearnCost(player));
+                if (CanEarnProfessionSpec(player, S_POTION, AlchemySpecs, 3))
+                    ProcessCastaction(player, creature, S_POTION, S_LEARN_POTION, DoLearnCost(player));
                 break;
             //Unlearn Alchemy
             case GOSSIP_ACTION_INFO_DEF + 4:
@@ -651,9 +694,11 @@ public:
                 {
                     case N_TRAINER_SMITHOMNI1:                                     //Myolor Sunderfury
                     case N_TRAINER_SMITHOMNI2:                                     //Krathok Moltenfist
-                        if (!player->HasSpell(S_ARMOR) && !player->HasSpell(S_WEAPON))
+                        if ((player->GetQuestRewardStatus(5283) || player->GetQuestRewardStatus(5301))
+                            && CanEarnProfessionSpec(player, S_ARMOR, SmithSpecs, 2))
                             AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_ARMOR_LEARN,   GOSSIP_SENDER_MAIN,          GOSSIP_ACTION_INFO_DEF + 1);
-                        if (!player->HasSpell(S_WEAPON) && !player->HasSpell(S_ARMOR))
+                        if ((player->GetQuestRewardStatus(5284) || player->GetQuestRewardStatus(5302))
+                            && CanEarnProfessionSpec(player, S_WEAPON, SmithSpecs, 2))
                             AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_WEAPON_LEARN,  GOSSIP_SENDER_MAIN,          GOSSIP_ACTION_INFO_DEF + 2);
                         break;
                     case N_TRAINER_WEAPON1:                                     //Ironus Coldsteel
@@ -675,19 +720,19 @@ public:
             switch (creatureId)
             {
                 case N_TRAINER_HAMMER:                                     //Lilith the Lithe
-                    if (!HasWeaponSub(player))
+                    if (CanEarnProfessionSpec(player, S_HAMMER, WeaponSubSpecs, 3))
                         AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_HAMMER,       GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 5);
                     if (player->HasSpell(S_HAMMER))
                         AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_HAMMER,     GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 8);
                     break;
                 case N_TRAINER_AXE:                                     //Kilram
-                    if (!HasWeaponSub(player))
+                    if (CanEarnProfessionSpec(player, S_AXE, WeaponSubSpecs, 3))
                         AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_AXE,          GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 6);
                     if (player->HasSpell(S_AXE))
                         AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_AXE,        GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 9);
                     break;
                 case N_TRAINER_SWORD:                                     //Seril Scourgebane
-                    if (!HasWeaponSub(player))
+                    if (CanEarnProfessionSpec(player, S_SWORD, WeaponSubSpecs, 3))
                         AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_SWORD,        GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 7);
                     if (player->HasSpell(S_SWORD))
                         AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_SWORD,      GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 10);
@@ -711,10 +756,12 @@ public:
                 break;
             //Learn Armor/Weapon
             case GOSSIP_ACTION_INFO_DEF + 1:
-                ProcessCastaction(player, creature, S_ARMOR, S_LEARN_ARMOR, 0);
+                if (CanEarnProfessionSpec(player, S_ARMOR, SmithSpecs, 2))
+                    ProcessCastaction(player, creature, S_ARMOR, S_LEARN_ARMOR, 0);
                 break;
             case GOSSIP_ACTION_INFO_DEF + 2:
-                ProcessCastaction(player, creature, S_WEAPON, S_LEARN_WEAPON, 0);
+                if (CanEarnProfessionSpec(player, S_WEAPON, SmithSpecs, 2))
+                    ProcessCastaction(player, creature, S_WEAPON, S_LEARN_WEAPON, 0);
                 break;
             //Unlearn Armor/Weapon
             case GOSSIP_ACTION_INFO_DEF + 3:
@@ -728,13 +775,16 @@ public:
                 break;
             //Learn Hammer/Axe/Sword
             case GOSSIP_ACTION_INFO_DEF + 5:
-                ProcessCastaction(player, creature, S_HAMMER, S_LEARN_HAMMER, 0);
+                if (CanEarnProfessionSpec(player, S_HAMMER, WeaponSubSpecs, 3))
+                    ProcessCastaction(player, creature, S_HAMMER, S_LEARN_HAMMER, 0);
                 break;
             case GOSSIP_ACTION_INFO_DEF + 6:
-                ProcessCastaction(player, creature, S_AXE, S_LEARN_AXE, 0);
+                if (CanEarnProfessionSpec(player, S_AXE, WeaponSubSpecs, 3))
+                    ProcessCastaction(player, creature, S_AXE, S_LEARN_AXE, 0);
                 break;
             case GOSSIP_ACTION_INFO_DEF + 7:
-                ProcessCastaction(player, creature, S_SWORD, S_LEARN_SWORD, 0);
+                if (CanEarnProfessionSpec(player, S_SWORD, WeaponSubSpecs, 3))
+                    ProcessCastaction(player, creature, S_SWORD, S_LEARN_SWORD, 0);
                 break;
             //Unlearn Hammer/Axe/Sword
             case GOSSIP_ACTION_INFO_DEF + 8:
@@ -842,11 +892,6 @@ class npc_prof_leather : public CreatureScript
 public:
     npc_prof_leather() : CreatureScript("npc_prof_leather") { }
 
-    inline bool HasLeatherSpecialty(Player* player)
-    {
-        return (player->HasSpell(S_DRAGON) || player->HasSpell(S_ELEMENTAL) || player->HasSpell(S_TRIBAL));
-    }
-
     bool OnGossipHello(Player* player, Creature* creature) override
     {
         ClearGossipMenuFor(player);
@@ -942,11 +987,6 @@ class npc_prof_tailor : public CreatureScript
 public:
     npc_prof_tailor() : CreatureScript("npc_prof_tailor") { }
 
-    inline bool HasTailorSpell(Player* player)
-    {
-        return (player->HasSpell(S_MOONCLOTH) || player->HasSpell(S_SHADOWEAVE) || player->HasSpell(S_SPELLFIRE));
-    }
-
     bool OnGossipHello(Player* player, Creature* creature) override
     {
         if (creature->IsQuestGiver())
@@ -963,35 +1003,29 @@ public:
         //TAILORING SPEC
         if (player->HasSkill(SKILL_TAILORING) && player->GetBaseSkillValue(SKILL_TAILORING) >= 350 && player->GetLevel() > 59)
         {
-            if (player->GetQuestRewardStatus(10831) || player->GetQuestRewardStatus(10832) || player->GetQuestRewardStatus(10833))
+            switch (creature->GetEntry())
             {
-                switch (creature->GetEntry())
-                {
-                    case N_TRAINER_SPELLFIRE:                                 //Gidge Spellweaver
-                        if (!HasTailorSpell(player))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_SPELLFIRE,    GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 1);
-                        if (player->HasSpell(S_SPELLFIRE))
-                        {
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_SPELLFIRE,  GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 4);
-                        }
-                        break;
-                    case N_TRAINER_MOONCLOTH:                                 //Nasmara Moonsong
-                        if (!HasTailorSpell(player))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_MOONCLOTH,    GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 2);
-                        if (player->HasSpell(S_MOONCLOTH))
-                        {
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_MOONCLOTH,  GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 5);
-                        }
-                        break;
-                    case N_TRAINER_SHADOWEAVE:                                 //Andrion Darkspinner
-                        if (!HasTailorSpell(player))
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_SHADOWEAVE,   GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 3);
-                        if (player->HasSpell(S_SHADOWEAVE))
-                        {
-                            AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_SHADOWEAVE, GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 6);
-                        }
-                        break;
-                }
+                case N_TRAINER_SPELLFIRE:                                 //Gidge Spellweaver
+                    if (player->GetQuestRewardStatus(10832)
+                        && CanEarnProfessionSpec(player, S_SPELLFIRE, TailorSpecs, 3))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_SPELLFIRE,    GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 1);
+                    if (player->HasSpell(S_SPELLFIRE))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_SPELLFIRE,  GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 4);
+                    break;
+                case N_TRAINER_MOONCLOTH:                                 //Nasmara Moonsong
+                    if (player->GetQuestRewardStatus(10831)
+                        && CanEarnProfessionSpec(player, S_MOONCLOTH, TailorSpecs, 3))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_MOONCLOTH,    GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 2);
+                    if (player->HasSpell(S_MOONCLOTH))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_MOONCLOTH,  GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 5);
+                    break;
+                case N_TRAINER_SHADOWEAVE:                                 //Andrion Darkspinner
+                    if (player->GetQuestRewardStatus(10833)
+                        && CanEarnProfessionSpec(player, S_SHADOWEAVE, TailorSpecs, 3))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_SHADOWEAVE,   GOSSIP_SENDER_LEARN,    GOSSIP_ACTION_INFO_DEF + 3);
+                    if (player->HasSpell(S_SHADOWEAVE))
+                        AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_UNLEARN_SHADOWEAVE, GOSSIP_SENDER_UNLEARN,  GOSSIP_ACTION_INFO_DEF + 6);
+                    break;
             }
         }
 
@@ -1011,13 +1045,16 @@ public:
                 break;
             //Learn Tailor
             case GOSSIP_ACTION_INFO_DEF + 1:
-                ProcessCastaction(player, creature, S_SPELLFIRE, S_LEARN_SPELLFIRE, DoLearnCost(player));
+                if (CanEarnProfessionSpec(player, S_SPELLFIRE, TailorSpecs, 3))
+                    ProcessCastaction(player, creature, S_SPELLFIRE, S_LEARN_SPELLFIRE, DoLearnCost(player));
                 break;
             case GOSSIP_ACTION_INFO_DEF + 2:
-                ProcessCastaction(player, creature, S_MOONCLOTH, S_LEARN_MOONCLOTH, DoLearnCost(player));
+                if (CanEarnProfessionSpec(player, S_MOONCLOTH, TailorSpecs, 3))
+                    ProcessCastaction(player, creature, S_MOONCLOTH, S_LEARN_MOONCLOTH, DoLearnCost(player));
                 break;
             case GOSSIP_ACTION_INFO_DEF + 3:
-                ProcessCastaction(player, creature, S_SHADOWEAVE, S_LEARN_SHADOWEAVE, DoLearnCost(player));
+                if (CanEarnProfessionSpec(player, S_SHADOWEAVE, TailorSpecs, 3))
+                    ProcessCastaction(player, creature, S_SHADOWEAVE, S_LEARN_SHADOWEAVE, DoLearnCost(player));
                 break;
             //Unlearn Tailor
             case GOSSIP_ACTION_INFO_DEF + 4:
@@ -1112,43 +1149,36 @@ class go_evil_book_for_dummies : public GameObjectScript
 public:
     go_evil_book_for_dummies() : GameObjectScript("go_evil_book_for_dummies") { }
 
-    inline bool HasLeatherSpecialty(Player* player)
-    {
-        return (player->HasSpell(S_DRAGON) || player->HasSpell(S_ELEMENTAL) || player->HasSpell(S_TRIBAL));
-    }
-
     bool OnGossipHello(Player* player, GameObject* gameobject) override
     {
         //ENGINEERING SPEC
         if (player->HasSkill(SKILL_ENGINEERING) && player->GetBaseSkillValue(SKILL_ENGINEERING) >= 200 && player->GetLevel() >= 30)
         {
-            if (player->GetQuestRewardStatus(3643) || player->GetQuestRewardStatus(3641) || player->GetQuestRewardStatus(3639))
-            {
-                if (player->HasSpell(S_GOBLIN)) // Has Goblin specialization
-                {
-                    AddGossipItemFor(player, 0, GOSSIP_UNLEARN_GOBLIN, GOSSIP_SENDER_UNLEARN, GOSSIP_ACTION_INFO_DEF + 3, BOX_UNLEARN_ENGIN_SPEC, DoHighUnlearnCost(player), false);
-                }
-                else if (player->HasSpell(S_GNOMISH)) // Has Gnomish specialization
-                {
-                    AddGossipItemFor(player, 0, GOSSIP_UNLEARN_GNOMISH, GOSSIP_SENDER_UNLEARN, GOSSIP_ACTION_INFO_DEF + 4, BOX_UNLEARN_ENGIN_SPEC, DoHighUnlearnCost(player), false);
-                }
-                else // does not have any specialization
-                {
-                    AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_GOBLIN, GOSSIP_SENDER_LEARN, GOSSIP_ACTION_INFO_DEF + 1, BOX_LEARN_ENGIN_SPEC, DoLearnCost(player), false);
-                    AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_GNOMISH, GOSSIP_SENDER_LEARN, GOSSIP_ACTION_INFO_DEF + 2, BOX_LEARN_ENGIN_SPEC, DoLearnCost(player), false);
-                }
-            }
+            if (player->HasSpell(S_GOBLIN))
+                AddGossipItemFor(player, 0, GOSSIP_UNLEARN_GOBLIN, GOSSIP_SENDER_UNLEARN, GOSSIP_ACTION_INFO_DEF + 3, BOX_UNLEARN_ENGIN_SPEC, DoHighUnlearnCost(player), false);
+            else if (player->GetQuestRewardStatus(3639)
+                && CanEarnProfessionSpec(player, S_GOBLIN, EngineerSpecs, 2))
+                AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_GOBLIN, GOSSIP_SENDER_LEARN, GOSSIP_ACTION_INFO_DEF + 1, BOX_LEARN_ENGIN_SPEC, DoLearnCost(player), false);
+
+            if (player->HasSpell(S_GNOMISH))
+                AddGossipItemFor(player, 0, GOSSIP_UNLEARN_GNOMISH, GOSSIP_SENDER_UNLEARN, GOSSIP_ACTION_INFO_DEF + 4, BOX_UNLEARN_ENGIN_SPEC, DoHighUnlearnCost(player), false);
+            else if ((player->GetQuestRewardStatus(3641) || player->GetQuestRewardStatus(3643))
+                && CanEarnProfessionSpec(player, S_GNOMISH, EngineerSpecs, 2))
+                AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_LEARN_GNOMISH, GOSSIP_SENDER_LEARN, GOSSIP_ACTION_INFO_DEF + 2, BOX_LEARN_ENGIN_SPEC, DoLearnCost(player), false);
         }
 
         //LEATHERWORKING SPEC
         if (player->HasSkill(SKILL_LEATHERWORKING) && player->GetBaseSkillValue(SKILL_LEATHERWORKING) >= 225 && player->GetLevel() >= 40)
         {
-            if (!HasLeatherSpecialty(player) && (player->GetQuestRewardStatus(5141) || player->GetQuestRewardStatus(5143) || player->GetQuestRewardStatus(5144) || player->GetQuestRewardStatus(5145) || player->GetQuestRewardStatus(5146) || player->GetQuestRewardStatus(5148)))
-            {
+            if ((player->GetQuestRewardStatus(5141) || player->GetQuestRewardStatus(5145))
+                && CanEarnProfessionSpec(player, S_DRAGON, LeatherSpecs, 3))
                 AddGossipItemFor(player, GOSSIP_MENU_GO_SOOTHSAYING_FOR_DUMMIES, GOSSIP_MENU_OPTION_GO_LEARN_DRAGONSCALE, GOSSIP_SENDER_LEARN, GOSSIP_ACTION_INFO_DEF + 5);
+            if ((player->GetQuestRewardStatus(5144) || player->GetQuestRewardStatus(5146))
+                && CanEarnProfessionSpec(player, S_ELEMENTAL, LeatherSpecs, 3))
                 AddGossipItemFor(player, GOSSIP_MENU_GO_SOOTHSAYING_FOR_DUMMIES, GOSSIP_MENU_OPTION_GO_LEARN_ELEMENTAL, GOSSIP_SENDER_LEARN, GOSSIP_ACTION_INFO_DEF + 6);
+            if ((player->GetQuestRewardStatus(5143) || player->GetQuestRewardStatus(5148))
+                && CanEarnProfessionSpec(player, S_TRIBAL, LeatherSpecs, 3))
                 AddGossipItemFor(player, GOSSIP_MENU_GO_SOOTHSAYING_FOR_DUMMIES, GOSSIP_MENU_OPTION_GO_LEARN_TRIBAL, GOSSIP_SENDER_LEARN, GOSSIP_ACTION_INFO_DEF + 7);
-            }
         }
 
         SendGossipMenuFor(player, player->GetGossipTextId(gameobject), gameobject->GetGUID());
@@ -1161,11 +1191,13 @@ public:
         {
             // Learn Goblin
             case GOSSIP_ACTION_INFO_DEF + 1:
-                ProcessCastaction(player, nullptr, S_GOBLIN, S_LEARN_GOBLIN, DoLearnCost(player));
+                if (CanEarnProfessionSpec(player, S_GOBLIN, EngineerSpecs, 2))
+                    ProcessCastaction(player, nullptr, S_GOBLIN, S_LEARN_GOBLIN, DoLearnCost(player));
                 break;
             // Learn Gnomish
             case GOSSIP_ACTION_INFO_DEF + 2:
-                ProcessCastaction(player, nullptr, S_GNOMISH, S_LEARN_GNOMISH, DoLearnCost(player));
+                if (CanEarnProfessionSpec(player, S_GNOMISH, EngineerSpecs, 2))
+                    ProcessCastaction(player, nullptr, S_GNOMISH, S_LEARN_GNOMISH, DoLearnCost(player));
                 break;
             //Unlearn Goblin
             case GOSSIP_ACTION_INFO_DEF + 3:
@@ -1177,15 +1209,18 @@ public:
                 break;
             //Learn Dragon
             case GOSSIP_ACTION_INFO_DEF + 5:
-                ProcessCastaction(player, nullptr, S_DRAGON, S_LEARN_DRAGON, 0);
+                if (CanEarnProfessionSpec(player, S_DRAGON, LeatherSpecs, 3))
+                    ProcessCastaction(player, nullptr, S_DRAGON, S_LEARN_DRAGON, 0);
                 break;
             //Learn Elemental
             case GOSSIP_ACTION_INFO_DEF + 6:
-                ProcessCastaction(player, nullptr, S_ELEMENTAL, S_LEARN_ELEMENTAL, 0);
+                if (CanEarnProfessionSpec(player, S_ELEMENTAL, LeatherSpecs, 3))
+                    ProcessCastaction(player, nullptr, S_ELEMENTAL, S_LEARN_ELEMENTAL, 0);
                 break;
             //Learn Tribal
             case GOSSIP_ACTION_INFO_DEF + 7:
-                ProcessCastaction(player, nullptr, S_TRIBAL, S_LEARN_TRIBAL, 0);
+                if (CanEarnProfessionSpec(player, S_TRIBAL, LeatherSpecs, 3))
+                    ProcessCastaction(player, nullptr, S_TRIBAL, S_LEARN_TRIBAL, 0);
                 break;
         }
     }

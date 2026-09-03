@@ -36,6 +36,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
+#include "Player.h"
 #include "PoolMgr.h"
 #include "ScriptMgr.h"
 #include "TC9Sidecar.h"
@@ -2236,8 +2237,19 @@ bool InstanceMap::Reset(uint8 method, GuidList* globalResetSkipList)
     {
         if (method == INSTANCE_RESET_ALL || method == INSTANCE_RESET_CHANGE_DIFFICULTY)
         {
+            std::vector<Player*> kick;
             for (MapRefMgr::iterator itr = m_mapRefMgr.begin(); itr != m_mapRefMgr.end(); ++itr)
-                itr->GetSource()->SendResetFailedNotify(GetId());
+                kick.push_back(itr->GetSource());
+            for (Player* pl : kick)
+            {
+                if (!pl)
+                    continue;
+                pl->TeleportTo(pl->m_homebindMapId, pl->m_homebindX, pl->m_homebindY, pl->m_homebindZ, pl->GetOrientation());
+            }
+            m_unloadWhenEmpty = true;
+            m_unloadTimer = MIN_UNLOAD_DELAY;
+            m_resetAfterUnload = true;
+            return m_mapRefMgr.IsEmpty();
         }
     }
     else
@@ -2278,13 +2290,8 @@ void InstanceMap::PermBindAllPlayers()
         // some players may already be permanently bound, in this case nothing happens
         InstancePlayerBind* bind = sInstanceSaveMgr->PlayerGetBoundInstance(player->GetGUID(), save->GetMapId(), save->GetDifficulty());
 
-        if (!bind || !bind->perm)
-        {
-            WorldPacket data(SMSG_INSTANCE_SAVE_CREATED, 4);
-            data << uint32(0);
-            player->SendDirectMessage(&data);
-            sInstanceSaveMgr->PlayerBindToInstance(player->GetGUID(), save, true, player);
-        }
+        if (!bind)
+            sInstanceSaveMgr->PlayerBindToInstance(player->GetGUID(), save, false, player);
 
         // Xinef: Difficulty change prevention
         if (group)

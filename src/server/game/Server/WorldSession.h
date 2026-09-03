@@ -1081,6 +1081,7 @@ public:                                                 // opcodes handlers
     void SendBfEntered(uint32 battleId);
     void SendBfLeaveMessage(uint32 battleId, BFLeaveReason reason = BF_LEAVE_REASON_EXITED);
     void HandleBfQueueInviteResponse(WorldPacket& recvData);
+    void HandleBfQueueRequest(WorldPacket& recvData);
     void HandleBfEntryInviteResponse(WorldPacket& recvData);
     void HandleBfExitRequest(WorldPacket& recvData);
 

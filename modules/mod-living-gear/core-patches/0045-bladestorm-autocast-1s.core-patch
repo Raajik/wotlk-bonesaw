@@ -1,0 +1,17 @@
+Feature #146 (report id 146 / GitHub issue #144): Arms Bladestorm autocasts
+Whirlwind and Thunder Clap every second instead of every six.
+
+Touches: modules/mod-living-gear/src/LivingGear_ClassPerks.cpp
+         (BLADESTORM_AUTOCAST_MS 6000 -> 1000)
+No tracked src/server/ files change -- no core diff in this record; it
+documents gitignored module edits.
+
+Why: report #146 (Dugrom, warrior) -- "change arms perks to cast thunderclap
+and whirwind every second instead of every 6".
+
+The Arms class perk has fired Whirlwind + Thunder Clap on a fixed 6-second
+cadence while Bladestorm spins since bug report #19 established the mechanic.
+The tick already divides the interval by the player's cast-speed modifier and
+floors the result at 1s, so 6000 -> 1000 is the whole change: the perk now
+autocasts every second, shortened further by haste down to the existing 1s
+floor.

@@ -1012,12 +1012,20 @@ bool BfCapturePoint::Update(uint32 diff)
             }
 
     // get the difference of numbers
-    float factDiff = ((float)counts[TEAM_ALLIANCE] - (float)counts[TEAM_HORDE]) * diff / BATTLEFIELD_OBJECTIVE_UPDATE_INTERVAL;
+    // Report #206: the capture-rate config (OutdoorPvPCaptureRate) scaled the
+    // data-driven OutdoorPvP points but never the Battlefield ones, so the
+    // 25x capture speed ship left Wintergrasp workshop conversion at 1x --
+    // the Data16=2 rows only raised the clamp ceiling, which a lone
+    // capturer never reached. Same shape as OutdoorPvP: the rate
+    // multiplies both the raw delta and the per-tick clamp.
+    float const captureRate = sWorld->getFloatConfig(CONFIG_OUTDOOR_PVP_CAPTURE_RATE);
+    float factDiff = ((float)counts[TEAM_ALLIANCE] - (float)counts[TEAM_HORDE]) * diff
+        / BATTLEFIELD_OBJECTIVE_UPDATE_INTERVAL * captureRate;
     if (G3D::fuzzyEq(factDiff, 0.0f))
         return false;
 
     TeamId challengerId = TEAM_NEUTRAL;
-    float maxDiff = MaxSpeed * diff;
+    float maxDiff = MaxSpeed * diff * captureRate;
 
     if (factDiff < 0)
     {

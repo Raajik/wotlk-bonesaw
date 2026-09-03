@@ -21,6 +21,9 @@
 #include "GameGraveyard.h"
 #include "GameTime.h"
 #include "ObjectMgr.h"
+
+#include <limits>
+
 #include "Player.h"
 #include "Util.h"
 #include "World.h"
@@ -157,7 +160,12 @@ void BattlegroundEY::UpdatePointsState()
 
     for (uint8 point = 0; point < EY_POINTS_MAX; ++point)
     {
-        _capturePointInfo[point]._barStatus += std::max<int8>(std::min<int8>(_capturePointInfo[point]._playersCount[TEAM_ALLIANCE] - _capturePointInfo[point]._playersCount[TEAM_HORDE], BG_EY_POINT_MAX_CAPTURERS_COUNT), -BG_EY_POINT_MAX_CAPTURERS_COUNT);
+        // Capture speed 25x (GitHub #167): scale the per-tick bar delta like
+        // the data-driven points (GO Data16 = 25). The delta is clamped to the
+        // bar's own 0..100 range on the next line, so the larger step cannot
+        // push the int8 status out of range.
+        int8 const captureDelta = std::max<int8>(std::min<int8>(_capturePointInfo[point]._playersCount[TEAM_ALLIANCE] - _capturePointInfo[point]._playersCount[TEAM_HORDE], BG_EY_POINT_MAX_CAPTURERS_COUNT), -BG_EY_POINT_MAX_CAPTURERS_COUNT);
+        _capturePointInfo[point]._barStatus += int8(std::min<int32>(int32(captureDelta) * BG_EY_CAPTURE_SPEED_MULT, std::numeric_limits<int8>::max()));
         _capturePointInfo[point]._barStatus = std::max<int8>(std::min<int8>(_capturePointInfo[point]._barStatus, BG_EY_PROGRESS_BAR_ALI_CONTROLLED), BG_EY_PROGRESS_BAR_HORDE_CONTROLLED);
 
         TeamId pointOwnerTeamId = TEAM_NEUTRAL;

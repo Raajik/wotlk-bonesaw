@@ -528,6 +528,55 @@ void WorldSocket::SendPacket(WorldPacket const& packet)
     _bufferQueue.Enqueue(new EncryptableAndCompressiblePacket(packet, _authCrypt.IsInitialized()));
 }
 
+// Living Gear core-patch 0012: realm ids that describe THIS same worldserver.
+//
+// A realm row is really "an address a client can reach this worldserver on",
+// but the check below treats the row id as the identity of the server itself,
+// so a second row pointing at the same worldserver is rejected outright with
+// "requested connecting with realm id N but this realm has id M set in config".
+//
+// That matters when one worldserver must be reachable at two addresses that
+// cannot be reconciled into one value. Here: 127.0.0.1 for the machine hosting
+// it, which cannot reach its own Tailscale address because Tailscale does not
+// hairpin to self, and 100.65.58.17 for everyone else. No single address works
+// for both, and the per-client mechanism AzerothCore provides for this
+// (localAddress/localSubnetMask) is useless behind Docker, which NATs every
+// connection to the gateway before the authserver ever sees a client IP.
+//
+// `RealmID.Aliases` (worldserver.conf, comma separated) lists the extra ids
+// that are this same server reached a different way. Empty by default, so
+// behaviour is unchanged unless it is set. This is NOT a way to share one
+// worldserver between genuinely different realms: the character database is
+// still singular, so every alias is the same world and the same characters.
+//
+// Parsed by hand to keep this patch from needing includes WorldSocket.cpp
+// does not already have.
+static bool IsAliasRealmId(uint32 requested)
+{
+    static std::string const aliases = sConfigMgr->GetOption<std::string>("RealmID.Aliases", "");
+    std::size_t pos = 0;
+    while (pos <= aliases.size())
+    {
+        std::size_t end = aliases.find(',', pos);
+        if (end == std::string::npos)
+            end = aliases.size();
+        uint32 value = 0;
+        bool haveDigit = false;
+        for (std::size_t i = pos; i < end; ++i)
+        {
+            char const c = aliases[i];
+            if (c < '0' || c > '9')
+                continue;
+            value = value * 10 + uint32(c - '0');
+            haveDigit = true;
+        }
+        if (haveDigit && value == requested)
+            return true;
+        pos = end + 1;
+    }
+    return false;
+}
+
 void WorldSocket::HandleAuthSession(WorldPacket & recvPacket)
 {
     std::shared_ptr<ClientAuthSession> authSession = std::make_shared<ClientAuthSession>();
@@ -593,7 +642,8 @@ void WorldSocket::HandleAuthSessionCallback(std::shared_ptr<ClientAuthSession> a
         return;
     }
 
-    if (!sToCloud9Sidecar->ClusterModeEnabled() && authSession->RealmID != realm.Id.Realm)
+    if (!sToCloud9Sidecar->ClusterModeEnabled() && authSession->RealmID != realm.Id.Realm
+        && !IsAliasRealmId(authSession->RealmID))
     {
         SendAuthResponseError(REALM_LIST_REALM_NOT_FOUND);
         LOG_ERROR("network", "WorldSocket::HandleAuthSession: Client {} requested connecting with realm id {} but this realm has id {} set in config.",

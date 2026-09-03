@@ -26,6 +26,7 @@
 #include "ScriptMgr.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <sstream>
 
 void BuildPlayerLockDungeonBlock(WorldPacket& data, lfg::LfgLockMap const& lock)
 {
@@ -542,6 +543,52 @@ void WorldSession::SendLfgBootProposalUpdate(lfg::LfgPlayerBoot const& boot)
     SendPacket(&data);
 }
 
+// What goes in SMSG_LFG_PROPOSAL_UPDATE's role field: the AzerothCore role
+// bitmask, unchanged apart from guaranteeing that at least one role bit is set.
+//
+// This was guessed at four times before anyone read the client. It is now
+// settled by disassembly, so do not re-theorise it. The 3.3.5a 12340 Wow.exe
+// turns that field into the Lua string at two call sites -- 0x00553093
+// (GetLFGProposal, your own role) and 0x00554255 (GetLFGProposalMember) -- and
+// both run the identical sequence:
+//
+//     a8 02  test al, 2      -> [0x00ad87b0] "TANK"
+//     a8 04  test al, 4      -> [0x00ad87b4] "HEALER"
+//     a8 08  test al, 8      -> [0x00ad87b8] "DAMAGER"
+//     otherwise                 push 0x009e4110 "UNKNOWN"
+//
+// It is a BIT TEST, not an index, and the bit values are exactly AzerothCore's.
+// Bit 0 is read separately (and eax, 1) as the isLeader return, which is why
+// the leader bit belongs in the field rather than being stripped -- stripping
+// it is what cost the ready popup its leader crown.
+//
+// "UNKNOWN" is the fallback for a value with none of bits 2/4/8, and it is the
+// only way GetTexCoordsForRole (LFGFrame.lua:337) can be handed it, since that
+// function error()s on anything but GUIDE/TANK/HEALER/DAMAGER. So the Lua error
+//
+//     Interface\FrameXML\LFGFrame.lua:337: Unknown role: UNKNOWN
+//
+// means, and can only mean, that a proposal member reached the client with a
+// role mask holding none of those three bits. In practice that was never a
+// member we SENT -- it was the slots we did not send, which the client reads
+// anyway. See the padding loop at the end of SendLfgUpdateProposal.
+//
+// That also explains the one observation that got a correct fix reverted:
+// 0.1.74 sent 0/1/2 as a table index, and index 2 (our "damage") is the TANK
+// bit, so rogues were drawn as tanks while indices 0 and 1 -- carrying no role
+// bit at all -- threw this very error. The index theory was self-refuting.
+//
+// tools/client-patch/dump_lfg_role_table.py reprints the bytes above.
+static uint8 ProposalRoleForClient(uint8 role)
+{
+    // Keep the leader bit and whatever role bits the queue recorded; only
+    // substitute when there is no role at all, which the client cannot draw.
+    if (role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE))
+        return role;
+
+    return uint8((role & lfg::PLAYER_ROLE_LEADER) | lfg::PLAYER_ROLE_DAMAGE);
+}
+
 void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
 {
     ObjectGuid guid = GetPlayer()->GetGUID();
@@ -561,13 +608,15 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
 
     dungeonEntry = sLFGMgr->GetLFGDungeonEntry(dungeonEntry);
 
-    WorldPacket data(SMSG_LFG_PROPOSAL_UPDATE, 4 + 1 + 4 + 4 + 1 + 1 + proposal.players.size() * (4 + 1 + 1 + 1 + 1 + 1));
+    WorldPacket data(SMSG_LFG_PROPOSAL_UPDATE, 4 + 1 + 4 + 4 + 1 + 1 + MAXGROUPSIZE * (4 + 1 + 1 + 1 + 1 + 1));
     data << uint32(dungeonEntry);                          // Dungeon
     data << uint8(proposal.state);                         // Proposal state
     data << uint32(proposal.id);                           // Proposal ID
     data << uint32(proposal.encounters);                   // encounters done
     data << uint8(silent);                                 // Show proposal window
-    data << uint8(proposal.players.size());                // Group size
+    // ALWAYS MAXGROUPSIZE, however many members the proposal really has. See
+    // the padding loop at the end of this function for why.
+    data << uint8(MAXGROUPSIZE);                           // Group size
 
     // Sort by roles: tank, healer, dps
     std::vector<ObjectGuid> ordered;
@@ -577,9 +626,12 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
 
     for (auto const& [pguid, player] : proposal.players)
     {
-        if (player.role & lfg::PLAYER_ROLE_TANK)
+        // Sort on the mask actually sent, tested in the same order the client
+        // tests it, so the row order matches the icon each row will draw.
+        uint8 const sortRole = ProposalRoleForClient(player.role);
+        if (sortRole & lfg::PLAYER_ROLE_TANK)
             tanks.push_back(pguid);
-        else if (player.role & lfg::PLAYER_ROLE_HEALER)
+        else if (sortRole & lfg::PLAYER_ROLE_HEALER)
             healers.push_back(pguid);
         else
             dps.push_back(pguid);
@@ -589,10 +641,38 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
     ordered.insert(ordered.end(), healers.begin(), healers.end());
     ordered.insert(ordered.end(), dps.begin(), dps.end());
 
+    // The client keeps exactly MAXGROUPSIZE member slots and GetLFGProposalMember
+    // refuses an index outside 1..5 (cmp eax, 5 / jae bail at 0x0055306b), so
+    // anything past the fifth member is unreachable by the UI. Drop it rather
+    // than hand the client a count it cannot represent -- but never drop the
+    // recipient, because GetLFGProposal locates "you" by scanning those same
+    // five slots for the self flag and returns nothing useful if it is absent.
+    if (ordered.size() > size_t(MAXGROUPSIZE))
+    {
+        auto const self = std::find(ordered.begin(), ordered.end(), guid);
+        if (self != ordered.end() && std::distance(ordered.begin(), self) >= MAXGROUPSIZE)
+            std::iter_swap(ordered.begin() + (MAXGROUPSIZE - 1), self);
+
+        ordered.resize(MAXGROUPSIZE);
+    }
+
+    uint32 slot = 0;
     for (auto const& pguid : ordered)
     {
         lfg::LfgProposalPlayer const& player = proposal.players.find(pguid)->second;
-        data << uint32(player.role);                       // Role
+        ++slot; // 1-based, and it is what the client draws as its Nth icon
+
+        uint8 const roleOut = ProposalRoleForClient(player.role);
+
+        // A member with no role bits is a genuine upstream bug -- a bot placed
+        // into the group outside the queue, or a proposal formed without
+        // CheckGroupRoles running. ProposalRoleForClient covers for it so the
+        // client still has something to draw; say so rather than hide it.
+        if (!(player.role & (lfg::PLAYER_ROLE_TANK | lfg::PLAYER_ROLE_HEALER | lfg::PLAYER_ROLE_DAMAGE)))
+            LOG_ERROR("lfg", "SMSG_LFG_PROPOSAL_UPDATE: proposal {} slot {} member [{}] has no LFG role at all (mask {}), sending damage",
+                proposal.id, slot, pguid.ToString(), uint32(player.role));
+
+        data << uint32(roleOut);                           // Role
         data << uint8(pguid == guid);                      // Self player
         if (!player.group)                                 // Player not in a group
         {
@@ -607,6 +687,50 @@ void WorldSession::SendLfgUpdateProposal(lfg::LfgProposal const& proposal)
         data << uint8(player.accept != lfg::LFG_ANSWER_PENDING);// Answered
         data << uint8(player.accept == lfg::LFG_ANSWER_AGREE);  // Accepted
     }
+    // PAD TO MAXGROUPSIZE. This is the fix for
+    //
+    //     Interface\FrameXML\LFGFrame.lua:337: Unknown role: UNKNOWN
+    //
+    // and it is a server-side fix for a hard-coded client assumption.
+    //
+    // GetLFGProposal does NOT return the member count this packet carries. It
+    // pushes a constant: `fld qword [0x009f5988]` at 0x005542fd, and that
+    // qword is 5.0. So LFDDungeonReadyPopup_Update always runs
+    //
+    //     for i=1, numMembers do LFDDungeonReadyStatus_UpdateIcon(...Player"..i)
+    //
+    // five times, and the following `for i=numMembers+1, NUM_LFD_MEMBERS` loop
+    // that would hide unused rows is 6..5 and never runs. Every slot this
+    // packet did not fill is read out of stale or zeroed client memory, comes
+    // back with no role bit, and throws the Lua error above -- once per
+    // unfilled slot.
+    //
+    // Retail never hit this because a proposal there is always exactly five.
+    // Bonesaw's queue deliberately pops incomplete ones -- LFGQueue.cpp:339,
+    // allowIncomplete = hasSoloQueue() || raidQueue || allowBotFill -- and
+    // fills the group with bots on accept, so two-member proposals are normal
+    // here and cost the player three Lua errors per pop.
+    //
+    // The padding describes what the group is about to become: the bot fill
+    // brings it to five, and the fill produces dps once the tank and healer
+    // slots are covered. Marking them answered+accepted keeps the popup from
+    // showing three seats waiting forever on players who do not exist yet.
+    for (size_t filled = ordered.size(); filled < size_t(MAXGROUPSIZE); ++filled)
+    {
+        data << uint32(lfg::PLAYER_ROLE_DAMAGE);           // Role
+        data << uint8(0);                                  // Self player
+        data << uint8(0);                                  // Not in dungeon
+        data << uint8(0);                                  // Not same group
+        data << uint8(1);                                  // Answered
+        data << uint8(1);                                  // Accepted
+    }
+
+    // Layout, confirmed against a byte capture of a live 2-member proposal:
+    //   uint32 dungeonEntry, uint8 state, uint32 proposalId, uint32 encounters,
+    //   uint8 silent, uint8 memberCount,
+    //   then per member: uint32 role, uint8 self, uint8 inDungeon,
+    //                    uint8 sameGroup, uint8 answered, uint8 accepted
+    // i.e. 15 + 9 * memberCount, so 60 bytes now that the count is always five.
     SendPacket(&data);
 }
 

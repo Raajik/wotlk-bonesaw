@@ -895,13 +895,16 @@ bool Player::UpdateFishingSkill()
         return false;
     }
 
+    uint32 fishing_skill_gain = sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING);
+    sScriptMgr->OnPlayerUpdateGatheringSkill(this, SKILL_FISHING, SkillValue, 0, 0, 0, fishing_skill_gain);
+
     /* Whenever the player clicks on the fishing gameobject the
      * core will decide based on a probability if the skill raises or not.
      */
     return UpdateSkillPro(
         SKILL_FISHING,
         static_cast<int32>(getProbabilityOfLevelUp(SkillValue)) * 10,
-        sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING));
+        fishing_skill_gain);
 }
 
 // levels sync. with spell requirement for skill levels to learn

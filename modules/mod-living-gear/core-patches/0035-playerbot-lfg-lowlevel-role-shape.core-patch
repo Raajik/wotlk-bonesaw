@@ -1,0 +1,102 @@
+LFD fills at low level now produce 1 tank, 1 healer, 3 dps.
+
+Touches: modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp
+         (AiFactory::GetPlayerSpecTab untalented defaults),
+         modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+         (FillLfgRaidGroup counts declared roles)
+
+Why: report #129 -- "no more xml errors in the group finder, but it's also
+giving me groups with 1 tank and 4 dps, 5 dps, etc instead of 1 tank, 1
+healer, 3 dps". Reported the day the Classic/BC dungeon queues shipped
+(rev_lfg_legacy_queues.sql), and the failure is specific to the LOW level
+bands those queues opened.
+
+Two compounding causes, both role-resolution:
+
+  1. AiFactory::GetPlayerSpecTab's fallback for a bot with no talent points
+     (below level 10, or freshly created) handed every role-capable class a
+     DPS tab by default: arms warrior, ret paladin, balance druid, enhance
+     shaman. PlayerbotAI::GetDungeonRole reads that same tab, so every
+     untalented bot in the band both PLAYED and COUNTED as dps. The band
+     literally contained no tank or healer for the fill to find, and
+     RespecBotForRole could not make one because InitTalentsBySpecNo is a
+     no-op with zero talent points. The fallback in FillLfgRaidGroup then
+     added bodies of the wrong shape rather than leave the group short.
+
+     The defaults are now tank/heal lines that need no talent points to
+     function: warrior protection, paladin protection, druid feral (no Cat
+     Form spell yet means bear), shaman restoration, priest holy as before.
+     AiFactory's strategy setup keys on the same tab, so behaviour, role
+     icon and queue declaration all agree for untalented bots.
+
+  2. FillLfgRaidGroup counted EXISTING group members by that same talent-tab
+     guess. A real low-level player who queued as dps was counted as the
+     group's tank, suppressing the fill's own tank slot -- the "1 tank and
+     4 dps" half of the report even when a capable bot existed. It now
+     counts each member's DECLARED LFG role (sLFGMgr->GetRoles, what they
+     actually queued as) and only falls back to the guess when no role was
+     declared at all.
+
+Applies on top of 0016 (fill shaping) and 0023 (one role definition).
+
+--- a/modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp
++++ b/modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp
+--- a/modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp
++++ b/modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp b/modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp
+@@ -1,12 +1,32 @@
+         uint8 tab = 0;
+ 
++        // Report #129: an untalented bot used to resolve as the "default" tab
++        // for every role-capable class -- arms warrior, ret paladin, balance
++        // druid, enhance shaman -- so every bot in a level band below the talent
++        // system (and every freshly created one) counted as DPS. The LFD fill
++        // could not find a tank or healer in the band because the band had
++        // none, and 1 tank/4 dps or 5 dps groups were the result. These
++        // defaults are class-appropriate tank/heal lines that need no talent
++        // points to function at low level: AiFactory's strategy setup, the bot's
++        // actual behaviour, and PlayerbotAI::GetDungeonRole (which reads this
++        // same tab) now all agree for untalented bots. Priests already
++        // defaulted to Holy; the pure dps classes keep tab 0.
+         switch (bot->getClass())
+         {
+             case CLASS_MAGE:
+                 tab = MAGE_TAB_FROST;
+                 break;
++            case CLASS_WARRIOR:
++                tab = WARRIOR_TAB_PROTECTION;
++                break;
+             case CLASS_PALADIN:
+-                tab = PALADIN_TAB_RETRIBUTION;
++                tab = PALADIN_TAB_PROTECTION;
++                break;
++            case CLASS_DRUID:
++                tab = DRUID_TAB_FERAL;
++                break;
++            case CLASS_SHAMAN:
++                tab = SHAMAN_TAB_RESTORATION;
+                 break;
+             case CLASS_PRIEST:
+                 tab = PRIEST_TAB_HOLY;
+
+--- a/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
++++ b/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+@@ -1754,8 +1754,15 @@
+     uint32 tanks = 0;
+     uint32 healers = 0;
+     for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+     {
+         if (Player* member = itr->GetSource())
+         {
+-            uint8 const role = LfgFillRoleOf(member);
++            // Report #129: count the role the member DECLARED when it queued
++            // (real players declare through the role check; bots through
++            // LfgJoinAction::GetRoles). GetDungeonRole guesses from the talent
++            // tab, which is wrong for an untalented or casually-specced real
++            // player -- counting one as the group's tank suppressed the fill's
++            // own tank slot. Only fall back to the guess when nobody queued a
++            // role (a manually assembled group mid-fill).
++            uint8 const declared = sLFGMgr->GetRoles(member->GetGUID());
++            uint8 const role = declared & ~lfg::PLAYER_ROLE_LEADER ? declared : LfgFillRoleOf(member);
+             if (role == lfg::PLAYER_ROLE_TANK)
+                 ++tanks;
+             else if (role == lfg::PLAYER_ROLE_HEALER)

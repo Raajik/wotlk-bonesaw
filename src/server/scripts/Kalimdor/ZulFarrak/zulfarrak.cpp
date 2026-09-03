@@ -270,8 +270,16 @@ public:
         {
             if (instance->GetData(DATA_PYRAMID) >= PYRAMID_MOVED_DOWNSTAIRS && !startedFight)
             {
-                AddGossipItemFor(player, GOSSIP_ICON_CHAT, GOSSIP_BLY, GOSSIP_SENDER_MAIN, GOSSIP_ACTION_INFO_DEF + 1);
-                SendGossipMenuFor(player, 1517, me->GetGUID());
+                // Bonesaw: auto-gossip. Once the pyramid event is done the
+                // menu here had exactly one option on it, and picking it was
+                // the only thing Bly could still do -- so talking to him now
+                // just starts the fight instead of asking first. Playerbots
+                // never click a gossip option at all, which left the whole
+                // Bly's Band encounter (and its loot) unreachable for any
+                // group not led by a human standing in front of him.
+                CloseGossipMenuFor(player);
+                PlayerGUID = player->GetGUID();
+                DoAction(0);
             }
             else
             {

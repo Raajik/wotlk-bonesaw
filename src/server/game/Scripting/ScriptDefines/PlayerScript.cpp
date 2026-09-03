@@ -162,6 +162,11 @@ void ScriptMgr::OnPlayerLearnSpell(Player* player, uint32 spellID)
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_LEARN_SPELL, script->OnPlayerLearnSpell(player, spellID));
 }
 
+bool ScriptMgr::OnPlayerCanAddActionButton(Player* player, uint8 button, uint32 action, uint8 type)
+{
+    CALL_ENABLED_BOOLEAN_HOOKS(PlayerScript, PLAYERHOOK_CAN_ADD_ACTION_BUTTON, !script->OnPlayerCanAddActionButton(player, button, action, type));
+}
+
 void ScriptMgr::OnPlayerForgotSpell(Player* player, uint32 spellID)
 {
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_FORGOT_SPELL, script->OnPlayerForgotSpell(player, spellID));
@@ -493,6 +498,11 @@ void ScriptMgr::OnPlayerQuestComputeXP(Player* player, Quest const* quest, uint3
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_QUEST_COMPUTE_EXP, script->OnPlayerQuestComputeXP(player, quest, xpValue));
 }
 
+void ScriptMgr::OnPlayerBeforeQuestQueryResponse(Player* player, Quest const* quest, int32& questLevel)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_BEFORE_QUEST_QUERY_RESPONSE, script->OnPlayerBeforeQuestQueryResponse(player, quest, questLevel));
+}
+
 void ScriptMgr::OnPlayerBeforeStoreOrEquipNewItem(Player* player, uint32 vendorslot, uint32& item, uint8 count, uint8 bag, uint8 slot, ItemTemplate const* pProto, Creature* pVendor, VendorItem const* crItem, bool bStore)
 {
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_BEFORE_STORE_OR_EQUIP_NEW_ITEM, script->OnPlayerBeforeStoreOrEquipNewItem(player, vendorslot, item, count, bag, slot, pProto, pVendor, crItem, bStore));
@@ -758,6 +768,11 @@ void ScriptMgr::OnPlayerIsFFAPvP(Player* player, bool& result)
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_IS_FFA_PVP, script->OnPlayerIsFFAPvP(player, result));
 }
 
+void ScriptMgr::OnPlayerRewardHonor(Player* player, float& honor)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_REWARD_HONOR, script->OnPlayerRewardHonor(player, honor));
+}
+
 void ScriptMgr::OnPlayerFfaPvpStateUpdate(Player* player, bool result)
 {
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_FFA_PVP_STATE_UPDATE, script->OnPlayerFfaPvpStateUpdate(player, result));
@@ -781,6 +796,11 @@ bool ScriptMgr::OnPlayerNotSetArenaTeamInfoField(Player* player, uint8 slot, Are
 bool ScriptMgr::OnPlayerCanJoinLfg(Player* player, uint8 roles, lfg::LfgDungeonSet& dungeons, std::string const& comment)
 {
     CALL_ENABLED_BOOLEAN_HOOKS(PlayerScript, PLAYERHOOK_CAN_JOIN_LFG, !script->OnPlayerCanJoinLfg(player, roles, dungeons, comment));
+}
+
+bool ScriptMgr::OnPlayerCanSoloQueue(Player* player)
+{
+    CALL_ENABLED_BOOLEAN_HOOKS_WITH_DEFAULT_FALSE(PlayerScript, PLAYERHOOK_CAN_SOLO_QUEUE, script->OnPlayerCanSoloQueue(player));
 }
 
 bool ScriptMgr::OnPlayerCanEnterMap(Player* player, MapEntry const* entry, InstanceTemplate const* instance, MapDifficulty const* mapDiff, bool loginCheck)
@@ -958,6 +978,43 @@ void ScriptMgr::OnPlayerBeforeGetLevelForXPGain(Player const* player, uint8& lev
 {
     CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_BEFORE_GET_LEVEL_FOR_XP_GAIN, script->OnPlayerBeforeGetLevelForXPGain(player, level));
     level = std::clamp(level, uint8(1), uint8(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL)));
+}
+
+void ScriptMgr::OnPlayerHasItemCount(Player const* player, uint32 itemId, uint32& count)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_HAS_ITEM_COUNT, script->OnPlayerHasItemCount(player, itemId, count));
+}
+
+void ScriptMgr::OnPlayerGetItemCount(Player const* player, uint32 itemId, uint32& count)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_GET_ITEM_COUNT, script->OnPlayerGetItemCount(player, itemId, count));
+}
+
+void ScriptMgr::OnPlayerDestroyItemCount(Player* player, uint32 itemId, uint32& remaining)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_DESTROY_ITEM_COUNT, script->OnPlayerDestroyItemCount(player, itemId, remaining));
+}
+
+void ScriptMgr::OnPlayerOpenBank(Player* player, ObjectGuid bankerGuid)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_OPEN_BANK, script->OnPlayerOpenBank(player, bankerGuid));
+}
+
+void ScriptMgr::OnPlayerCanOpenLock(Player* player, uint32 lockId, bool& canOpen,
+    uint32& skillId, int32& reqSkillValue, int32& skillValue)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_CAN_OPEN_LOCK,
+        script->OnPlayerCanOpenLock(player, lockId, canOpen, skillId, reqSkillValue, skillValue));
+}
+
+void ScriptMgr::OnPlayerOpenLock(Player* player, uint32 lockId)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_OPEN_LOCK, script->OnPlayerOpenLock(player, lockId));
+}
+
+void ScriptMgr::OnPlayerUseGameObject(Player* player, GameObject* go, bool& handled)
+{
+    CALL_ENABLED_HOOKS(PlayerScript, PLAYERHOOK_ON_USE_GAMEOBJECT, script->OnPlayerUseGameObject(player, go, handled));
 }
 
 PlayerScript::PlayerScript(char const* name, std::vector<uint16> enabledHooks)

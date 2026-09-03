@@ -60,6 +60,18 @@ void WorldSession::HandleRepopRequestOpcode(WorldPacket& recv_data)
 {
     LOG_DEBUG("network", "WORLD: Recvd CMSG_REPOP_REQUEST Message");
 
+    // TEMP DEBUG 2026-08-21: "auto-releases and gets stuck, needs relog"
+    // reported after death -- no source for an auto-release found anywhere
+    // in Living Gear (server or client addon) or reachable mod-playerbots
+    // code for a real player's own character, so log every real arrival
+    // here to see what's actually driving it. GM-only so it doesn't spam
+    // other players. Remove once found.
+    if (GetPlayer() && GetPlayer()->GetSession() && GetPlayer()->GetSession()->GetSecurity() > SEC_PLAYER)
+        ChatHandler(GetPlayer()->GetSession()).PSendSysMessage(
+            "|cffff8800[Repop debug]|r CMSG_REPOP_REQUEST received for {} -- alive={} ghost={} deathState={}",
+            GetPlayer()->GetName(), GetPlayer()->IsAlive(), GetPlayer()->HasPlayerFlag(PLAYER_FLAGS_GHOST),
+            uint32(GetPlayer()->getDeathState()));
+
     recv_data.read_skip<uint8>();
 
     if (GetPlayer()->IsAlive() || GetPlayer()->HasPlayerFlag(PLAYER_FLAGS_GHOST))
@@ -932,6 +944,11 @@ void WorldSession::HandleSetActionButtonOpcode(WorldPacket& recv_data)
                 LOG_ERROR("network.opcode", "MISC: Unknown action button type {} for action {} into button {} for player {} ({})",
                     type, action, button, _player->GetName(), _player->GetGUID().ToString());
                 return;
+        }
+        if (!sScriptMgr->OnPlayerCanAddActionButton(GetPlayer(), button, action, type))
+        {
+            GetPlayer()->SendActionButtons(1);
+            return;
         }
         GetPlayer()->addActionButton(button, action, type);
     }

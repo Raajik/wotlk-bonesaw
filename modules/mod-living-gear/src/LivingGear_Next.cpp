@@ -1,0 +1,2310 @@
+#include "AllCreatureScript.h"
+#include "AllGameObjectScript.h"
+#include "AllSpellScript.h"
+#include "CellImpl.h"
+#include "Chat.h"
+#include "Config.h"
+#include "DBCEnums.h"
+#include "DatabaseEnv.h"
+#include "DynamicObject.h"
+#include "GameObject.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
+#include "Group.h"
+#include "Item.h"
+#include "Map.h"
+#include "ObjectAccessor.h"
+#include "ObjectMgr.h"
+#include "Player.h"
+#include "ReputationMgr.h"
+#include "ScriptMgr.h"
+#include "Spell.h"
+#include "SpellAuraEffects.h"
+#include "SpellAuras.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "StringFormat.h"
+#include "Timer.h"
+#include "Unit.h"
+#include "WorldSession.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+class Player;
+void LivingGear_SendAddonLine(Player* player, std::string const& line); // LivingGear.cpp
+bool LivingGear_IsAddonSendInProgress(); // LivingGear.cpp
+
+bool LivingGear_SafeToCastOn(Player* player); // LivingGear_Support.cpp
+uint32 GetClassPerk(Player* player); // LivingGear_ClassPerks.cpp
+
+// Canonical implementation lives in LivingGear_Perks.cpp -- see the note
+// there. This file used to answer with player->HasSpell() alone, which is
+// exactly how bug #25 hid: a perk the account owned read as missing because
+// the spell had never been learned on that character.
+bool LivingGear_HasPerk(Player* player, uint32 spellId);
+void LivingGear_RefundIfPurchased(Player* player, uint32 spellId); // LivingGear_Perks.cpp
+
+namespace LivingGearNext
+{
+uint32 const SPELL_CLASS_BUFFS = 910106;
+uint32 const SPELL_RIDING_SHARE = 910107;
+uint32 const SPELL_COLD_WEATHER_FLYING = 54197;
+uint32 const SPELL_AUTO_ACCEPT = 910108;
+uint32 const SPELL_AUTOLOOT = 910008;
+uint32 const SPELL_PALADIN_HOLY = 910069;
+uint32 const SPELL_PALADIN_RETRIBUTION = 910071;
+uint32 const SPELL_HAND_OF_FREEDOM = 1044;
+uint32 const SPELL_CONSECRATION = 26573;
+// Bug report #25, 2026-08-22. The Paladin perks promised these and the module
+// did not contain the words "Holy Shock", "Crusader Strike", "Divine Storm" or
+// "Exorcism" anywhere -- found by tools/perk_promise_audit.py. Across all 30
+// specs Paladin was the only one with promises that had no implementation.
+uint32 const SPELL_HOLY_SHOCK = 20473;
+uint32 const SPELL_CRUSADER_STRIKE = 35395;
+uint32 const SPELL_DIVINE_STORM = 53385;
+uint32 const SPELL_EXORCISM = 879;
+uint32 const SPELL_RETRIBUTION_AURA = 7294;
+float const CONSECRATION_DAMAGE_MULT = 11.0f;  // "+1000%"
+float const HOLY_SHOCK_DAMAGE_MULT = 4.0f;     // "+300%"
+float const HOLY_SHOCK_SPLASH_RANGE = 10.0f;
+uint32 const DIVINE_STORM_EXTRA_HITS = 3;      // "each press hits 4 times"
+float const EXORCISM_SPLASH_RANGE = 10.0f;
+uint32 const SPELL_AVENGERS_SHIELD = 31935;
+uint32 const SPELL_PALADIN_PROTECTION = 910070; // the Protection perk spell (LivingGear_ClassPerks.cpp)
+uint32 const NPC_KELTHUZAD = 15990;
+uint32 const MAP_NAXXRAMAS = 533;
+uint32 const QUEST_RESPAWN_CAP = 10;
+float const CLASS_BUFF_PCT = 10.0f;
+float const MENTOR_XP = 2.0f;
+float const AS_DAMAGE_MULT = 4.0f;
+uint32 const AS_CD_MS = 5000;
+// Kit: Paladin Retribution "Sanctified Whirlwind" (plan pass 2, 2026-08-28).
+// The toggle spell is a custom castable self-buff -- 910182 allocated in
+// pending_db_world/rev_living_gear_sanctified_whirlwind.sql (DurationIndex 21
+// = infinite in SpellDuration.dbc, verified). Everything else reuses verified
+// level-80 ranks: Consecration rank 8 = 48819, Avenger's Shield rank 5 =
+// 48827 (both confirmed from acore_world.spell_ranks).
+uint32 const SPELL_SANCTIFIED_WHIRLWIND = 910182;
+uint32 const SPELL_AVENGERS_SHIELD_R5 = 48827;
+uint32 const RET_CS_AS_PROC_CHANCE = 30;      // "30% chance on hit"
+uint32 const DS_WINDOW_MS = 800;              // cast + extra hits at 120/240/360ms
+float const DS_SWING_CLEAVE_PCT = 0.5f;       // "50% of the swing's damage"
+float const DS_SWING_CLEAVE_RANGE = 8.0f;     // "all enemies within 8 yards"
+uint32 const WHIRLWIND_CONSEC_TICK_MS = 3000; // Consecration follow cadence
+uint32 const SPEED_CAP_DEFAULT = 500;
+
+struct NextState
+{
+    uint32 speedCapPct = SPEED_CAP_DEFAULT;
+    uint32 ridingSkill = 0;
+    uint32 ridingMax = 0;
+    uint32 ridingStep = 0;
+    uint32 hofTarget = 0;
+    uint32 lastTickMs = 0;
+    uint32 dsWindowUntilMs = 0;    // Sanctified Whirlwind: melee cleave window
+    uint32 whirlConsecTickMs = 0;  // Sanctified Whirlwind: Consecration follow
+    bool classBuffOn = false;
+    uint8 botOrigLevel = 0;
+    bool weaponPeakOn = false;
+    float peakStr = 0.f;
+    float peakAgi = 0.f;
+    float peakSta = 0.f;
+    float peakInt = 0.f;
+    float peakSpi = 0.f;
+};
+
+std::unordered_map<uint32, NextState> g_state;
+std::unordered_map<uint32, std::unordered_set<uint8>> g_classBuffUnlock;
+std::unordered_map<uint32, uint32> g_accountRiding;
+
+// ---------------------------------------------------------------------
+// Account-wide gold, honor and arena points (bug report #24, restored
+// 2026-08-22).
+//
+// This existed before the 14k-line LivingGear.cpp was split and was lost in
+// that split, like the amenity functions were. The `lg_account_meta` columns
+// (shared_gold, shared_honor, shared_arena, shared_inited) survived with real
+// data in them, so only the code needed rebuilding.
+//
+// One pool per account. Any character spending or earning updates the pool,
+// and every other character of theirs that is online is updated to match.
+//
+// g_syncingShared is the recursion guard: ApplySharedCurrenciesTo calls
+// SetMoney, which fires OnPlayerMoneyChanged, which would call
+// PushSharedCurrencies straight back into this.
+std::unordered_map<uint32, uint32> g_sharedGold;
+std::unordered_map<uint32, uint32> g_sharedHonor;
+std::unordered_map<uint32, uint32> g_sharedArena;
+std::unordered_map<uint32, uint8> g_sharedInited;
+std::unordered_set<uint32> g_sharedLoaded;
+std::unordered_set<uint32> g_syncingShared;
+
+// Playerbots must never take part. They have their own gold, there are ~90 bot
+// accounts in lg_account_meta, and letting one write to a pool would be both
+// wrong and very hard to notice.
+bool SharedEligible(Player* player)
+{
+    return player && player->GetSession() && !player->GetSession()->IsBot();
+}
+
+void LoadSharedCurrencies(uint32 accountId)
+{
+    if (!g_sharedLoaded.insert(accountId).second)
+        return;
+    g_sharedGold[accountId] = 0;
+    g_sharedHonor[accountId] = 0;
+    g_sharedArena[accountId] = 0;
+    g_sharedInited[accountId] = 0;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `shared_gold`, `shared_honor`, `shared_arena`, `shared_inited` "
+        "FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+    {
+        g_sharedGold[accountId] = (*result)[0].Get<uint32>();
+        g_sharedHonor[accountId] = (*result)[1].Get<uint32>();
+        g_sharedArena[accountId] = (*result)[2].Get<uint32>();
+        g_sharedInited[accountId] = (*result)[3].Get<uint8>();
+    }
+}
+
+void SaveSharedCurrencies(uint32 accountId)
+{
+    CharacterDatabase.Execute(
+        "INSERT INTO `lg_account_meta` (`account_id`, `shared_gold`, `shared_honor`, "
+        "`shared_arena`, `shared_inited`) VALUES ({}, {}, {}, {}, {}) "
+        "ON DUPLICATE KEY UPDATE `shared_gold` = {}, `shared_honor` = {}, "
+        "`shared_arena` = {}, `shared_inited` = {}",
+        accountId, g_sharedGold[accountId], g_sharedHonor[accountId],
+        g_sharedArena[accountId], g_sharedInited[accountId],
+        g_sharedGold[accountId], g_sharedHonor[accountId],
+        g_sharedArena[accountId], g_sharedInited[accountId]);
+}
+
+void ApplySharedCurrenciesTo(Player* player)
+{
+    if (!SharedEligible(player))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    g_syncingShared.insert(accountId);
+    player->SetMoney(g_sharedGold[accountId]);
+    player->SetHonorPoints(g_sharedHonor[accountId]);
+    player->SetArenaPoints(g_sharedArena[accountId]);
+    g_syncingShared.erase(accountId);
+}
+
+void PushSharedCurrencies(Player* source)
+{
+    if (!SharedEligible(source))
+        return;
+    uint32 const accountId = source->GetSession()->GetAccountId();
+    if (g_syncingShared.count(accountId))
+        return;
+    LoadSharedCurrencies(accountId);
+    if (!g_sharedInited[accountId])
+        return; // not seeded yet; EnsureSharedCurrencies owns the first write
+    g_sharedGold[accountId] = source->GetMoney();
+    g_sharedHonor[accountId] = source->GetHonorPoints();
+    g_sharedArena[accountId] = source->GetArenaPoints();
+    SaveSharedCurrencies(accountId);
+
+    ObjectGuid const sourceGuid = source->GetGUID();
+    for (auto const& pair : ObjectAccessor::GetPlayers())
+    {
+        Player* alt = pair.second;
+        if (!alt || alt->GetGUID() == sourceGuid || !SharedEligible(alt))
+            continue;
+        if (alt->GetSession()->GetAccountId() == accountId)
+            ApplySharedCurrenciesTo(alt);
+    }
+}
+
+// Seeds the pool the first time, then hands the character the pooled values.
+//
+// The seed is MAX across the account's characters, NOT the sum the original
+// used, and not the stored value. That matters because this feature was dead
+// for a while and characters drifted apart in the meantime:
+//   - Trusting the stored value would have taken 182k copper off Muckfuppet
+//     and 1.7 MILLION off Swayss, whose characters had earned well past the
+//     last pooled figure. That is the same shape as bug #21 and not a mistake
+//     worth making twice.
+//   - Summing would mint gold from nothing, and worse on accounts that WERE
+//     synced before, where every character already holds the same pool and the
+//     sum multiplies it by the number of characters.
+// MAX means nobody loses what their best character had, and nothing is
+// invented. rev_living_gear_shared_reseed.sql clears shared_inited so every
+// account re-seeds exactly once under this rule.
+void EnsureSharedCurrencies(Player* player)
+{
+    if (!SharedEligible(player))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadSharedCurrencies(accountId);
+    if (!g_sharedInited[accountId])
+    {
+        uint32 gold = player->GetMoney();
+        uint32 honor = player->GetHonorPoints();
+        uint32 arena = player->GetArenaPoints();
+        if (QueryResult result = CharacterDatabase.Query(
+            "SELECT COALESCE(MAX(`money`), 0), COALESCE(MAX(`totalHonorPoints`), 0), "
+            "COALESCE(MAX(`arenaPoints`), 0) FROM `characters` WHERE `account` = {}",
+            accountId))
+        {
+            gold = std::max(gold, (*result)[0].Get<uint32>());
+            honor = std::max(honor, (*result)[1].Get<uint32>());
+            arena = std::max(arena, (*result)[2].Get<uint32>());
+        }
+        g_sharedGold[accountId] = gold;
+        g_sharedHonor[accountId] = honor;
+        g_sharedArena[accountId] = arena;
+        g_sharedInited[accountId] = 1;
+        SaveSharedCurrencies(accountId);
+    }
+    ApplySharedCurrenciesTo(player);
+}
+bool g_metaReady = false;
+bool g_hasSpeedCapCol = false;
+bool g_hasRidingCol = false;
+bool g_hasClassBuffTable = false;
+bool g_hasAccountMountTable = false;
+bool g_hasAccountReputationTable = false;
+
+void DetectNextSchema()
+{
+    if (g_metaReady)
+        return;
+    g_metaReady = true;
+    if (QueryResult cols = CharacterDatabase.Query(
+        "SELECT `COLUMN_NAME` FROM `information_schema`.`COLUMNS` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_meta'"))
+    {
+        do
+        {
+            std::string const name = (*cols)[0].Get<std::string>();
+            if (name == "speed_cap")
+                g_hasSpeedCapCol = true;
+            else if (name == "riding_skill")
+                g_hasRidingCol = true;
+        } while (cols->NextRow());
+    }
+    if (QueryResult tables = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_class_buff_unlock'"))
+        g_hasClassBuffTable = (*tables)[0].Get<uint64>() > 0;
+    if (QueryResult tables = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_mount'"))
+        g_hasAccountMountTable = (*tables)[0].Get<uint64>() > 0;
+    if (QueryResult tables = CharacterDatabase.Query(
+        "SELECT COUNT(*) FROM `information_schema`.`TABLES` "
+        "WHERE `TABLE_SCHEMA` = DATABASE() AND `TABLE_NAME` = 'lg_account_reputation'"))
+        g_hasAccountReputationTable = (*tables)[0].Get<uint64>() > 0;
+}
+
+// ---------------------------------------------------------------------
+// Account-wide reputation (bug reports #203/#216, 2026-08-30).
+//
+// Reputation was strictly per-character: an exalted main left every alt
+// grinding from neutral. This gives reputation the same treatment the shared
+// gold/honor pool above gets, per faction, backed by lg_account_reputation
+// (account_id, faction_id, standing):
+//
+//   * OnPlayerReputationChange (ReputationMgr::SetOneFactionReputation, the
+//     single choke point every reputation path -- kills, quests, turn-in
+//     tokens, spillover -- funnels through) records the new standing and sets
+//     every OTHER online character of the account to it (bidirectional: a
+//     city-guard kill drops the whole account's standing too).
+//   * EnsureAccountReputation (OnPlayerLogin) replays stored values onto the
+//     logging-in character, then backfills rows the table is missing with
+//     MAX(standing) across the account's saved characters -- one-time seeding
+//     so an existing exalted alt lifts everyone without a grind.
+//
+// The stored number is the DISPLAYED total (base reputation included), which
+// is exactly what this hook and GetReputation() speak, so
+// SetOneFactionReputation applies it verbatim to any character. Race-differing
+// base reputation is absorbed: applying a total T to a character whose base is
+// B writes Standing = T - B, and both characters display T.
+//
+// Playerbots are excluded -- the SharedEligible() rule above, restated because
+// the namespaces do not share helpers: ~90 bot accounts sit in
+// lg_account_meta and a bot grinding reputation would trash the shared pool it
+// landed in. g_syncingReputation is the recursion guard: setting standing on
+// an alt fires that alt's own OnPlayerReputationChange, which would push
+// straight back -- and re-push the earning character while the engine has not
+// applied its value yet, double-counting the original gain.
+
+std::unordered_map<uint32, std::unordered_map<uint32, int32>> g_accountReputation;
+std::unordered_set<uint32> g_accountReputationLoaded;
+std::unordered_set<uint32> g_syncingReputation;
+
+bool RepSyncEligible(Player* player)
+{
+    return player && player->GetSession() && !player->GetSession()->IsBot();
+}
+
+// Team-scoped reputation (bug report #220).
+//
+// Faction.dbc gives every faction race-dependent base reputation, and every
+// faction that belongs to one team (the nine cities, the BG teams, the
+// expedition factions, Kurenai vs The Mag'har, ...) puts each character of
+// the OPPOSITE team at Hated (-42000) through a base-reputation slot
+// covering that team's races. A standing captured from one team carries
+// that team's base inside the displayed total, so replaying it onto a
+// character of the other team writes raw = total - base(other team). That
+// is how a Horde alt ended up Hated with its own faction cities and exalted
+// with enemy ones, and every round trip ratcheted the pool further.
+//
+// A faction therefore syncs only between characters of a team whose
+// races/classes do not START it at Hated. Teams are the DBC race masks
+// (1101 alliance, 690 horde); legality is the worst base reputation any
+// race/class of that team receives, matched exactly like
+// ReputationMgr::GetBaseReputation (first matching slot, wildcards
+// included). Factions that start EVERYONE at Hated (Netherwing, Brood of
+// Nozdormu, Sons of Hodir) have a team-independent base and stay shareable.
+constexpr uint32 REP_RACEMASK_ALLIANCE = 1101;  // human, dwarf, night elf, gnome, draenei
+constexpr uint32 REP_RACEMASK_HORDE = 690;      // orc, undead, tauren, troll, blood elf
+constexpr int32 REP_HATED_BASE = -42000;
+
+int32 RepWorstBaseFor(FactionEntry const* factionEntry, uint32 raceMask)
+{
+    int32 worst = 0;
+    for (uint32 raceBit = 1; raceBit <= (1u << 10); raceBit <<= 1)
+    {
+        if (!(raceMask & raceBit))
+            continue;
+        for (uint32 classBit = 1; classBit <= (1u << 10); classBit <<= 1)
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                bool const raceMatch = (factionEntry->BaseRepRaceMask[i] & raceBit)
+                    || (factionEntry->BaseRepRaceMask[i] == 0 && factionEntry->BaseRepClassMask[i] != 0);
+                bool const classMatch = (factionEntry->BaseRepClassMask[i] & classBit)
+                    || factionEntry->BaseRepClassMask[i] == 0;
+                if (raceMatch && classMatch)
+                {
+                    worst = std::min(worst, factionEntry->BaseRepValue[i]);
+                    break;
+                }
+            }
+        }
+    }
+    return worst;
+}
+
+// Bit 1 = alliance characters may sync this faction, bit 2 = horde.
+uint8 RepTeamLegalTeams(FactionEntry const* factionEntry)
+{
+    if (!factionEntry || factionEntry->reputationListID < 0)
+        return 0;
+    return (RepWorstBaseFor(factionEntry, REP_RACEMASK_ALLIANCE) > REP_HATED_BASE ? 1u : 0u)
+        | (RepWorstBaseFor(factionEntry, REP_RACEMASK_HORDE) > REP_HATED_BASE ? 2u : 0u);
+}
+
+uint8 RepTeamBitFor(Player const* player)
+{
+    return (player->getRaceMask() & REP_RACEMASK_ALLIANCE) ? 1 : 2;
+}
+
+void LoadAccountReputation(uint32 accountId)
+{
+    if (!g_accountReputationLoaded.insert(accountId).second)
+        return;
+    if (!g_hasAccountReputationTable)
+        return;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `faction_id`, `standing` FROM `lg_account_reputation` WHERE `account_id` = {}", accountId))
+    {
+        do
+            g_accountReputation[accountId][(*result)[0].Get<uint32>()] = (*result)[1].Get<int32>();
+        while (result->NextRow());
+    }
+}
+
+// Sets one faction's standing on every OTHER online character of the account.
+// SetOneFactionReputation marks the row for logout save and the guard keeps
+// the alt's own hook from pushing straight back; SendState flushes the packet
+// immediately (it also carries every other pending needSend faction for that
+// player, which is fine -- earned values are flushed the same way).
+void PropagateAccountReputation(Player* source, uint32 factionId, int32 standing)
+{
+    FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
+    if (!factionEntry)
+        return;
+    uint8 const legalTeams = RepTeamLegalTeams(factionEntry);
+    uint32 const accountId = source->GetSession()->GetAccountId();
+    g_syncingReputation.insert(accountId);
+    ObjectGuid const sourceGuid = source->GetGUID();
+    for (auto const& pair : ObjectAccessor::GetPlayers())
+    {
+        Player* alt = pair.second;
+        if (!alt || alt->GetGUID() == sourceGuid || !RepSyncEligible(alt))
+            continue;
+        if (alt->GetSession()->GetAccountId() != accountId)
+            continue;
+        if (!(legalTeams & RepTeamBitFor(alt)))
+            continue;
+        if (FactionState const* state = alt->GetReputationMgr().GetState(factionEntry))
+        {
+            if (alt->GetReputationMgr().GetReputation(factionEntry) != standing
+                && alt->GetReputationMgr().SetOneFactionReputation(factionEntry, standing, false))
+                alt->GetReputationMgr().SendState(state);
+        }
+    }
+    g_syncingReputation.erase(accountId);
+}
+
+// One reputation change earned: record it account-wide, then push it out.
+void PushAccountReputation(Player* source, uint32 factionId, int32 standing)
+{
+    if (!RepSyncEligible(source) || !g_hasAccountReputationTable)
+        return;
+    uint32 const accountId = source->GetSession()->GetAccountId();
+    if (g_syncingReputation.count(accountId))
+        return;
+    FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
+    if (!factionEntry || !(RepTeamLegalTeams(factionEntry) & RepTeamBitFor(source)))
+        return;
+    LoadAccountReputation(accountId);
+    int32& stored = g_accountReputation[accountId][factionId];
+    if (stored == standing)
+        return;
+    stored = standing;
+    CharacterDatabase.Execute(
+        "INSERT INTO `lg_account_reputation` (`account_id`, `faction_id`, `standing`) "
+        "VALUES ({}, {}, {}) ON DUPLICATE KEY UPDATE `standing` = {}",
+        accountId, factionId, standing, standing);
+    PropagateAccountReputation(source, factionId, standing);
+}
+
+// Login replay + backfill, guarded the whole way: the SetOneFactionReputation
+// calls below must not re-enter the hook.
+void EnsureAccountReputation(Player* player)
+{
+    if (!RepSyncEligible(player) || !g_hasAccountReputationTable)
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountReputation(accountId);
+    auto& factions = g_accountReputation[accountId];
+    uint8 const teamBit = RepTeamBitFor(player);
+
+    // Backfill first, so the replay below sees freshly seeded rows too. Any
+    // faction any character of this account has a saved reputation row for,
+    // but the table does not, seeds MAX(standing) across the account converted
+    // to a displayed total with THIS character's base reputation (the join
+    // cannot know each alt's base; equal-base races are exact, and the seed
+    // never lands below what this character itself saved with).
+    std::unordered_map<uint32, int32> accountMaxSaved;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `r`.`faction`, MAX(`r`.`standing`) FROM `character_reputation` `r` "
+        "JOIN `characters` `c` ON `c`.`guid` = `r`.`guid` "
+        "WHERE `c`.`account` = {} GROUP BY `r`.`faction`", accountId))
+    {
+        do
+            accountMaxSaved[(*result)[0].Get<uint32>()] = (*result)[1].Get<int32>();
+        while (result->NextRow());
+    }
+
+    g_syncingReputation.insert(accountId);
+
+    std::vector<uint32> seeded;
+    for (auto const& pair : player->GetReputationMgr().GetStateList())
+    {
+        uint32 const factionId = pair.second.ID;
+        if (factions.count(factionId))
+            continue;
+        auto const found = accountMaxSaved.find(factionId);
+        if (found == accountMaxSaved.end())
+            continue;
+        FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
+        if (!factionEntry || !(RepTeamLegalTeams(factionEntry) & teamBit))
+            continue;
+        int32 const total = std::max(
+            player->GetReputationMgr().GetReputation(factionEntry),
+            found->second + player->GetReputationMgr().GetBaseReputation(factionEntry));
+        factions[factionId] = total;
+        CharacterDatabase.Execute(
+            "INSERT INTO `lg_account_reputation` (`account_id`, `faction_id`, `standing`) "
+            "VALUES ({}, {}, {}) ON DUPLICATE KEY UPDATE `standing` = {}",
+            accountId, factionId, total, total);
+        seeded.push_back(factionId);
+    }
+
+    // Replay: the stored value wins wherever this character differs. The
+    // packet only goes out when the value actually moved.
+    for (auto const& [factionId, storedStanding] : factions)
+    {
+        FactionEntry const* factionEntry = sFactionStore.LookupEntry(factionId);
+        if (!factionEntry || !(RepTeamLegalTeams(factionEntry) & teamBit))
+            continue;
+        if (FactionState const* state = player->GetReputationMgr().GetState(factionEntry))
+        {
+            if (player->GetReputationMgr().GetReputation(factionEntry) != storedStanding
+                && player->GetReputationMgr().SetOneFactionReputation(factionEntry, storedStanding, false))
+                player->GetReputationMgr().SendState(state);
+        }
+    }
+
+    g_syncingReputation.erase(accountId);
+
+    // Seeded rows may sit above what the other online characters hold (an
+    // offline alt had more); lift them now, with the guard down so the usual
+    // push path runs.
+    for (uint32 factionId : seeded)
+        PropagateAccountReputation(player, factionId, factions[factionId]);
+}
+
+// ---------------------------------------------------------------------
+// Self-cast buffs are permanent and come back on death (report #172:
+// "make class buffs permanent on self when cast, automatically reapply
+// same buffs on death").
+//
+// Scope, decided deliberately: a buff the player CAST on themselves. Not
+// whatever a proc, trinket or totem handed them -- procs are triggered
+// casts and are skipped by the IsTriggered guard in OnPlayerSpellCast,
+// trinkets cast through an item so their auras carry a cast-item guid,
+// and totem or pet auras name someone else as caster. Defensive
+// immunities (Divine Shield, Ice Block, Cloak of Shadows, ...) are
+// excluded as well: an infinite immunity is not a buff, it is a wall.
+//
+// Death strips every aura with AURA_REMOVE_BY_DEATH before
+// OnPlayerJustDied can observe anything, so "which buffs to bring back"
+// cannot be captured at death -- the set is maintained continuously: a
+// spell joins when its aura is made permanent here, and leaves when that
+// aura is removed for any reason other than death itself (dispel, manual
+// cancel, form loss). Recasting the same spell refreshes the existing
+// aura instead of replacing it, so rank changes follow without help.
+std::unordered_map<uint32, std::unordered_set<uint32>> g_selfBuffs;
+
+// Immunity auras never become permanent: Divine Shield, Ice Block and
+// friends are balanced by their short windows.
+//
+// Cloak of Shadows (report #241) is WotLK's fifth wall and it hides from
+// the four checks above: its 3.3.5 spell (31224) applies
+// MOD_ATTACKER_SPELL_HIT_CHANCE (-90, the "resist all spells" reading)
+// and MOD_DAMAGE_PERCENT_TAKEN rather than any of the four immunity aura
+// types, so it slipped the guard and came back permanent -- a rogues'
+// wall on a 5 second budget, re-cast for free after every death. A
+// MOD_DAMAGE_PERCENT_TAKEN reduction is shared by honest buffs
+// (Survival Instincts and friends), so the door closes per spell.
+bool IsImmunityBuffSpell(SpellInfo const* info)
+{
+    if (!info)
+        return false;
+    switch (info->Id)
+    {
+        case 31224: // Cloak of Shadows
+            return true;
+        default:
+            break;
+    }
+    return info->HasAura(SPELL_AURA_SCHOOL_IMMUNITY)
+        || info->HasAura(SPELL_AURA_DAMAGE_IMMUNITY)
+        || info->HasAura(SPELL_AURA_DISPEL_IMMUNITY)
+        || info->HasAura(SPELL_AURA_MECHANIC_IMMUNITY);
+}
+
+// "The player cast this on themselves": either an explicit self unit
+// target, or no unit target at all with every present effect caster
+// targeted (the usual shape of a plain self-buff button).
+bool IsSelfCastBuffSpell(Player* player, Spell* spell)
+{
+    if (!player || !spell || spell->IsTriggered() || spell->m_CastItem)
+        return false;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!info)
+        return false;
+    if (Unit* target = spell->m_targets.GetUnitTarget())
+        return target == player;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        if (!info->Effects[i].Effect)
+            continue;
+        if (info->Effects[i].TargetA.GetTarget() != TARGET_UNIT_CASTER
+            && info->Effects[i].TargetB.GetTarget() != TARGET_UNIT_CASTER)
+            return false;
+    }
+    return true;
+}
+
+// Deferred one tick from OnPlayerSpellCast: that hook fires before the
+// spell's auras exist, and touching auras mid-cast is the reentrant path
+// into the aura system this module keeps deferring around. Only auras the
+// player cast on themselves, that are positive, finite and not permanent
+// already (the module's own managed auras stay managed) are extended.
+void ExtendSelfBuffs(ObjectGuid playerGuid, uint32 spellId)
+{
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!player || !player->IsInWorld() || player->isDead())
+        return;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info || IsImmunityBuffSpell(info))
+        return;
+    uint32 const chain = sSpellMgr->GetFirstSpellInChain(spellId);
+    bool extended = false;
+    for (auto const& pair : player->GetAppliedAuras())
+    {
+        Aura* aura = pair.second->GetBase();
+        if (!aura || aura->IsPermanent() || aura->GetCasterGUID() != playerGuid)
+            continue;
+        if (!aura->GetSpellInfo()->IsPositive())
+            continue;
+        if (sSpellMgr->GetFirstSpellInChain(aura->GetId()) != chain)
+            continue;
+        aura->SetMaxDuration(-1);
+        aura->SetDuration(-1);
+        extended = true;
+    }
+    if (extended)
+        g_selfBuffs[playerGuid.GetCounter()].insert(spellId);
+}
+
+void ForgetSelfBuff(Player* player, uint32 spellId)
+{
+    if (!player)
+        return;
+    auto const itr = g_selfBuffs.find(player->GetGUID().GetCounter());
+    if (itr == g_selfBuffs.end())
+        return;
+    itr->second.erase(spellId);
+    if (itr->second.empty())
+        g_selfBuffs.erase(itr);
+}
+
+// On resurrect: the same buffs come straight back up, permanent again.
+void RecastSelfBuffs(Player* player)
+{
+    if (!player || !player->IsInWorld() || player->isDead())
+        return;
+    auto const itr = g_selfBuffs.find(player->GetGUID().GetCounter());
+    if (itr == g_selfBuffs.end() || itr->second.empty())
+        return;
+    std::vector<uint32> const ids(itr->second.begin(), itr->second.end());
+    for (uint32 spellId : ids)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || IsImmunityBuffSpell(info) || !player->HasSpell(spellId))
+            continue;
+        if (player->CastSpell(player, spellId, true) != SPELL_CAST_OK)
+            continue;
+        ExtendSelfBuffs(player->GetGUID(), spellId);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Affliction warlock DoTs last until the target dies (report #174: "make
+// affliction warlock debuffs/dots last until the target dies
+// (indefinitely)").
+//
+// Gated on the Affliction class perk -- "affliction warlock" is that perk
+// on this realm -- and scoped to the four debuffs the perk is built
+// around (the same chains its auto-apply feeds). Everything a dispel can
+// remove stays removable, and the target's own death clears the rest; a
+// stronger rank replacing a weaker one re-fires the apply hook below, so
+// rank upgrades stay permanent too. Recasts land on the live aura as a
+// stack/refresh and the hook runs after that refresh, so the -1 sticks.
+uint32 const SPELL_WARLOCK_AFFLICTION = 910157;
+uint32 const WARLOCK_AFFLICTION_DOT_R1S[] = {
+    172,   // Corruption
+    980,   // Curse of Agony
+    30108, // Unstable Affliction
+    1490,  // Curse of the Elements
+};
+
+// Called from NextUnit::OnAuraApply, which fires after the aura is fully
+// applied (or its stack refreshed), so touching the duration here is data
+// mutation only -- none of the mid-cast reentrancy the deferred casts work
+// around.
+void KeepAfflictionDots(Unit* target, Aura* aura)
+{
+    if (!target || !aura || aura->IsPermanent())
+        return;
+    Player* caster = ObjectAccessor::FindPlayer(aura->GetCasterGUID());
+    if (!caster || GetClassPerk(caster) != SPELL_WARLOCK_AFFLICTION)
+        return;
+    uint32 const chain = sSpellMgr->GetFirstSpellInChain(aura->GetId());
+    for (uint32 first : WARLOCK_AFFLICTION_DOT_R1S)
+    {
+        if (chain != sSpellMgr->GetFirstSpellInChain(first))
+            continue;
+        aura->SetMaxDuration(-1);
+        aura->SetDuration(-1);
+        return;
+    }
+}
+
+void SendLine(Player* player, std::string const& line)
+{
+    ::LivingGear_SendAddonLine(player, line);
+}
+
+// Bug #25's mechanism, and it was still here. Perks live on the ACCOUNT in
+// lg_account_perk; the spell is a per-character artefact that several unlock
+// paths never created. Asking only HasSpell meant a perk the account plainly
+// owned read as missing -- and the other five copies of this function in the
+// module already answered the fuller question. Now they all agree.
+bool HasPerk(Player* player, uint32 spellId)
+{
+    return ::LivingGear_HasPerk(player, spellId);
+}
+
+// Bug report #25, 2026-08-22. The Paladin perks in this file were gated on
+// HasPerk() above, which asks "does the character KNOW this spell". For a class
+// perk that is never true: UnlockPerk() in LivingGear_ClassPerks.cpp writes
+// lg_account_perk and notifies the client, and deliberately never calls
+// learnSpell. So HasPerk(SPELL_PALADIN_HOLY) was false for every Paladin who
+// ever lived, and both Paladin perks were unreachable code.
+//
+// The selected spec lives in lg_char_class_perk and is what every other class
+// file checks. This is also the multi-classing-friendly choice: it asks what
+// the player picked, not what class they happen to be.
+bool HasClassPerk(Player* player, uint32 perkId)
+{
+    return player && ::GetClassPerk(player) == perkId;
+}
+
+// 2026-08-21: every caller in this file (Class Buffs, Riding, Auto-Accept)
+// is a pure account-perk flag with no CASTABLE_SPELLS/SkillLineAbility
+// entry -- player->learnSpell() marked them "known" with nothing to
+// categorize them, so the client dumped them into the General spellbook
+// tab regardless of being excluded from CASTABLE_SPELLS client-side.
+// HasPerk()'s g_perks[acc]/DB fallback (LivingGear_Perks.cpp) works fine
+// without ever calling learnSpell, so this no longer does.
+void UnlockPerk(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetSession() || !sSpellMgr->GetSpellInfo(spellId))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    CharacterDatabase.DirectExecute(
+        "INSERT IGNORE INTO `lg_account_perk` (`account_id`, `spell_id`) VALUES ({}, {})",
+        accountId, spellId);
+    // No firstTime flag here to key off -- INSERT IGNORE hides whether this was
+    // new -- so ask unconditionally. The refund is a no-op unless the account
+    // actually paid for this rank.
+    LivingGear_RefundIfPurchased(player, spellId);
+}
+
+bool RankOf(SpellInfo const* info, uint32 firstId)
+{
+    if (!info)
+        return false;
+    uint32 const first = sSpellMgr->GetFirstSpellInChain(firstId);
+    return first && sSpellMgr->GetFirstSpellInChain(info->Id) == first;
+}
+
+NextState& StateFor(Player* player)
+{
+    return g_state[player->GetGUID().GetCounter()];
+}
+
+uint32 SpeedCapPct(Player* player)
+{
+    if (!player)
+        return SPEED_CAP_DEFAULT;
+    uint32 pct = StateFor(player).speedCapPct;
+    if (pct < 100)
+        pct = 100;
+    if (pct > SPEED_CAP_DEFAULT)
+        pct = SPEED_CAP_DEFAULT;
+    return pct;
+}
+
+void ApplySpeedCap(Player* player)
+{
+    if (!player || !player->IsInWorld())
+        return;
+    // Report #180: the cap is a foot-travel guard; flying stays uncapped
+    // ("i'm fine with this on foot, but i'd like there to be no cap whilst
+    // flying"). Flight speed is left to the client-side flying mount rules.
+    float const cap = float(SpeedCapPct(player)) / 100.0f;
+    if (player->GetSpeedRate(MOVE_RUN) > cap)
+        player->SetSpeed(MOVE_RUN, cap, true);
+    if (player->GetSpeedRate(MOVE_SWIM) > cap)
+        player->SetSpeed(MOVE_SWIM, cap, true);
+}
+
+void LoadClassBuffUnlock(uint32 accountId)
+{
+    if (g_classBuffUnlock.find(accountId) != g_classBuffUnlock.end())
+        return;
+    DetectNextSchema();
+    auto& set = g_classBuffUnlock[accountId];
+    if (!g_hasClassBuffTable)
+        return;
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `class` FROM `lg_class_buff_unlock` WHERE `account_id` = {}", accountId))
+    {
+        do
+            set.insert((*result)[0].Get<uint8>());
+        while (result->NextRow());
+    }
+}
+
+void NoteClassBuffUnlock(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    uint8 const cls = player->getClass();
+    LoadClassBuffUnlock(accountId);
+    if (g_classBuffUnlock[accountId].count(cls))
+        return;
+    g_classBuffUnlock[accountId].insert(cls);
+    DetectNextSchema();
+    if (g_hasClassBuffTable)
+        CharacterDatabase.DirectExecute(
+            "INSERT IGNORE INTO `lg_class_buff_unlock` (`account_id`, `class`) VALUES ({}, {})",
+            accountId, cls);
+    UnlockPerk(player, SPELL_CLASS_BUFFS);
+    ChatHandler(player->GetSession()).SendSysMessage(
+        "|cff66ccff[Account Perks]|r Class Buffs unlocked for this class (Naxxramas 25).");
+}
+
+void ApplyClassBuffs(Player* player, bool apply)
+{
+    if (!player)
+        return;
+    NextState& st = StateFor(player);
+    if (st.classBuffOn == apply)
+        return;
+    st.classBuffOn = apply;
+    float const amt = apply ? CLASS_BUFF_PCT : -CLASS_BUFF_PCT;
+    player->ApplyStatPctModifier(UNIT_MOD_STAT_STRENGTH, TOTAL_PCT, amt);
+    player->ApplyStatPctModifier(UNIT_MOD_STAT_AGILITY, TOTAL_PCT, amt);
+    player->ApplyStatPctModifier(UNIT_MOD_STAT_STAMINA, TOTAL_PCT, amt);
+    player->ApplyStatPctModifier(UNIT_MOD_STAT_INTELLECT, TOTAL_PCT, amt);
+    player->ApplyStatPctModifier(UNIT_MOD_STAT_SPIRIT, TOTAL_PCT, amt);
+    player->UpdateAllStats();
+}
+
+bool PlayerHasClassBuffUnlock(Player* player)
+{
+    if (!player || !player->GetSession())
+        return false;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadClassBuffUnlock(accountId);
+    return g_classBuffUnlock[accountId].count(player->getClass()) > 0
+        && HasPerk(player, SPELL_CLASS_BUFFS);
+}
+
+bool ShouldHaveClassBuff(Player* player)
+{
+    if (!player || !player->IsAlive())
+        return false;
+    if (PlayerHasClassBuffUnlock(player))
+        return true;
+    Group* group = player->GetGroup();
+    if (!group)
+        return false;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || member == player || !member->IsInWorld())
+            continue;
+        if (!player->IsInMap(member) || !player->IsWithinDistInMap(member, 100.0f))
+            continue;
+        if (PlayerHasClassBuffUnlock(member))
+            return true;
+    }
+    return false;
+}
+
+void TickClassBuffs(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    ApplyClassBuffs(player, ShouldHaveClassBuff(player));
+}
+
+// ---------------------------------------------------------------------
+// Account-wide professions (bug reports #50, #56, #63; backlog item 3)
+// ---------------------------------------------------------------------
+//
+// Reported three separate times, which makes it the most-asked-for thing on
+// the list. The design was decided out loud rather than guessed, as rule 6
+// requires, and the answer was the most generous of the options:
+//
+//   WHAT IS SHARED: everything -- the profession itself, its skill value, and
+//   every recipe. An alt does not visit a trainer and does not re-level
+//   anything. Sharing the skill number alone would hand someone 450
+//   Blacksmithing and nothing to make, which reads as another broken feature.
+//
+//   ACROSS FACTIONS: yes, everything. A Horde alt inherits what Alliance
+//   characters learned. Some of those recipes will have come from trainers the
+//   other faction cannot reach, and holding them is harmless.
+//
+//   HOW IT ARRIVES: automatically on login, exactly like the account riding
+//   share above. Nothing to click, and it self-heals for characters made later.
+//
+// MaxPrimaryTradeSkill is already 11 on this realm, so the usual two-profession
+// cap is not in the way and no core change is needed for that.
+//
+// The pool is read from the characters themselves rather than kept in a side
+// table: character_skills and character_spell already ARE the record of what
+// the account has earned, and a second copy is a second thing to drift. Cached
+// per account per uptime, and kept current by the learn-spell and skill-update
+// hooks below, both of which this script already listens to.
+uint32 const SHARED_PROFESSION_SKILLS[] = {
+    SKILL_ALCHEMY, SKILL_BLACKSMITHING, SKILL_ENCHANTING, SKILL_ENGINEERING,
+    SKILL_HERBALISM, SKILL_INSCRIPTION, SKILL_JEWELCRAFTING, SKILL_LEATHERWORKING,
+    SKILL_MINING, SKILL_SKINNING, SKILL_TAILORING,
+    SKILL_COOKING, SKILL_FIRST_AID, SKILL_FISHING
+};
+
+bool IsSharedProfession(uint32 skillId)
+{
+    for (uint32 id : SHARED_PROFESSION_SKILLS)
+        if (id == skillId)
+            return true;
+    return false;
+}
+
+// The profession skill line a spell belongs to, or 0. A recipe is any spell
+// with a SkillLineAbility row pointing at one of the shared professions.
+uint32 ProfessionSkillOfSpell(uint32 spellId)
+{
+    SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+    for (auto it = bounds.first; it != bounds.second; ++it)
+        if (it->second->SkillLine && IsSharedProfession(it->second->SkillLine))
+            return it->second->SkillLine;
+    return 0;
+}
+
+// Professions rank up in 75-point tiers (apprentice through grand master), and
+// SetSkill wants that tier as its step plus the matching cap. Same shape as
+// ApplyAccountRiding's ladder, generalised.
+void ProfessionTierFor(uint32 value, uint16& step, uint16& maxValue)
+{
+    uint32 tier = (value + 74) / 75;
+    if (!tier)
+        tier = 1;
+    if (tier > 6)
+        tier = 6;
+    step = uint16(tier);
+    maxValue = uint16(tier * 75);
+}
+
+std::unordered_map<uint32, std::unordered_map<uint32, uint32>> g_accountProfSkill; // account -> skill -> best value
+std::unordered_map<uint32, std::unordered_set<uint32>> g_accountProfSpell;         // account -> recipe spell ids
+std::unordered_set<uint32> g_accountProfLoaded;
+
+void LoadAccountProfessions(uint32 accountId)
+{
+    if (!g_accountProfLoaded.insert(accountId).second)
+        return;
+
+    if (QueryResult skills = CharacterDatabase.Query(
+        "SELECT `cs`.`skill`, MAX(`cs`.`value`) FROM `character_skills` `cs` "
+        "INNER JOIN `characters` `c` ON `c`.`guid` = `cs`.`guid` "
+        "WHERE `c`.`account` = {} GROUP BY `cs`.`skill`", accountId))
+    {
+        do
+        {
+            uint32 const skill = (*skills)[0].Get<uint16>();
+            uint32 const value = (*skills)[1].Get<uint32>();
+            if (value && IsSharedProfession(skill))
+                g_accountProfSkill[accountId][skill] = value;
+        } while (skills->NextRow());
+    }
+
+    // Every spell the account knows, filtered down to profession recipes. The
+    // busiest real account on this realm knows ~1000 spells across six
+    // characters, most of them class abilities, so the filtered set is a few
+    // hundred at worst and this runs once per account per uptime.
+    if (QueryResult spells = CharacterDatabase.Query(
+        // No `disabled` column here. character_spell is (guid, spell, specMask)
+        // in this build, and asking for one more killed the realm: AzerothCore
+        // treats a failed query as a fatal "database structure is not up to
+        // date" and ABORTS the worldserver. Every login ran this, so every
+        // login took the server down -- players saw unknown characters, no
+        // NPCs, then a disconnect. Shipped in 0.1.77, fixed in 0.1.78.
+        //
+        // Verify a column exists before selecting it; the cost of being wrong
+        // here is the whole realm, not a missing feature.
+        "SELECT DISTINCT `cs`.`spell` FROM `character_spell` `cs` "
+        "INNER JOIN `characters` `c` ON `c`.`guid` = `cs`.`guid` "
+        "WHERE `c`.`account` = {}", accountId))
+    {
+        do
+        {
+            uint32 const spellId = (*spells)[0].Get<uint32>();
+            if (ProfessionSkillOfSpell(spellId))
+                g_accountProfSpell[accountId].insert(spellId);
+        } while (spells->NextRow());
+    }
+}
+
+// Fold one character's own progress into the pool as it happens, so a second
+// character logging in later sees it without waiting for a restart.
+void NoteProfessionSkill(Player* player, uint32 skillId)
+{
+    if (!player || !player->GetSession() || !IsSharedProfession(skillId))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountProfessions(accountId);
+    uint32 const value = player->GetPureSkillValue(uint16(skillId));
+    uint32& best = g_accountProfSkill[accountId][skillId];
+    if (value > best)
+        best = value;
+}
+
+void NoteProfessionSpell(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetSession() || !ProfessionSkillOfSpell(spellId))
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountProfessions(accountId);
+    g_accountProfSpell[accountId].insert(spellId);
+}
+
+// Bring this character up to everything the account knows.
+void GrantAccountProfessions(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountProfessions(accountId);
+
+    // Skills first: a recipe learned for a profession the character does not
+    // have yet would be a spell with nowhere to live.
+    for (auto const& [skillId, value] : g_accountProfSkill[accountId])
+    {
+        if (!value)
+            continue;
+        uint16 const current = player->GetPureSkillValue(uint16(skillId));
+        if (player->HasSkill(skillId) && current >= value)
+            continue;
+        uint16 step = 1;
+        uint16 maxValue = 75;
+        ProfessionTierFor(value, step, maxValue);
+        player->SetSkill(uint16(skillId), step, uint16(value), maxValue);
+    }
+
+    // Then the recipes. learnSpell rather than addSpell on purpose: the client
+    // was sent its spell list before this hook runs, so a silently-added recipe
+    // would not appear in the trade window until the next login -- learned and
+    // invisible, which is the worst of both.
+    uint32 taught = 0;
+    for (uint32 spellId : g_accountProfSpell[accountId])
+    {
+        if (player->HasSpell(spellId))
+            continue;
+        if (!sSpellMgr->GetSpellInfo(spellId))
+            continue;
+        player->learnSpell(spellId, false, true);
+        ++taught;
+    }
+    if (taught)
+        ChatHandler(player->GetSession()).PSendSysMessage(
+            "|cff66ccff[Professions]|r Synced {} recipe(s) from your other characters.", taught);
+}
+
+void LoadAccountRiding(uint32 accountId)
+{
+    if (g_accountRiding.find(accountId) != g_accountRiding.end())
+        return;
+    DetectNextSchema();
+    uint32 skill = 0;
+    if (g_hasRidingCol)
+        if (QueryResult result = CharacterDatabase.Query(
+            "SELECT `riding_skill` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+            skill = (*result)[0].Get<uint32>();
+    g_accountRiding[accountId] = skill;
+}
+
+void SaveAccountRiding(uint32 accountId, uint32 skill)
+{
+    if (skill > g_accountRiding[accountId])
+        g_accountRiding[accountId] = skill;
+    DetectNextSchema();
+    if (!g_hasRidingCol)
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT INTO `lg_account_meta` (`account_id`, `riding_skill`) VALUES ({}, {}) "
+        "ON DUPLICATE KEY UPDATE `riding_skill` = GREATEST(`riding_skill`, {})",
+        accountId, skill, skill);
+}
+
+void ApplyAccountRiding(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountRiding(accountId);
+    uint32 const have = g_accountRiding[accountId];
+    if (!have)
+        return;
+    UnlockPerk(player, SPELL_RIDING_SHARE);
+    uint16 const cur = player->GetSkillValue(SKILL_RIDING);
+    if (cur >= have)
+        return;
+    uint32 step = 1;
+    uint32 maxv = 75;
+    if (have >= 300)
+    {
+        step = 4;
+        maxv = 300;
+    }
+    else if (have >= 225)
+    {
+        step = 3;
+        maxv = 225;
+    }
+    else if (have >= 150)
+    {
+        step = 2;
+        maxv = 150;
+    }
+    player->SetSkill(SKILL_RIDING, uint16(step), uint16(have), uint16(maxv));
+    LOG_INFO("module.livinggear", "riding share: {} lifted {} -> {} (account {})",
+        player->GetName(), cur, have, accountId);
+}
+
+void NoteRiding(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint16 const val = player->GetSkillValue(SKILL_RIDING);
+    if (!val)
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    LoadAccountRiding(accountId);
+    bool const raised = val > g_accountRiding[accountId];
+    SaveAccountRiding(accountId, val);
+    UnlockPerk(player, SPELL_RIDING_SHARE);
+    // Report #185: the account value rising used to wait for each alt's own
+    // relog. Push it to every online character of the account now, same shape
+    // as the shared-gold push (SyncSharedCurrencies) -- riding skill is a
+    // threshold, not a pool, so a direct SetSkill per online alt is enough
+    // and cannot recurse (SetSkill doesn't fire OnPlayerLearnSpell).
+    if (raised)
+    {
+        for (auto const& pair : ObjectAccessor::GetPlayers())
+        {
+            Player* alt = pair.second;
+            if (!alt || alt == player || !alt->GetSession()
+                || alt->GetSession()->GetAccountId() != accountId)
+                continue;
+            ApplyAccountRiding(alt);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Account-wide mounts and companions.
+//
+// Riding skill has been shared across the account for a while (above), but
+// the mounts and pets themselves were not -- so an alt could ride at level 1
+// and had nothing to ride. Same shape as the account Key Ring
+// (LivingGear_Vault.cpp RecordAccountKey/GrantAccountKeys) and for the same
+// reason: nothing in this codebase writes into an offline character's
+// spellbook, so a learn is recorded account-wide here and handed to each
+// other character on its own next login.
+// ---------------------------------------------------------------------
+
+// Skill line 777 (Mounts) / 778 (Companions) is what the 3.3.5 client itself
+// uses to sort a spell into the spellbook's Pet tab, so it is exactly the set
+// of spells a player would call "my mounts and pets" -- and it is a much
+// tighter test than "has SPELL_AURA_MOUNTED", which also catches vehicle
+// auras, taxi/quest-scripted rides and boss mechanics we have no business
+// copying onto alts.
+bool IsCollectionSpell(uint32 spellId)
+{
+    // Cold Weather Flying (54197) is taught by Hira Snowdawn in Dalaran and is
+    // as account-wide as the riding skill itself is -- report #185. It is not
+    // a Mounts/Companions skill-line spell, so it joins the pool explicitly.
+    // The Tome of Cold Weather Flight (item 44221, spell 55097) teaches the
+    // same spell, so both purchase paths funnel into this one id.
+    if (spellId == SPELL_COLD_WEATHER_FLYING)
+        return true;
+    SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+    for (auto itr = bounds.first; itr != bounds.second; ++itr)
+        if (itr->second->SkillLine == SKILL_MOUNTS || itr->second->SkillLine == SKILL_COMPANIONS)
+            return true;
+    return false;
+}
+
+void RecordAccountCollection(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetSession() || !spellId)
+        return;
+    DetectNextSchema();
+    if (!g_hasAccountMountTable || !IsCollectionSpell(spellId))
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT IGNORE INTO `lg_account_mount` (`account_id`, `spell_id`) VALUES ({}, {})",
+        player->GetSession()->GetAccountId(), spellId);
+}
+
+// Records everything this character already knows. Without it the feature
+// would only ever see mounts learned from the moment it shipped, and every
+// collection already sitting in the DB would stay stranded on whichever
+// character earned it.
+void HarvestAccountCollection(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    DetectNextSchema();
+    if (!g_hasAccountMountTable)
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    // One statement, not one per mount: a collector logging in would
+    // otherwise fire a hundred-odd synchronous writes on the world thread
+    // every single login, all of them no-ops after the first time.
+    std::string values;
+    for (auto const& [spellId, state] : player->GetSpellMap())
+    {
+        if (!state || state->State == PLAYERSPELL_REMOVED || !state->Active)
+            continue;
+        if (!IsCollectionSpell(spellId))
+            continue;
+        if (!values.empty())
+            values += ',';
+        values += Acore::StringFormat("({},{})", accountId, spellId);
+    }
+    if (values.empty())
+        return;
+    CharacterDatabase.DirectExecute(
+        "INSERT IGNORE INTO `lg_account_mount` (`account_id`, `spell_id`) VALUES {}", values);
+}
+
+void GrantAccountCollection(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    DetectNextSchema();
+    if (!g_hasAccountMountTable)
+        return;
+    QueryResult result = CharacterDatabase.Query(
+        "SELECT `spell_id` FROM `lg_account_mount` WHERE `account_id` = {}",
+        player->GetSession()->GetAccountId());
+    if (!result)
+        return;
+    do
+    {
+        uint32 const spellId = (*result)[0].Get<uint32>();
+        // The spell may have come from a character of the other faction or a
+        // different race. That is the entire point -- learnSpell does not
+        // enforce SkillLineAbility RaceMask, so the alt simply gets it.
+        if (!player->HasSpell(spellId) && sSpellMgr->GetSpellInfo(spellId))
+            player->learnSpell(spellId);
+    } while (result->NextRow());
+}
+
+uint8 GroupMedianLevel(Group* group, bool humansOnly)
+{
+    std::vector<uint8> levels;
+    if (!group)
+        return 0;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member)
+            continue;
+        bool const bot = member->GetSession() && member->GetSession()->IsBot();
+        if (humansOnly && bot)
+            continue;
+        levels.push_back(member->GetLevel());
+    }
+    if (levels.empty())
+        return 0;
+    std::sort(levels.begin(), levels.end());
+    return levels[levels.size() / 2];
+}
+
+bool GroupIsMentored(Player* player)
+{
+    if (!player || !player->GetGroup())
+        return false;
+    Group* group = player->GetGroup();
+    uint8 const humanMed = GroupMedianLevel(group, true);
+    if (!humanMed)
+        return false;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* member = itr->GetSource();
+        if (!member || !member->GetSession() || !member->GetSession()->IsBot())
+            continue;
+        uint8 orig = g_state[member->GetGUID().GetCounter()].botOrigLevel;
+        if (!orig)
+            orig = member->GetLevel();
+        if (orig > humanMed)
+            return true;
+    }
+    return false;
+}
+
+void ScaleMentorBots(Player* player)
+{
+    if (!player || !player->GetGroup() || !player->GetMap() || !player->GetMap()->IsDungeon())
+        return;
+    Group* group = player->GetGroup();
+    uint8 const median = GroupMedianLevel(group, true);
+    if (!median)
+        return;
+    for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* bot = itr->GetSource();
+        if (!bot || !bot->GetSession() || !bot->GetSession()->IsBot())
+            continue;
+        NextState& st = g_state[bot->GetGUID().GetCounter()];
+        if (!st.botOrigLevel)
+            st.botOrigLevel = bot->GetLevel();
+        if (st.botOrigLevel <= median)
+            continue;
+        if (bot->GetLevel() != median)
+            bot->SetLevel(median);
+    }
+}
+
+void RestoreMentorBots(Player* player)
+{
+    if (!player || !player->GetGroup())
+        return;
+    for (GroupReference* itr = player->GetGroup()->GetFirstMember(); itr; itr = itr->next())
+    {
+        Player* bot = itr->GetSource();
+        if (!bot || !bot->GetSession() || !bot->GetSession()->IsBot())
+            continue;
+        NextState& st = g_state[bot->GetGUID().GetCounter()];
+        if (st.botOrigLevel && bot->GetLevel() != st.botOrigLevel)
+            bot->SetLevel(st.botOrigLevel);
+    }
+}
+
+bool QuestRelatedCreature(Creature* creature)
+{
+    if (!creature)
+        return false;
+    CreatureQuestItemList const* items = sObjectMgr->GetCreatureQuestItemList(creature->GetEntry());
+    if (items && !items->empty())
+        return true;
+    return false;
+}
+
+void CapQuestRespawn(Creature* creature)
+{
+    if (!creature || !QuestRelatedCreature(creature))
+        return;
+    if (creature->GetRespawnDelay() > QUEST_RESPAWN_CAP)
+        creature->SetRespawnDelay(QUEST_RESPAWN_CAP);
+}
+
+void CapQuestGoRespawn(GameObject* go)
+{
+    if (!go || go->GetGoType() != GAMEOBJECT_TYPE_CHEST)
+        return;
+    GameObjectTemplate const* info = go->GetGOInfo();
+    if (!info)
+        return;
+    bool quest = info->chest.questId != 0;
+    GameObjectQuestItemList const* items = sObjectMgr->GetGameObjectQuestItemList(go->GetEntry());
+    if (items && !items->empty())
+        quest = true;
+    if (!quest)
+        return;
+    if (go->GetRespawnDelay() > QUEST_RESPAWN_CAP)
+        go->SetRespawnDelay(QUEST_RESPAWN_CAP);
+}
+
+// Paladin perks, bug report #25. Every cast below is deferred and triggered,
+// for the reason this module keeps relearning: OnPlayerSpellCast fires part-way
+// through the triggering Spell::cast(), and starting more casts on a unit that
+// is still mid-cast is the reentrant path into Unit::_AddAura that produced the
+// recurring assert crashes.
+void PaladinSplashImpl(ObjectGuid playerGuid, ObjectGuid firstTarget, uint32 spellId, float range)
+{
+    Player* player = ObjectAccessor::FindPlayer(playerGuid);
+    if (!LivingGear_SafeToCastOn(player))
+        return;
+    Unit* anchor = firstTarget ? ObjectAccessor::GetUnit(*player, firstTarget) : player;
+    if (!anchor || !anchor->IsInWorld())
+        anchor = player;
+
+    std::list<Unit*> around;
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(anchor, player, range);
+    Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(anchor, around, check);
+    Cell::VisitObjects(anchor, searcher, range);
+    for (Unit* u : around)
+    {
+        if (!u || !u->IsAlive() || u->GetGUID() == firstTarget)
+            continue;
+        if (!player->IsValidAttackTarget(u))
+            continue;
+        player->CastSpell(u, spellId, true);
+    }
+}
+
+void PaladinSplash(Player* player, Unit* target, uint32 spellId, float range)
+{
+    if (!player || !spellId)
+        return;
+    ObjectGuid const playerGuid = player->GetGUID();
+    ObjectGuid const targetGuid = target ? target->GetGUID() : ObjectGuid::Empty;
+    player->m_Events.AddEventAtOffset([playerGuid, targetGuid, spellId, range]()
+    {
+        PaladinSplashImpl(playerGuid, targetGuid, spellId, range);
+    }, std::chrono::milliseconds(1));
+}
+
+// Divine Storm "each press hits 4 times": three extra triggered copies on top
+// of the one the player actually cast.
+void DivineStormExtraHits(Player* player)
+{
+    if (!player)
+        return;
+    // Sanctified Whirlwind opens its cleave window here: the animation window
+    // is this cast plus the three triggered copies below, so ~800ms covers
+    // every hit of the 4-hit sequence.
+    StateFor(player).dsWindowUntilMs = getMSTime() + DS_WINDOW_MS;
+    ObjectGuid const playerGuid = player->GetGUID();
+    for (uint32 i = 0; i < DIVINE_STORM_EXTRA_HITS; ++i)
+    {
+        player->m_Events.AddEventAtOffset([playerGuid]()
+        {
+            Player* p = ObjectAccessor::FindPlayer(playerGuid);
+            if (LivingGear_SafeToCastOn(p))
+                p->CastSpell(p, SPELL_DIVINE_STORM, true);
+        }, std::chrono::milliseconds(120 + i * 120));
+    }
+}
+
+// Called from the spell-cast hook. Splits by perk so a Paladin only ever gets
+// the behaviour of the spec they actually chose.
+void HandlePaladinPerkCast(Player* player, SpellInfo const* info, Unit* target)
+{
+    if (!player || !info)
+        return;
+
+    if (HasClassPerk(player, SPELL_PALADIN_HOLY) && RankOf(info, SPELL_HOLY_SHOCK))
+    {
+        // "hits enemies within 10 yards of the target" -- anchored on the
+        // target, not the caster, which is what the wording says and also what
+        // makes it useful at range.
+        if (target && player->IsValidAttackTarget(target))
+            PaladinSplash(player, target, info->Id, HOLY_SHOCK_SPLASH_RANGE);
+        return;
+    }
+
+    if (!HasClassPerk(player, SPELL_PALADIN_RETRIBUTION))
+        return;
+
+    if (RankOf(info, SPELL_DIVINE_STORM))
+    {
+        DivineStormExtraHits(player);
+        return;
+    }
+    // "While Retribution Aura is up, Crusader Strike also casts Exorcism on
+    // nearby enemies." The aura condition is the player's own choice of aura,
+    // so it stays a real check rather than being assumed.
+    if (RankOf(info, SPELL_CRUSADER_STRIKE))
+    {
+        if (player->HasAura(SPELL_RETRIBUTION_AURA))
+            PaladinSplash(player, target, SPELL_EXORCISM, EXORCISM_SPLASH_RANGE);
+        // Sanctified Whirlwind: "Crusader Strike on hit: 30% chance to fire a
+        // free full Avenger's Shield bounce chain." Mirrors the Protection
+        // Judgement proc (TryPaladinProtJudgementProc) but as a separate CS
+        // trigger -- the prot proc itself is untouched. Rank 5 (48827) is the
+        // level-80 rank; the triggered cast carries the native bounce chain,
+        // and ThrowExtraAvengers/AS_DAMAGE_MULT both match it through RankOf.
+        if (roll_chance_i(RET_CS_AS_PROC_CHANCE) && target
+            && player->IsValidAttackTarget(target))
+            player->CastSpell(target, SPELL_AVENGERS_SHIELD_R5, true);
+    }
+}
+
+void RelocateConsecration(Player* player)
+{
+    if (!player || !player->GetMap() || !HasClassPerk(player, SPELL_PALADIN_HOLY))
+        return;
+    for (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_CONSECRATION); info; info = info->GetNextRankSpell())
+    {
+        DynamicObject* dyn = player->GetDynObject(info->Id);
+        if (!dyn)
+            continue;
+        player->GetMap()->DynamicObjectRelocation(dyn,
+            player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation());
+        if (dyn->GetDuration() < 2000)
+            dyn->SetDuration(8000);
+    }
+}
+
+// Highest Consecration rank the paladin actually knows (the module never
+// learnSpells perk spells, so "owned" means trained -- same question
+// ClassPerks.cpp' BestOwned answers, resolved locally because the two files
+// are separate translation units).
+uint32 OwnedConsecration(Player* player)
+{
+    uint32 owned = 0;
+    for (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_CONSECRATION); info; info = info->GetNextRankSpell())
+        if (player->HasSpell(info->Id))
+            owned = info->Id;
+    return owned;
+}
+
+// Relocation half of RelocateConsecration, for one known dynobject id -- the
+// Sanctified Whirlwind follow shares the Holy perk's behavior without
+// touching the Holy-gated entry point.
+void RelocateConsecrationDynId(Player* player, uint32 spellId)
+{
+    if (!player || !player->GetMap())
+        return;
+    DynamicObject* dyn = player->GetDynObject(spellId);
+    if (!dyn)
+        return;
+    player->GetMap()->DynamicObjectRelocation(dyn,
+        player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation());
+    if (dyn->GetDuration() < 2000)
+        dyn->SetDuration(8000);
+}
+
+// "Sanctified Whirlwind" on-state, ticked from the per-player update loop the
+// same observe-only way as TickMageArcanePower/TickWarriorArmsBladestorm: the
+// toggle aura's lifetime is never touched while it is being applied (it is
+// infinite -- DurationIndex 21), and every cast below is deferred through
+// m_Events so nothing re-enters a cast in progress.
+void TickSanctifiedWhirlwind(Player* player, uint32 diff)
+{
+    if (!player || !player->IsInWorld() || !HasClassPerk(player, SPELL_PALADIN_RETRIBUTION))
+        return;
+    if (!player->HasAura(SPELL_SANCTIFIED_WHIRLWIND))
+    {
+        StateFor(player).whirlConsecTickMs = 0;
+        return;
+    }
+    NextState& st = StateFor(player);
+    st.whirlConsecTickMs += diff;
+    if (st.whirlConsecTickMs < WHIRLWIND_CONSEC_TICK_MS)
+        return;
+    st.whirlConsecTickMs = 0;
+    // Consecration follows the paladin: an already-standing circle is dragged
+    // along (Holy perk's RelocateConsecration behavior), a missing one is
+    // re-cast at the paladin's position -- "no recast needed" either way.
+    uint32 dynId = 0;
+    for (SpellInfo const* info = sSpellMgr->GetSpellInfo(SPELL_CONSECRATION); info; info = info->GetNextRankSpell())
+        if (player->GetDynObject(info->Id))
+            dynId = info->Id;
+    if (dynId)
+    {
+        RelocateConsecrationDynId(player, dynId);
+        return;
+    }
+    uint32 const consec = OwnedConsecration(player);
+    if (!consec)
+        return;
+    ObjectGuid const guid = player->GetGUID();
+    player->m_Events.AddEventAtOffset([guid, consec]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(guid);
+        if (!p || !LivingGear_SafeToCastOn(p) || !p->IsAlive())
+            return;
+        if (!p->HasAura(SPELL_SANCTIFIED_WHIRLWIND))
+            return;
+        p->CastSpell(p, consec, true);
+    }, std::chrono::milliseconds(1));
+}
+
+// Sanctified Whirlwind DS-window cleave, called from the melee-damage hook:
+// during Divine Storm's animation window every auto-swing also strikes every
+// other enemy within 8 yards for 50% of the swing. Deferred one tick like
+// every other expansion in this module -- DealDamage inside the damage hook
+// itself is the reentrancy shape the module has been burned by repeatedly.
+void SwingCleaveSanctifiedWhirlwind(Unit* target, Unit* attacker, uint32 damage)
+{
+    if (!target || !attacker || !damage)
+        return;
+    Player* player = attacker->ToPlayer();
+    if (!player || !HasClassPerk(player, SPELL_PALADIN_RETRIBUTION))
+        return;
+    NextState& st = StateFor(player);
+    if (!st.dsWindowUntilMs || getMSTimeDiff(getMSTime(), st.dsWindowUntilMs) > DS_WINDOW_MS)
+        return;
+    ObjectGuid const playerGuid = player->GetGUID();
+    ObjectGuid const mainVictim = target->GetGUID();
+    uint32 const cleave = uint32(float(damage) * DS_SWING_CLEAVE_PCT);
+    player->m_Events.AddEventAtOffset([playerGuid, mainVictim, cleave]()
+    {
+        Player* p = ObjectAccessor::FindPlayer(playerGuid);
+        if (!p || !LivingGear_SafeToCastOn(p) || !p->IsAlive())
+            return;
+        Unit* victim = ObjectAccessor::GetUnit(*p, mainVictim);
+        std::list<Unit*> around;
+        Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(p, p, DS_SWING_CLEAVE_RANGE);
+        Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(p, around, check);
+        Cell::VisitObjects(p, searcher, DS_SWING_CLEAVE_RANGE);
+        for (Unit* u : around)
+        {
+            if (!u || !u->IsAlive() || u == victim || !p->IsValidAttackTarget(u))
+                continue;
+            // This fork's Unit::DealDamage is static and takes the attacker
+            // explicitly.
+            Unit::DealDamage(p, u, cleave, nullptr, SPELL_DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL, nullptr, false);
+        }
+    }, std::chrono::milliseconds(1));
+}
+
+void ThrowExtraAvengers(Player* player, Spell* spell)
+{
+    if (!player || !spell || player->getClass() != CLASS_PALADIN)
+        return;
+    // Report #207: the old extra-throw design fights the Protection perk's
+    // bounce rework -- players saw many shields in the air instead of one
+    // bouncing chain, plus a second cooldown writer racing the rework's flat
+    // 6s override (which is why the 30s category cooldown kept winning).
+    // With the Protection perk taken, the rework owns the spell entirely.
+    if (GetClassPerk(player) == SPELL_PALADIN_PROTECTION)
+        return;
+    SpellInfo const* info = spell->GetSpellInfo();
+    if (!RankOf(info, SPELL_AVENGERS_SHIELD))
+        return;
+    Unit* first = spell->m_targets.GetUnitTarget();
+    if (!first)
+        return;
+    std::list<Unit*> targets;
+    Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck check(player, player, 30.0f);
+    Acore::UnitListSearcher<Acore::AnyUnfriendlyNoTotemUnitInObjectRangeCheck> searcher(player, targets, check);
+    Cell::VisitObjects(player, searcher, 30.0f);
+    uint32 extra = 0;
+    for (Unit* target : targets)
+    {
+        if (!target || target == first || !target->IsAlive() || !player->IsValidAttackTarget(target))
+            continue;
+        player->CastSpell(target, info->Id, true);
+        if (++extra >= 2)
+            break;
+    }
+    int32 cd = int32(AS_CD_MS);
+    float haste = player->GetRatingBonusValue(CR_HASTE_SPELL);
+    if (haste < 0.0f)
+        haste = 0.0f;
+    cd = int32(float(cd) / (1.0f + haste / 100.0f));
+    if (cd < 1000)
+        cd = 1000;
+    // Report #112: Player::_AddSpellCooldown treats its third parameter as a
+    // DURATION -- it stores GameTime::GetGameTimeMS() + end_time. Passing
+    // getMSTime() here made every hand-cast Avenger's Shield cooldown last for
+    // the server's whole uptime (hours, and growing) instead of AS_CD_MS.
+    player->AddSpellCooldown(info->Id, 0, uint32(cd), true);
+}
+
+void KeepHofOneTarget(Player* caster, Unit* target)
+{
+    if (!caster || !target || !HasPerk(caster, SPELL_PALADIN_RETRIBUTION))
+        return;
+    NextState& st = StateFor(caster);
+    uint32 const newGuid = target->GetGUID().GetCounter();
+    if (st.hofTarget && st.hofTarget != newGuid)
+        if (Player* prev = ObjectAccessor::FindPlayerByLowGUID(st.hofTarget))
+            prev->RemoveAurasDueToSpell(SPELL_HAND_OF_FREEDOM);
+    st.hofTarget = newGuid;
+    if (Aura* aura = target->GetAura(SPELL_HAND_OF_FREEDOM, caster->GetGUID()))
+    {
+        aura->SetMaxDuration(-1);
+        aura->SetDuration(-1);
+        // Report #195 follow-up: the permanent blessing also moves the
+        // paladin another 20% (50% total over the base 30%).
+        if (AuraEffect* eff = aura->GetEffect(EFFECT_0))
+            eff->ChangeAmount(eff->GetAmount() + 2000);
+    }
+    caster->RemoveSpellCooldown(SPELL_HAND_OF_FREEDOM, true);
+}
+
+// Report #195: the permanent Blessing of Freedom auto-applies to the paladin
+// themself -- on login and on resurrect -- so the perk's movement immunity is
+// always up without a manual cast. Recasting still toggles it off (see the
+// self-only cast check below); it comes back at the next login/resurrect.
+void EnsurePermanentHof(Player* player)
+{
+    if (!player || !player->IsInWorld() || player->isDead())
+        return;
+    if (!HasPerk(player, SPELL_PALADIN_RETRIBUTION))
+        return;
+    if (player->HasAura(SPELL_HAND_OF_FREEDOM) || !sSpellMgr->GetSpellInfo(SPELL_HAND_OF_FREEDOM))
+        return;
+    player->CastSpell(player, SPELL_HAND_OF_FREEDOM, true);
+    if (Aura* aura = player->GetAura(SPELL_HAND_OF_FREEDOM))
+    {
+        aura->SetMaxDuration(-1);
+        aura->SetDuration(-1);
+        if (AuraEffect* eff = aura->GetEffect(EFFECT_0))
+            eff->ChangeAmount(eff->GetAmount() + 2000); // same +20% as a hand-cast blessing
+    }
+    StateFor(player).hofTarget = player->GetGUID().GetCounter();
+    player->RemoveSpellCooldown(SPELL_HAND_OF_FREEDOM, true);
+}
+
+void ApplyWeaponPeak(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    uint32 const accountId = player->GetSession()->GetAccountId();
+    NextState& st = StateFor(player);
+    if (st.weaponPeakOn)
+    {
+        player->HandleStatFlatModifier(UNIT_MOD_STAT_STRENGTH, TOTAL_VALUE, st.peakStr, false);
+        player->HandleStatFlatModifier(UNIT_MOD_STAT_AGILITY, TOTAL_VALUE, st.peakAgi, false);
+        player->HandleStatFlatModifier(UNIT_MOD_STAT_STAMINA, TOTAL_VALUE, st.peakSta, false);
+        player->HandleStatFlatModifier(UNIT_MOD_STAT_INTELLECT, TOTAL_VALUE, st.peakInt, false);
+        player->HandleStatFlatModifier(UNIT_MOD_STAT_SPIRIT, TOTAL_VALUE, st.peakSpi, false);
+        st.weaponPeakOn = false;
+        st.peakStr = st.peakAgi = st.peakSta = st.peakInt = st.peakSpi = 0.f;
+    }
+    Item* weapon = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+    if (!weapon)
+        return;
+    ItemTemplate const* proto = weapon->GetTemplate();
+    if (!proto || proto->Class != ITEM_CLASS_WEAPON)
+        return;
+    float peak[5] = {};
+    float mine[5] = {};
+    if (QueryResult result = CharacterDatabase.Query(
+        "SELECT `item_entry`, `str`, `agi`, `sta`, `intel`, `spi` FROM `lg_absorb` WHERE `account_id` = {}",
+        accountId))
+    {
+        do
+        {
+            uint32 const entry = (*result)[0].Get<uint32>();
+            ItemTemplate const* other = sObjectMgr->GetItemTemplate(entry);
+            if (!other || other->Class != proto->Class || other->SubClass != proto->SubClass)
+                continue;
+            float vals[5] = {
+                (*result)[1].Get<float>(), (*result)[2].Get<float>(), (*result)[3].Get<float>(),
+                (*result)[4].Get<float>(), (*result)[5].Get<float>()
+            };
+            for (int i = 0; i < 5; ++i)
+                if (vals[i] > peak[i])
+                    peak[i] = vals[i];
+            if (entry == proto->ItemId)
+            {
+                for (int i = 0; i < 5; ++i)
+                    mine[i] = vals[i];
+            }
+        } while (result->NextRow());
+    }
+    st.peakStr = std::max(0.f, peak[0] - mine[0]);
+    st.peakAgi = std::max(0.f, peak[1] - mine[1]);
+    st.peakSta = std::max(0.f, peak[2] - mine[2]);
+    st.peakInt = std::max(0.f, peak[3] - mine[3]);
+    st.peakSpi = std::max(0.f, peak[4] - mine[4]);
+    if (st.peakStr + st.peakAgi + st.peakSta + st.peakInt + st.peakSpi <= 0.01f)
+        return;
+    player->HandleStatFlatModifier(UNIT_MOD_STAT_STRENGTH, TOTAL_VALUE, st.peakStr, true);
+    player->HandleStatFlatModifier(UNIT_MOD_STAT_AGILITY, TOTAL_VALUE, st.peakAgi, true);
+    player->HandleStatFlatModifier(UNIT_MOD_STAT_STAMINA, TOTAL_VALUE, st.peakSta, true);
+    player->HandleStatFlatModifier(UNIT_MOD_STAT_INTELLECT, TOTAL_VALUE, st.peakInt, true);
+    player->HandleStatFlatModifier(UNIT_MOD_STAT_SPIRIT, TOTAL_VALUE, st.peakSpi, true);
+    st.weaponPeakOn = true;
+    player->UpdateAllStats();
+}
+
+bool HandleNextMessage(Player* player, std::string const& raw)
+{
+    std::string msg = raw;
+    if (msg.rfind("LG\t", 0) == 0)
+        msg = msg.substr(3);
+    uint32 cap = 0;
+    if (sscanf(msg.c_str(), "SCAP|%u", &cap) == 1)
+    {
+        if (cap < 100)
+            cap = 100;
+        if (cap > SPEED_CAP_DEFAULT)
+            cap = SPEED_CAP_DEFAULT;
+        StateFor(player).speedCapPct = cap;
+        DetectNextSchema();
+        if (g_hasSpeedCapCol && player->GetSession())
+            CharacterDatabase.DirectExecute(
+                "INSERT INTO `lg_account_meta` (`account_id`, `speed_cap`) VALUES ({}, {}) "
+                "ON DUPLICATE KEY UPDATE `speed_cap` = {}",
+                player->GetSession()->GetAccountId(), cap, cap);
+        ApplySpeedCap(player);
+        SendLine(player, Acore::StringFormat("SCAP|{}", cap));
+        return true;
+    }
+    return false;
+}
+
+// The speed cap is the only state this module pushes at login, and a
+// client REQ never used to reach it, so the slider snapped back to its
+// default on every /reload.
+void SendNextSync(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+    SendLine(player, Acore::StringFormat("SCAP|{}", SpeedCapPct(player)));
+}
+
+class NextPlayer : public PlayerScript
+{
+public:
+    NextPlayer() : PlayerScript("LivingGearNextPlayer", {
+        PLAYERHOOK_ON_LOGIN,
+        PLAYERHOOK_ON_LOGOUT,
+        PLAYERHOOK_ON_UPDATE,
+        PLAYERHOOK_ON_MONEY_CHANGED,
+        PLAYERHOOK_ON_REPUTATION_CHANGE,
+        PLAYERHOOK_ON_SPELL_CAST,
+        PLAYERHOOK_ON_MAP_CHANGED,
+        PLAYERHOOK_ON_CREATURE_KILL,
+        PLAYERHOOK_ON_LEARN_SPELL,
+        PLAYERHOOK_ON_UPDATE_SKILL,
+        PLAYERHOOK_ON_GIVE_EXP,
+        PLAYERHOOK_ON_EQUIP,
+        PLAYERHOOK_ON_UNEQUIP_ITEM,
+        PLAYERHOOK_ON_PLAYER_QUEST_ACCEPT,
+        PLAYERHOOK_ON_PLAYER_RESURRECT
+    }) { }
+
+    void OnPlayerLogin(Player* player) override
+    {
+        if (!player || !player->GetSession())
+            return;
+        uint32 const accountId = player->GetSession()->GetAccountId();
+        DetectNextSchema();
+        LoadClassBuffUnlock(accountId);
+        LoadAccountRiding(accountId);
+        EnsureSharedCurrencies(player);
+        EnsureAccountReputation(player);
+        // Paladin Retribution promises "Learn Crusader Strike" (bug report
+        // #25). Granted here rather than on selection so an existing
+        // Retribution Paladin picks it up on their next login instead of
+        // having to re-choose the perk.
+        if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && !player->HasSpell(SPELL_CRUSADER_STRIKE)
+            && sSpellMgr->GetSpellInfo(SPELL_CRUSADER_STRIKE))
+            player->learnSpell(SPELL_CRUSADER_STRIKE);
+        // Sanctified Whirlwind toggle button. Granted alongside Crusader
+        // Strike so an existing Retribution Paladin gets it on next login.
+        if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && !player->HasSpell(SPELL_SANCTIFIED_WHIRLWIND)
+            && sSpellMgr->GetSpellInfo(SPELL_SANCTIFIED_WHIRLWIND))
+            player->learnSpell(SPELL_SANCTIFIED_WHIRLWIND);
+        // Report #195: the permanent Blessing of Freedom is already up the
+        // moment the paladin logs in, no manual cast needed.
+        EnsurePermanentHof(player);
+        if (g_hasSpeedCapCol)
+        {
+            if (QueryResult result = CharacterDatabase.Query(
+                "SELECT `speed_cap` FROM `lg_account_meta` WHERE `account_id` = {}", accountId))
+            {
+                uint32 cap = (*result)[0].Get<uint32>();
+                if (cap)
+                    StateFor(player).speedCapPct = cap;
+            }
+        }
+        ApplyAccountRiding(player);
+        GrantAccountProfessions(player);
+        // Harvest before grant: what this character already owns joins the
+        // account pool in the same login it receives everyone else's.
+        HarvestAccountCollection(player);
+        GrantAccountCollection(player);
+        if (g_classBuffUnlock[accountId].count(player->getClass()))
+            UnlockPerk(player, SPELL_CLASS_BUFFS);
+        ApplyWeaponPeak(player);
+        SendLine(player, Acore::StringFormat("SCAP|{}", SpeedCapPct(player)));
+    }
+
+    // Account-wide reputation (bug reports #203/#216): observe the change,
+    // record it account-wide and push it onto the other online characters.
+    // Always true -- this hook observes, it never vetoes a standing change.
+    bool OnPlayerReputationChange(Player* player, uint32 factionId, int32& standing, bool /*incremental*/) override
+    {
+        if (player)
+            PushAccountReputation(player, factionId, standing);
+        return true;
+    }
+
+    // Report #195: death drops the blessing; bring it straight back up.
+    // Report #172: the same discipline for every self-cast buff -- the set of
+    // buffs that were permanent when the player died is re-applied here.
+    void OnPlayerResurrect(Player* player, float /*restore_percent*/, bool& /*applySickness*/) override
+    {
+        EnsurePermanentHof(player);
+        RecastSelfBuffs(player);
+    }
+    void OnPlayerLogout(Player* player) override
+    {
+        if (!player)
+            return;
+        // Only money changes push during play, so honor and arena earned this
+        // session would otherwise sit unpooled until the next coin moved.
+        // Cheap here and it closes that window.
+        PushSharedCurrencies(player);
+        ApplyClassBuffs(player, false);
+        NextState& st = StateFor(player);
+        if (st.weaponPeakOn)
+            ApplyWeaponPeak(player);
+        RestoreMentorBots(player);
+        g_state.erase(player->GetGUID().GetCounter());
+        g_selfBuffs.erase(player->GetGUID().GetCounter());
+    }
+
+    void OnPlayerUpdate(Player* player, uint32 diff) override
+    {
+        // Crash guard: several ticks below cast auras on the player, and doing
+        // that after Player::CleanupsBeforeDelete asserts on !m_cleanupDone and
+        // takes the realm down. See LivingGear_SafeToCastOn.
+        if (!LivingGear_SafeToCastOn(player))
+            return;
+        if (!player || !player->IsInWorld())
+            return;
+        uint32 const now = getMSTime();
+        NextState& st = StateFor(player);
+        if (!st.lastTickMs || getMSTimeDiff(st.lastTickMs, now) >= 400)
+        {
+            st.lastTickMs = now;
+            TickClassBuffs(player);
+            ApplySpeedCap(player);
+        }
+        RelocateConsecration(player);
+        TickSanctifiedWhirlwind(player, diff);
+    }
+
+    void OnPlayerQuestAccept(Player* player, Quest const* /*quest*/) override
+    {
+        UnlockPerk(player, SPELL_AUTO_ACCEPT);
+    }
+
+    // Deferred by a tick: this fires from inside the money change itself, and
+    // ApplySharedCurrenciesTo calls SetMoney on other players, which is the
+    // reentrancy this module has been bitten by repeatedly.
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skip*/) override
+    {
+        if (!player || !spell)
+            return;
+
+        // Only ever expand a cast the player actually pressed. Every paladin
+        // expansion below re-casts the same spell id with triggered = true, and
+        // this hook fires for triggered casts as well, so without this the
+        // expansion feeds itself: one Divine Storm queues three more, each of
+        // which queues three more. That is 3^n casts and it took the server
+        // down (report #80). Holy Shock had the identical shape, splashing by
+        // re-casting itself onto every nearby enemy.
+        if (spell->IsTriggered())
+            return;
+
+        HandlePaladinPerkCast(player, spell->GetSpellInfo(), spell->m_targets.GetUnitTarget());
+
+        // Report #172: a buff the player cast on themselves becomes permanent
+        // and is re-cast on death. The extension is deferred one tick because
+        // this hook runs before the spell's auras exist.
+        if (IsSelfCastBuffSpell(player, spell))
+        {
+            ObjectGuid const guid = player->GetGUID();
+            uint32 const spellId = spell->GetSpellInfo()->Id;
+            player->m_Events.AddEventAtOffset([guid, spellId]()
+            {
+                ExtendSelfBuffs(guid, spellId);
+            }, std::chrono::milliseconds(1));
+        }
+    }
+
+    void OnPlayerMoneyChanged(Player* player, int32& /*amount*/) override
+    {
+        if (!SharedEligible(player))
+            return;
+        ObjectGuid const guid = player->GetGUID();
+        player->m_Events.AddEventAtOffset([guid]()
+        {
+            if (Player* p = ObjectAccessor::FindPlayer(guid))
+                PushSharedCurrencies(p);
+        }, std::chrono::milliseconds(1));
+    }
+
+    void OnPlayerMapChanged(Player* player) override
+    {
+        if (!player)
+            return;
+        if (player->GetMap() && player->GetMap()->IsDungeon())
+            ScaleMentorBots(player);
+        else
+            RestoreMentorBots(player);
+    }
+
+    void OnPlayerCreatureKill(Player* killer, Creature* killed) override
+    {
+        if (!killer || !killed || killed->GetEntry() != NPC_KELTHUZAD)
+            return;
+        Map* map = killer->GetMap();
+        if (!map || map->GetId() != MAP_NAXXRAMAS)
+            return;
+        if (map->GetDifficulty() != RAID_DIFFICULTY_25MAN_NORMAL
+            && map->GetDifficulty() != RAID_DIFFICULTY_25MAN_HEROIC)
+            return;
+        NoteClassBuffUnlock(killer);
+        if (Group* group = killer->GetGroup())
+        {
+            for (GroupReference* itr = group->GetFirstMember(); itr; itr = itr->next())
+                if (Player* member = itr->GetSource())
+                    if (member->IsInMap(killer) && member->getClass() == killer->getClass())
+                        NoteClassBuffUnlock(member);
+        }
+    }
+
+    void OnPlayerLearnSpell(Player* player, uint32 spellId) override
+    {
+        NoteRiding(player);
+        RecordAccountCollection(player, spellId);
+        NoteProfessionSpell(player, spellId);
+    }
+
+    void OnPlayerUpdateSkill(Player* player, uint32 skillId, uint32 /*value*/, uint32 /*max*/,
+        uint32 /*step*/, uint32 /*newValue*/) override
+    {
+        if (skillId == SKILL_RIDING)
+            NoteRiding(player);
+        NoteProfessionSkill(player, skillId);
+    }
+
+    void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 /*xpSource*/) override
+    {
+        if (!player || !amount)
+            return;
+        if (GroupIsMentored(player))
+            amount = uint32(float(amount) * MENTOR_XP);
+    }
+
+    void OnPlayerEquip(Player* player, Item* /*it*/, uint8 /*bag*/, uint8 /*slot*/, bool /*update*/) override
+    {
+        ApplyWeaponPeak(player);
+    }
+
+    void OnPlayerUnequip(Player* player, Item* /*it*/) override
+    {
+        ApplyWeaponPeak(player);
+    }
+
+};
+
+class NextSpell : public AllSpellScript
+{
+public:
+    NextSpell() : AllSpellScript("LivingGearNextSpell", {
+        ALLSPELLHOOK_ON_PREPARE,
+        ALLSPELLHOOK_ON_SPELL_CHECK_CAST,
+        ALLSPELLHOOK_ON_CAST
+    }) { }
+
+    void OnSpellPrepare(Spell* spell, Unit* caster, SpellInfo const* spellInfo) override
+    {
+        if (!spell || !caster || !spellInfo || !caster->IsPlayer())
+            return;
+        if (spellInfo->HasAura(SPELL_AURA_MOUNTED))
+            spell->SetCastTime(0);
+    }
+
+    void OnSpellCheckCast(Spell* spell, bool strict, SpellCastResult& res) override
+    {
+        if (!spell)
+            return;
+        Unit* caster = spell->GetCaster();
+        if (!caster || !caster->IsPlayer())
+            return;
+        Player* player = caster->ToPlayer();
+        SpellInfo const* info = spell->GetSpellInfo();
+        if (!info)
+            return;
+        if (info->HasAura(SPELL_AURA_MOUNTED)
+            && (res == SPELL_FAILED_MOVING || res == SPELL_FAILED_LEVEL_REQUIREMENT
+                || res == SPELL_FAILED_LOWLEVEL))
+            res = SPELL_CAST_OK;
+        if (HasClassPerk(player, SPELL_PALADIN_HOLY) && RankOf(info, SPELL_CONSECRATION)
+            && player->GetDynObject(info->Id))
+        {
+            player->RemoveDynObject(info->Id);
+            res = SPELL_FAILED_DONT_REPORT;
+        }
+        if (HasClassPerk(player, SPELL_PALADIN_RETRIBUTION) && info->Id == SPELL_HAND_OF_FREEDOM
+            && res == SPELL_FAILED_NOT_READY)
+            res = SPELL_CAST_OK;
+        // Report #195: Blessing of Freedom is a self-only toggle for the
+        // Retribution perk. Recasting while it is up removes it (the toggle
+        // turning OFF, reported as DONT_REPORT so no cast starts); casting on
+        // anyone else is rejected outright.
+        if (strict && info->Id == SPELL_HAND_OF_FREEDOM
+            && HasClassPerk(player, SPELL_PALADIN_RETRIBUTION))
+        {
+            if (player->HasAura(SPELL_HAND_OF_FREEDOM))
+            {
+                player->RemoveAurasDueToSpell(SPELL_HAND_OF_FREEDOM);
+                res = SPELL_FAILED_DONT_REPORT;
+            }
+            else
+            {
+                Unit* target = spell->m_targets.GetUnitTarget();
+                if (target && target != player)
+                    res = SPELL_FAILED_BAD_TARGETS;
+            }
+        }
+        // "Sanctified Whirlwind" free-toggle off-switch, same ordering
+        // discipline as TryWarriorArmsBladestormToggleOff: in the strict pass,
+        // recasting while the aura is up removes it and the cast never starts
+        // (SPELL_FAILED_DONT_REPORT); casting while it is down lets the cast
+        // through, which is the toggle turning ON.
+        if (strict && res == SPELL_CAST_OK && info->Id == SPELL_SANCTIFIED_WHIRLWIND
+            && HasClassPerk(player, SPELL_PALADIN_RETRIBUTION)
+            && player->HasAura(SPELL_SANCTIFIED_WHIRLWIND))
+        {
+            player->RemoveAurasDueToSpell(SPELL_SANCTIFIED_WHIRLWIND);
+            res = SPELL_FAILED_DONT_REPORT;
+        }
+    }
+
+    void OnSpellCast(Spell* spell, Unit* caster, SpellInfo const* spellInfo, bool /*skipCheck*/) override
+    {
+        if (!spell || !caster || !spellInfo || !caster->IsPlayer())
+            return;
+        Player* player = caster->ToPlayer();
+        if (RankOf(spellInfo, SPELL_AVENGERS_SHIELD) && !spell->IsTriggered())
+            ThrowExtraAvengers(player, spell);
+        if (spellInfo->Id == SPELL_HAND_OF_FREEDOM)
+        {
+            Unit* target = spell->m_targets.GetUnitTarget();
+            if (!target)
+                target = player;
+            KeepHofOneTarget(player, target);
+        }
+    }
+};
+
+class NextUnit : public UnitScript
+{
+public:
+    NextUnit() : UnitScript("LivingGearNextUnit", true, {
+        UNITHOOK_MODIFY_SPELL_DAMAGE_TAKEN,
+        UNITHOOK_MODIFY_MELEE_DAMAGE,
+        UNITHOOK_MODIFY_PERIODIC_DAMAGE_AURAS_TICK,
+        UNITHOOK_ON_AURA_APPLY,
+        UNITHOOK_ON_AURA_REMOVE
+    }) { }
+
+    // Report #172: deaths strip auras with AURA_REMOVE_BY_DEATH and the
+    // self-buff snapshot exists to survive exactly that; every other removal
+    // (dispel, manual cancel, form loss) really is gone, so the death-recast
+    // must not bring it back.
+    void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode mode) override
+    {
+        Player* player = unit ? unit->ToPlayer() : nullptr;
+        if (!player || !aurApp || mode == AURA_REMOVE_BY_DEATH)
+            return;
+        ForgetSelfBuff(player, aurApp->GetBase()->GetId());
+    }
+
+    // "Divine Storm's cooldown is cleared whenever the paladin deals holy
+    // damage" while Sanctified Whirlwind is up (kill-momentum fantasy).
+    // Guarded on HasSpellCooldown so it only ever fires when DS is actually
+    // on cooldown, and covers both direct spell damage and periodic ticks.
+    void WhirlwindStormMomentum(Unit* attacker, SpellInfo const* spellInfo)
+    {
+        if (!attacker || !spellInfo)
+            return;
+        Player* player = attacker->ToPlayer();
+        if (!player || !HasClassPerk(player, SPELL_PALADIN_RETRIBUTION)
+            || !player->HasAura(SPELL_SANCTIFIED_WHIRLWIND))
+            return;
+        if (!(spellInfo->GetSchoolMask() & SPELL_SCHOOL_MASK_HOLY))
+            return;
+        if (player->HasSpellCooldown(SPELL_DIVINE_STORM))
+            player->RemoveSpellCooldown(SPELL_DIVINE_STORM, true);
+    }
+
+    void ModifySpellDamageTaken(Unit* /*target*/, Unit* attacker, int32& damage, SpellInfo const* spellInfo) override
+    {
+        if (damage <= 0 || !attacker || !spellInfo)
+            return;
+        WhirlwindStormMomentum(attacker, spellInfo);
+        if (RankOf(spellInfo, SPELL_AVENGERS_SHIELD) && attacker->IsPlayer())
+            damage = int32(float(damage) * AS_DAMAGE_MULT);
+
+        // Paladin Holy (bug report #25): "Consecration damage +1000%" and
+        // "Holy Shock damage +300%". Both are direct spell damage, so one hook
+        // covers them. Gated on the perk so a Protection or Retribution
+        // Paladin's Consecration is untouched.
+        Player* player = attacker->ToPlayer();
+        if (!player || !HasClassPerk(player, SPELL_PALADIN_HOLY))
+            return;
+        if (RankOf(spellInfo, SPELL_CONSECRATION))
+            damage = int32(float(damage) * CONSECRATION_DAMAGE_MULT);
+        else if (RankOf(spellInfo, SPELL_HOLY_SHOCK))
+            damage = int32(float(damage) * HOLY_SHOCK_DAMAGE_MULT);
+    }
+
+    void ModifyMeleeDamage(Unit* target, Unit* attacker, uint32& damage) override
+    {
+        // Sanctified Whirlwind: swings during Divine Storm's animation window
+        // cleave everything else within 8 yards for 50%.
+        SwingCleaveSanctifiedWhirlwind(target, attacker, damage);
+    }
+
+    void ModifyPeriodicDamageAurasTick(Unit* /*target*/, Unit* attacker, uint32& damage, SpellInfo const* spellInfo) override
+    {
+        if (damage <= 0 || !attacker || !spellInfo)
+            return;
+        WhirlwindStormMomentum(attacker, spellInfo);
+    }
+
+    void OnAuraApply(Unit* unit, Aura* aura) override
+    {
+        if (!unit || !aura)
+            return;
+        if (aura->GetId() == SPELL_HAND_OF_FREEDOM)
+        {
+            Unit* caster = aura->GetCaster();
+            if (caster && caster->IsPlayer())
+                KeepHofOneTarget(caster->ToPlayer(), unit);
+        }
+        // Report #174: an Affliction warlock's DoTs stop ticking down the
+        // moment they land and hold until the target dies or a dispel takes
+        // them off.
+        KeepAfflictionDots(unit, aura);
+    }
+};
+
+class NextCreature : public AllCreatureScript
+{
+public:
+    NextCreature() : AllCreatureScript("LivingGearNextCreature") { }
+
+    void OnCreatureAddWorld(Creature* creature) override
+    {
+        CapQuestRespawn(creature);
+    }
+};
+
+class NextGameObject : public AllGameObjectScript
+{
+public:
+    NextGameObject() : AllGameObjectScript("LivingGearNextGameObject") { }
+
+    void OnGameObjectAddWorld(GameObject* go) override
+    {
+        CapQuestGoRespawn(go);
+    }
+};
+
+} // namespace LivingGearNext
+
+// Addon-command entry point, called by the dispatcher in LivingGear.cpp.
+// The gate that used to live in NextPlayer::OnPlayerCanUseChat tested the
+// RAW message against "SCAP|", but every client line arrives prefixed as
+// "LG<tab>SCAP|..." -- so it never matched once, and the speed cap slider
+// has never done anything. Routing through the dispatcher (which strips
+// the prefix in exactly one place) removes the chance to get that wrong
+// per module.
+bool LivingGear_HandleNextCommand(Player* player, std::string const& msg)
+{
+    return LivingGearNext::HandleNextMessage(player, msg);
+}
+
+void LivingGear_SendNextSync(Player* player)
+{
+    LivingGearNext::SendNextSync(player);
+}
+
+void AddSC_LivingGearNext()
+{
+    new LivingGearNext::NextPlayer();
+    new LivingGearNext::NextSpell();
+    new LivingGearNext::NextUnit();
+    new LivingGearNext::NextCreature();
+    new LivingGearNext::NextGameObject();
+}

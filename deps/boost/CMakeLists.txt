@@ -32,6 +32,7 @@ else()
 endif()
 
 # Boost.System is header-only since 1.69; do not require it explicitly.
+# thread: mod-playerbots uses boost::thread; static Boost (Docker) will not pull it in otherwise.
 find_package(Boost ${BOOST_REQUIRED_VERSION} REQUIRED COMPONENTS filesystem program_options iostreams regex thread)
 
 if(NOT Boost_FOUND)

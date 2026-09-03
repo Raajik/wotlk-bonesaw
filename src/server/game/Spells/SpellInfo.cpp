@@ -1396,7 +1396,15 @@ bool SpellInfo::IsAuraExclusiveBySpecificWith(SpellInfo const* spellInfo) const
     SpellSpecificType spellSpec2 = spellInfo->GetSpellSpecific();
     switch (spellSpec1)
     {
-        case SPELL_SPECIFIC_TRACKER:
+        // Living Gear core-patch (2026-08-21): SPELL_SPECIFIC_TRACKER removed
+        // from this exclusivity list so multiple minimap tracking types
+        // (Find Minerals, Find Herbs, Track Humanoids, etc.) can be active
+        // simultaneously -- native WotLK only allows one at a time purely
+        // because of this switch case, not anything client-side; the
+        // PLAYER_TRACK_RESOURCES/PLAYER_TRACK_CREATURES fields the client
+        // reads to draw minimap pegs are already per-bit bitmasks
+        // (AuraEffect::HandleAuraTrackResources/TrackCreatures,
+        // SpellAuraEffects.cpp) that already support multiple bits set.
         case SPELL_SPECIFIC_WARLOCK_ARMOR:
         case SPELL_SPECIFIC_MAGE_ARMOR:
         case SPELL_SPECIFIC_ELEMENTAL_SHIELD:
@@ -1529,6 +1537,9 @@ SpellCastResult SpellInfo::CheckLocation(uint32 map_id, uint32 zone_id, uint32 a
 
         if (!areaEntry || !areaEntry->IsFlyable() || (strict && (areaEntry->flags & AREA_FLAG_NO_FLY_ZONE) != 0) || !player->canFlyInZone(map_id, zone_id, this))
         {
+            // Report #218 diagnostics: see the twin counter in Spell::CheckCast (FLY aura case).
+            LOG_INFO("spells", "fly-area cast refused: spell {} area {} zone {} flags {} flyable {}",
+                Id, area_id, zone_id, areaEntry ? areaEntry->flags : 0u, areaEntry ? areaEntry->IsFlyable() : false);
             return SPELL_FAILED_INCORRECT_AREA;
         }
     }

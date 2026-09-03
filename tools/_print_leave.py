@@ -1,0 +1,6 @@
+s = open('modules/mod-playerbots/src/Bot/PlayerbotAI.cpp', encoding='utf-8', errors='replace').read()
+i = s.find('void PlayerbotAI::LeaveOrDisbandGroup')
+print(s[i:i + 1400] if i >= 0 else 'not found')
+print('====')
+j = s.find('CMSG_GROUP', 900)
+print(s[j - 800:j + 500])

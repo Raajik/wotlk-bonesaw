@@ -1,0 +1,67 @@
+Make the group kill-XP rate independent of party level spread.
+
+Touches: src/server/game/Entities/Player/KillRewarder.cpp,
+KillRewarder::_RewardPlayer
+
+Why: report #107 / GitHub issue #105 -- "everyone in a party gets the
+highest member's XP bonus and no low-level grouping penalty."
+
+Upstream, a grouped member's kill-XP rate is
+
+  _groupRate * playerLevel / aliveSumLevel
+
+where _groupRate is xp_in_group_rate(count, isRaid). The second factor is
+the classic low-level grouping penalty: the bigger the level gap between
+you and the rest of the party, the smaller your share, so a high level
+character grouping with low level friends (or playerbots) earns a
+fraction of their kill XP.
+
+With LivingGear.PartyXp.NoLowLevelPenalty (default ON, declared in
+living_gear.conf.dist) the factor is fixed at 1.0: every member earns
+the plain group size rate. Nothing else changes -- the victim's grey
+cutoff (_maxNotGrayMember / _isFullXP half-XP) is untouched,
+xp_in_group_rate still shrinks the rate by party size, and the
+config-off path reproduces the original formula exactly. Quest XP does
+not pass through KillRewarder and is unaffected.
+
+The "highest member's XP bonus" half of #107 lives in the module
+(LivingGear_Progression.cpp, LivingGear.PartyXp.EqualBonus): Bonesaw's
+personal XP bonuses are applied per player in OnPlayerGiveXP, where each
+member's own bonus is what the hook can see, so the module walks the
+group and applies the maximum member multiplier to everyone. Kill XP
+only -- OnPlayerGiveXP never fires for quest XP.
+
+Config keys live in modules/mod-living-gear/conf/living_gear.conf.dist;
+the core reads them through sConfigMgr like any other conf property.
+
+--- a/src/server/game/Entities/Player/KillRewarder.cpp
++++ b/src/server/game/Entities/Player/KillRewarder.cpp
+@@ -16,6 +16,7 @@
+  */
+ 
+ #include "KillRewarder.h"
++#include "Config.h"
+ #include "Creature.h"
+ #include "Formulas.h"
+ #include "Group.h"
+@@ -223,7 +224,19 @@
+     // Give reputation and kill credit only in PvE.
+     if (!_isPvP || _isBattleGround)
+     {
+-        float xpRate = _group ? _groupRate * float(_GetPlayerLevel(player)) / _aliveSumLevel : /*Personal rate is 100%.*/ 1.0f; // Group rate depends on the sum of levels.
++        // [Bonesaw #107] Party XP: the engine's level-share factor
++        // (level / aliveSumLevel) penalised anyone grouped with lower-level
++        // players. With LivingGear.PartyXp.NoLowLevelPenalty (default on) the
++        // factor is always 1.0, so every member earns the plain group size
++        // rate (xp_in_group_rate); the victim's grey cutoff is untouched.
++        float xpRate;
++        if (_group)
++        {
++            static bool const noLevelSharePenalty = sConfigMgr->GetOption<bool>("LivingGear.PartyXp.NoLowLevelPenalty", true);
++            xpRate = _groupRate * (noLevelSharePenalty ? 1.0f : float(_GetPlayerLevel(player)) / _aliveSumLevel);
++        }
++        else
++            xpRate = 1.0f; // Personal rate is 100%.
+         sScriptMgr->OnPlayerRewardKillRewarder(player, this, isDungeon, xpRate);                                                // Personal rate is 100%.
+ 
+         if (_xp)

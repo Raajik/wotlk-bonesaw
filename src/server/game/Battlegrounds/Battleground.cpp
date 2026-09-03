@@ -776,6 +776,11 @@ void Battleground::RewardReputationToTeam(uint32 factionId, uint32 reputation, T
             float repGain = static_cast<float>(reputation);
             AddPct(repGain, itr->second->GetTotalAuraModifier(SPELL_AURA_MOD_REPUTATION_GAIN));
             AddPct(repGain, itr->second->GetTotalAuraModifierByMiscValue(SPELL_AURA_MOD_FACTION_REPUTATION_GAIN, realFactionId));
+            // Battleground reputation went straight to ReputationMgr, so every
+            // OnPlayerGiveReputation listener was skipped for precisely the four
+            // battleground factions. Kill and quest reputation both fire this
+            // already; this makes the battleground path consistent with them.
+            sScriptMgr->OnPlayerGiveReputation(itr->second, realFactionId, repGain, REPUTATION_SOURCE_SPELL);
             if (FactionEntry const* factionEntry = sFactionStore.LookupEntry(realFactionId))
                 itr->second->GetReputationMgr().ModifyReputation(factionEntry, repGain);
         }

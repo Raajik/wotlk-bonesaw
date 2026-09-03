@@ -1,0 +1,47 @@
+A random bot never opens a trade on its own.
+Touches: modules/mod-playerbots/src/Ai/Base/Actions/TradeAction.cpp,
+TradeAction::Execute()
+
+Why: reports #92/#93 -- "playerbots keep initiating trade" / "don't allow
+the bots to start trades, they are spamming it all dungeon long".
+
+The RPG behaviour set includes RpgTradeUsefulAction ("give an item this
+nearby player could use better"), whose trigger only requires a player
+within line of sight, some friendship roll, and a useful item in the bot's
+bags. It routes through TradeAction, which resolves a target from the chat
+text or falls back to the master -- but a random bot has no master, so any
+real player nearby became a trade target, repeatedly, for the whole run.
+
+The gate sits at the initiate site rather than in the RPG trigger so every
+other path into TradeAction is covered too. A trade may still be *completed*
+with whoever opened it: this only refuses CMSG_INITIATE_TRADE, and only for
+random bots without a real-player master. A bot invited to its master's
+group trades exactly as before.
+
+--- a/modules/mod-playerbots/src/Ai/Base/Actions/TradeAction.cpp
++++ b/modules/mod-playerbots/src/Ai/Base/Actions/TradeAction.cpp
+@@ -7,6 +7,7 @@
+ #include "ChatHelper.h"
+ #include "Event.h"
+ #include "ItemCountValue.h"
+ #include "ItemVisitors.h"
+ #include "PlayerbotAI.h"
++#include "RandomPlayerbotMgr.h"
+
+ bool TradeAction::Execute(Event event)
+ {
+@@ -34,6 +35,14 @@
+             player = botAI->GetMaster();
+
+         if (!player)
++            return false;
++
++        // A random bot never opens a trade on its own. Reports #92/#93: bots
++        // were spamming trade requests at real players all dungeon long, from
++        // the RPG "trade useful" behaviour picking a nearby player as target.
++        // A trade may still be *completed* with whoever opened it -- this only
++        // gates CMSG_INITIATE_TRADE, and only for bots nobody invited.
++        if (sRandomPlayerbotMgr.IsRandomBot(bot) && !botAI->HasRealPlayerMaster())
+             return false;
+
+         if (!player->GetTrader())

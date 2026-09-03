@@ -560,6 +560,7 @@ public:
     UsedSpellMods m_appliedMods;
 
     int32 GetCastTime() const { return m_casttime; }
+    void SetCastTime(int32 castTime) { m_casttime = castTime < 0 ? 0 : castTime; }
     bool IsAutoRepeat() const { return m_autoRepeat; }
     void SetAutoRepeat(bool rep) { m_autoRepeat = rep; }
     void ReSetTimer() { m_timer = m_casttime > 0 ? m_casttime : 0; }
@@ -592,6 +593,7 @@ public:
     Unit* GetOriginalTarget() const;
     SpellInfo const* GetSpellInfo() const { return m_spellInfo; }
     int32 GetPowerCost() const { return m_powerCost; }
+    void SetPowerCost(int32 cost) { m_powerCost = cost; }
 
     bool UpdatePointers();                              // must be used at call Spell code after time delay (non triggered spell cast/update spell call/etc)
 

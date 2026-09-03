@@ -1,0 +1,66 @@
+Zone-scaled creatures defend at their effective (displayed) level, not their real one.
+
+Touches: src/server/game/Entities/Creature/Creature.cpp,
+Creature::getLevelForTarget()
+
+Why: reports #88/#89 -- a level 7 in Shadowglen could not land hits on
+zone-scaled mobs. Zone scaling (LivingGear module) is deliberately
+display-and-damage-only: UNIT_FIELD_LEVEL keeps the mob's REAL level so the
+shared health bar never desyncs between viewers, and the damage exchanged is
+rescaled per viewer by LivingGear_Perks. But the engine's spell-hit roll
+(Spell::CheckHit -> Unit::MagicSpellHitResult) computes levelDiff from
+victim->getLevelForTarget(attacker), which for a creature is its real level.
+An effective-8 mob whose real level is 80 therefore carries +72 levels of
+spell-miss, and melee suffers the same through GetMaxSkillValueForLevel /
+GetDefenseSkillValue (both level*5) -- the module now corrects those numbers
+at roll time via OnBeforeRollMeleeOutcomeAgainst, but spells read this
+function directly and no script hook reaches it.
+
+The override asks the Living Gear module what level this creature presents
+to THIS attacker and answers with that, keeping every hit-roll consumer --
+spells, and any future reader of getLevelForTarget -- consistent with what
+the player sees on the target frame. The module exposes
+LivingGear_CombatLevelFor(Creature*, Player*), which returns 0 when zone
+scaling does not apply to the pair; in that case the stock behaviour stands.
+Weak-linkage via a plain extern function would drag the module into the core
+link, so the hook is a ScriptMgr call instead:
+sScriptMgr->OnCreatureGetLevelForTarget(const Creature*, const WorldObject*,
+uint8&) with a default no-op in UnitScript.
+
+Applies only to non-world-boss creatures (world bosses already scale to the
+target in the stock code path below).
+--- a/src/server/game/Scripting/ScriptDefines/UnitScript.h
++++ b/src/server/game/Scripting/ScriptDefines/UnitScript.h
+@@ -107,6 +107,9 @@
+     virtual void OnUnitEnterCombat(Unit* /*unit*/, Unit* /*victim*/) { }
+     virtual void OnUnitExitCombat(Unit* /*unit*/) { }
++    // Living Gear zone scaling (#88/#89): let the module answer "what level
++    // does this creature fight at against this viewer". outLevel defaults to
++    // the creature's real level; a module may overwrite it per-viewer.
++    virtual void OnCreatureLevelForTarget(Unit const* /*creature*/, WorldObject const* /*target*/, uint8& /*outLevel*/) { }
+
+--- a/src/server/game/Scripting/ScriptMgr.h
++++ b/src/server/game/Scripting/ScriptMgr.h
+@@ (near OnBeforeRollMeleeOutcomeAgainst)
++    void OnCreatureLevelForTarget(Unit const* creature, WorldObject const* target, uint8& outLevel);
+
+--- a/src/server/game/Scripting/ScriptMgr.cpp
++++ b/src/server/game/Scripting/ScriptMgr.cpp
+@@ (alongside the other UnitScript forwards)
++void ScriptMgr::OnCreatureLevelForTarget(Unit const* creature, WorldObject const* target, uint8& outLevel)
++{
++    FOREACH_SCRIPT(UnitScript)->OnCreatureLevelForTarget(creature, target, outLevel);
++}
+
+--- a/src/server/game/Entities/Creature/Creature.cpp
++++ b/src/server/game/Entities/Creature/Creature.cpp
+@@ Creature::getLevelForTarget
+ uint8 Creature::getLevelForTarget(WorldObject const* target) const
+ {
+     if (!isWorldBoss() || !target->ToUnit())
+-        return Unit::getLevelForTarget(target);
++    {
++        uint8 level = Unit::getLevelForTarget(target);
++        sScriptMgr->OnCreatureLevelForTarget(this, target, level);
++        return level;
++    }

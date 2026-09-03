@@ -1973,6 +1973,23 @@ bool Aura::CanStackWith(Aura const* existingAura) const
             return true;
     }
 
+    // Living Gear core-patch 0034 (report #124): Curse of Agony (980 chain)
+    // and Curse of the Elements (1490 chain) are different curse types --
+    // agony is a doom/agony DoT, elements is a spell-damage-taken debuff --
+    // but both carry DispelType CURSE, so GetSpellSpecific() maps both to
+    // SPELL_SPECIFIC_CURSE and the per-caster rule below let a Haunt-seeded
+    // pair keep only one of them. The two effects do not overlap, so allow
+    // exactly this pair to coexist from the same caster; every other curse
+    // pairing keeps the vanilla one-curse-per-caster exclusivity.
+    {
+        bool const newIsAgony = sSpellMgr->GetFirstSpellInChain(GetId()) == 980;
+        bool const newIsElements = sSpellMgr->GetFirstSpellInChain(GetId()) == 1490;
+        bool const existIsAgony = sSpellMgr->GetFirstSpellInChain(existingSpellInfo->Id) == 980;
+        bool const existIsElements = sSpellMgr->GetFirstSpellInChain(existingSpellInfo->Id) == 1490;
+        if ((newIsAgony && existIsElements) || (newIsElements && existIsAgony))
+            return true;
+    }
+
     // check spell specific stack rules
     if (m_spellInfo->IsAuraExclusiveBySpecificWith(existingSpellInfo)
             || (sameCaster && m_spellInfo->IsAuraExclusiveBySpecificPerCasterWith(existingSpellInfo)))

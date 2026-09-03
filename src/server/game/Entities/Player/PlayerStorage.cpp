@@ -370,6 +370,7 @@ uint32 Player::GetItemCount(uint32 item, bool inBankAlso, Item* skipItem) const
                         count += pItem->GetGemCountWithID(item);
     }
 
+    sScriptMgr->OnPlayerGetItemCount(this, item, count);
     return count;
 }
 
@@ -726,7 +727,8 @@ bool Player::HasItemCount(uint32 item, uint32 count, bool inBankAlso) const
         }
     }
 
-    return false;
+    sScriptMgr->OnPlayerHasItemCount(this, item, tempcount);
+    return tempcount >= count;
 }
 
 bool Player::HasItemOrGemWithIdEquipped(uint32 item, uint32 count, uint8 except_slot) const
@@ -3403,6 +3405,12 @@ void Player::DestroyItemCount(uint32 itemEntry, uint32 count, bool update, bool 
             }
         }
     }
+
+    if (remcount < count)
+    {
+        uint32 remaining = count - remcount;
+        sScriptMgr->OnPlayerDestroyItemCount(this, itemEntry, remaining);
+    }
 }
 
 void Player::DestroyZoneLimitedItem(bool update, uint32 new_zone)
@@ -5759,18 +5767,15 @@ bool Player::isAllowedToLoot(Creature const* creature)
     else if (thisGroup != creature->GetLootRecipientGroup())
         return false;
 
-    switch (thisGroup->GetLootMethod())
+    switch (thisGroup->GetEffectiveLootMethod())
     {
         case MASTER_LOOT:
         case FREE_FOR_ALL:
             return true;
-        case ROUND_ROBIN:
-            // may only loot if the player is the loot roundrobin player
-            // or if there are free/quest/conditional item for the player
-            if (!loot->roundRobinPlayer || loot->roundRobinPlayer == GetGUID())
+        case PERSONAL_LOOT:
+            if (Group::IsPersonalLootBoss(creature))
                 return true;
-
-            return loot->hasItemFor(this);
+            [[fallthrough]];
         case GROUP_LOOT:
         case NEED_BEFORE_GREED:
             // may only loot if the player is the loot roundrobin player
@@ -5780,6 +5785,13 @@ bool Player::isAllowedToLoot(Creature const* creature)
                 return true;
 
             if (loot->hasOverThresholdItem())
+                return true;
+
+            return loot->hasItemFor(this);
+        case ROUND_ROBIN:
+            // may only loot if the player is the loot roundrobin player
+            // or if there are free/quest/conditional item for the player
+            if (!loot->roundRobinPlayer || loot->roundRobinPlayer == GetGUID())
                 return true;
 
             return loot->hasItemFor(this);
@@ -6673,10 +6685,7 @@ void Player::BindToInstance()
     if (!mapSave) //it seems sometimes mapSave is nullptr, but I did not check why
         return;
 
-    WorldPacket data(SMSG_INSTANCE_SAVE_CREATED, 4);
-    data << uint32(0);
-    SendDirectMessage(&data);
-    sInstanceSaveMgr->PlayerBindToInstance(this->GetGUID(), mapSave, true, this);
+    sInstanceSaveMgr->PlayerBindToInstance(this->GetGUID(), mapSave, false, this);
 }
 
 void Player::SendRaidInfo()
@@ -7140,11 +7149,9 @@ bool Player::CheckInstanceLoginValid()
     return sMapMgr->PlayerCannotEnter(GetMap()->GetId(), this, true) == Map::CAN_ENTER;
 }
 
-bool Player::CheckInstanceCount(uint32 instanceId) const
+bool Player::CheckInstanceCount(uint32 /*instanceId*/) const
 {
-    if (_instanceResetTimes.size() < sWorld->getIntConfig(CONFIG_MAX_INSTANCES_PER_HOUR))
-        return true;
-    return _instanceResetTimes.find(instanceId) != _instanceResetTimes.end();
+    return true;
 }
 
 bool Player::_LoadHomeBind(PreparedQueryResult result)

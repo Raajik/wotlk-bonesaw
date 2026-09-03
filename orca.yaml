@@ -1,0 +1,4 @@
+# Orca repo hooks (https://orca docs: scripts.run when creating worktrees).
+# Setup runs in the new worktree checkout with a 2-minute timeout.
+scripts:
+  setup: bash tools/dev-worktree-setup.sh

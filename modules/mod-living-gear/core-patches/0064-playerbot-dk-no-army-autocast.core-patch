@@ -1,0 +1,18 @@
+Report #234 (critical): "This Death Knight in my group seems to be stuck
+endlessly summoning ghouls from Army of the Dead, Dorimoora."
+
+The bot DK strategies auto-cast Army of the Dead as a boost action in all
+three specs (Blood under "low health", Frost and Unholy under their
+"army of the dead" boost triggers). Army of the Dead is a 12s channel;
+the bot keeps moving with the group, the channel breaks after a ghoul or
+two, the cast never completes so the spell's own cooldown never starts,
+and the AI re-fires it every GCD -- an endless ghoul summon loop.
+
+Change: Army of the Dead is removed from the bot auto-rotation entirely
+(the Blood "low health" trigger keeps death strike; the Frost and Unholy
+boost triggers are gone with it). Bots no longer auto-cast it in any
+spec; a real player's DK is unaffected.
+
+Touches (module only, untracked tree -- recorded here): modules/
+mod-playerbots/src/Ai/Class/Dk/Strategy/BloodDKStrategy.cpp,
+FrostDKStrategy.cpp, UnholyDKStrategy.cpp.

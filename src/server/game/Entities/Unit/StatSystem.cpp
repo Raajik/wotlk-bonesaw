@@ -319,8 +319,20 @@ void Player::UpdateMaxHealth()
     value += GetFlatModifierValue(unitMod, TOTAL_VALUE) + GetHealthBonusFromStamina();
     value *= GetPctModifierValue(unitMod, TOTAL_PCT);
 
+    uint32 const oldMax = GetMaxHealth();
+    uint32 const oldHp = GetHealth();
     sScriptMgr->OnPlayerAfterUpdateMaxHealth(this, value);
-    SetMaxHealth((uint32)value);
+    uint32 const newMax = value > 1.0f ? uint32(value) : 1u;
+    SetMaxHealth(newMax);
+    if (!IsAlive() || oldMax <= 1 || oldHp == 0)
+        return;
+    float const ratio = float(oldHp) / float(oldMax);
+    uint32 keep = uint32(ratio * float(newMax) + 0.5f);
+    if (keep < 1)
+        keep = 1;
+    if (keep > newMax)
+        keep = newMax;
+    SetHealth(keep);
 }
 
 void Player::UpdateMaxPower(Powers power)

@@ -1,0 +1,54 @@
+Let LFD offer every dungeon a player has outlevelled. Scale up, never down.
+Touches: src/server/game/DungeonFinding/LFGMgr.cpp
+         LFGMgr::InitializeLockedDungeons(), LFGMgr::GetRandomAndSeasonalDungeons()
+
+Why: player request -- "always show all dungeons in LFD, even ones you
+outlevel or aren't high enough to queue for yet; always show all tiers of
+random dungeon as well", refined to "visible but locked makes sense, i
+basically want everything to scale up, not down (for now)".
+
+So the rule is asymmetric, and deliberately so:
+
+  BELOW your level (outlevelled)  -> unlocked and queueable.
+  ABOVE your level                -> still listed, still locked.
+
+A locked dungeon is not hidden: the client shows it greyed out with its
+lock reason, which is exactly the "visible but locked" behaviour wanted.
+
+Two gates had to be touched, which is why this covers two functions:
+
+  1. InitializeLockedDungeons() builds the per-player lock map for the
+     individual dungeon list. LFG_LOCKSTATUS_TOO_HIGH_LEVEL (the player
+     outlevels the dungeon) is removed. LFG_LOCKSTATUS_TOO_LOW_LEVEL is
+     kept exactly as it was.
+  2. GetRandomAndSeasonalDungeons() builds the set of Random Dungeon
+     entries offered at all -- entries missing here are absent, not
+     locked. It filtered on both minlevel and maxlevel; only the maxlevel
+     half is dropped, so outlevelled tiers stay on offer and tiers above
+     the player still do not appear.
+
+Outlevelling content is not a reason to lock it here: zone scaling already
+re-bases open-world creatures and their rewards onto the player's own
+level, and the same reasoning applies to a dungeon a group deliberately
+chose to walk into. It is also what keeps the queue usable -- level
+brackets slice an already small population into pieces that never fill.
+
+Everything else still locks exactly as before: expansion, disabled
+dungeons, raid and instance binds, seasonal availability, the Death Knight
+starting quest, and the whole item/quest/achievement/gear-score access
+requirement block. Expansion in particular is still enforced in (2), since
+an account without the expansion genuinely cannot enter those maps.
+
+--- a/src/server/game/DungeonFinding/LFGMgr.cpp
++++ b/src/server/game/DungeonFinding/LFGMgr.cpp
+@@ LFGMgr::InitializeLockedDungeons(), the lockData else-if chain
+             else if ((dungeon->minlevel > level && !sWorld->getBoolConfig(...)) || (...))
+                 lockData = LFG_LOCKSTATUS_TOO_LOW_LEVEL;
+-            else if ((dungeon->maxlevel < level && !sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE)) || (sWorld->getBoolConfig(CONFIG_DUNGEON_ACCESS_REQUIREMENTS_LFG_DBC_LEVEL_OVERRIDE) && ar && ar->levelMax > 0 && ar->levelMax < level))
+-                lockData = LFG_LOCKSTATUS_TOO_HIGH_LEVEL;
+
+@@ LFGMgr::GetRandomAndSeasonalDungeons()
+             if ((dungeon.type == lfg::LFG_TYPE_RANDOM || (dungeon.seasonal && sLFGMgr->IsSeasonActive(dungeon.id)))
+-                    && dungeon.expansion <= expansion && dungeon.minlevel <= level && level <= dungeon.maxlevel)
++                    && dungeon.expansion <= expansion && dungeon.minlevel <= level)
+                 randomDungeons.insert(dungeon.Entry());

@@ -23,6 +23,7 @@
 #include "InstanceScript.h"
 #include "LFGMgr.h"
 #include "Log.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "ScriptMgr.h"
@@ -293,8 +294,52 @@ namespace lfg
         if (numLfgGroups > 1)
             return LFG_INCOMPATIBLES_MULTIPLE_LFG_GROUPS;
 
+        auto hasSoloQueue = [&]() -> bool
+        {
+            if (sLFGMgr->IsTesting())
+                return true;
+            for (uint8 i = 0; i < 5 && !check.guids[i].IsEmpty(); ++i)
+            {
+                LfgQueueDataContainer::iterator itSolo = QueueDataStore.find(check.guids[i]);
+                if (itSolo == QueueDataStore.end())
+                    continue;
+                for (LfgRolesMap::const_iterator itRole = itSolo->second.roles.begin(); itRole != itSolo->second.roles.end(); ++itRole)
+                {
+                    Player* soloPlayer = ObjectAccessor::FindConnectedPlayer(itRole->first);
+                    if (soloPlayer && sScriptMgr->OnPlayerCanSoloQueue(soloPlayer))
+                        return true;
+                }
+            }
+            return false;
+        };
+        auto hasRaidDungeon = [&]() -> bool
+        {
+            for (uint8 i = 0; i < 5 && !check.guids[i].IsEmpty(); ++i)
+            {
+                LfgQueueDataContainer::iterator itRaid = QueueDataStore.find(check.guids[i]);
+                if (itRaid == QueueDataStore.end())
+                    continue;
+                for (uint32 dungeonId : itRaid->second.dungeons)
+                    if (sLFGMgr->IsRaidDungeon(dungeonId))
+                        return true;
+            }
+            return false;
+        };
+        bool const raidQueue = hasRaidDungeon();
+        time_t const now = GameTime::GetGameTime().count();
+        time_t oldestJoin = now;
+        for (uint8 i = 0; i < 5 && !check.guids[i].IsEmpty(); ++i)
+        {
+            LfgQueueDataContainer::iterator itWait = QueueDataStore.find(check.guids[i]);
+            if (itWait != QueueDataStore.end())
+                oldestJoin = std::min(oldestJoin, itWait->second.joinTime);
+        }
+        uint32 const waitedSec = oldestJoin < now ? uint32(now - oldestJoin) : 0;
+        bool const allowBotFill = sScriptMgr->OnLfgAllowBotFill(check, waitedSec, raidQueue, hasSoloQueue());
+        bool const allowIncomplete = hasSoloQueue() || raidQueue || allowBotFill;
+
         // Group with less that MAXGROUPSIZE members always compatible
-        if (!sLFGMgr->IsTesting() && check.size() == 1 && numPlayers < MAXGROUPSIZE)
+        if (!allowIncomplete && check.size() == 1 && numPlayers < MAXGROUPSIZE)
         {
             LfgQueueDataContainer::iterator itQueue = QueueDataStore.find(check.front());
             LfgRolesMap roles = itQueue->second.roles;
@@ -308,7 +353,7 @@ namespace lfg
             return LFG_COMPATIBLES_WITH_LESS_PLAYERS;
         }
 
-        if (numPlayers > MAXGROUPSIZE)
+        if (numPlayers > (raidQueue ? MAXRAIDSIZE : MAXGROUPSIZE))
             return LFG_INCOMPATIBLES_TOO_MUCH_PLAYERS;
 
         // If it's single group no need to check for duplicate players, ignores, bad roles or bad dungeons as it's been checked before joining
@@ -341,33 +386,38 @@ namespace lfg
             if (numPlayers != proposalRoles.size())
                 return LFG_INCOMPATIBLES_HAS_IGNORES;
 
-            uint8 roleCheckResult = LFGMgr::CheckGroupRoles(proposalRoles);
-            if (!roleCheckResult || roleCheckResult > 0xF)
-                return LFG_INCOMPATIBLES_NO_ROLES;
-
-            // now, every combination can occur only 4 times (explained in FindNewGroups)
-            if (foundMask & (((uint64)1) << (roleCheckResult - 1)))
+            if (!raidQueue)
             {
-                if (foundMask & (((uint64)1) << (16 + roleCheckResult - 1)))
+                uint8 roleCheckResult = LFGMgr::CheckGroupRoles(proposalRoles);
+                if (!roleCheckResult || roleCheckResult > 0xF)
+                    return LFG_INCOMPATIBLES_NO_ROLES;
+
+                // now, every combination can occur only 4 times (explained in FindNewGroups)
+                if (foundMask & (((uint64)1) << (roleCheckResult - 1)))
                 {
-                    if (foundMask & (((uint64)1) << (32 + roleCheckResult - 1)))
+                    if (foundMask & (((uint64)1) << (16 + roleCheckResult - 1)))
                     {
-                        if (foundMask & (((uint64)1) << (48 + roleCheckResult - 1)))
+                        if (foundMask & (((uint64)1) << (32 + roleCheckResult - 1)))
                         {
-                            if (foundCount >= 10) // but only after finding at least 10 compatibles (this helps when there are few groups)
-                                return LFG_INCOMPATIBLES_NO_ROLES;
+                            if (foundMask & (((uint64)1) << (48 + roleCheckResult - 1)))
+                            {
+                                if (foundCount >= 10) // but only after finding at least 10 compatibles (this helps when there are few groups)
+                                    return LFG_INCOMPATIBLES_NO_ROLES;
+                            }
+                            else
+                                addToFoundMask |= (((uint64)1) << (48 + roleCheckResult - 1));
                         }
                         else
-                            addToFoundMask |= (((uint64)1) << (48 + roleCheckResult - 1));
+                            addToFoundMask |= (((uint64)1) << (32 + roleCheckResult - 1));
                     }
                     else
-                        addToFoundMask |= (((uint64)1) << (32 + roleCheckResult - 1));
+                        addToFoundMask |= (((uint64)1) << (16 + roleCheckResult - 1));
                 }
                 else
-                    addToFoundMask |= (((uint64)1) << (16 + roleCheckResult - 1));
+                    addToFoundMask |= (((uint64)1) << (roleCheckResult - 1));
             }
             else
-                addToFoundMask |= (((uint64)1) << (roleCheckResult - 1));
+                LFGMgr::CheckGroupRoles(proposalRoles);
 
             proposalDungeons = QueueDataStore[check.front()].dungeons;
             for (uint8 i = 1; i < 5 && check.guids[i]; ++i)
@@ -391,7 +441,7 @@ namespace lfg
         }
 
         // Enough players?
-        if (!sLFGMgr->IsTesting() && numPlayers != MAXGROUPSIZE)
+        if (!allowIncomplete && numPlayers != MAXGROUPSIZE)
         {
             strGuids.addRoles(proposalRoles);
             for (uint8 i = 0; i < 5 && check.guids[i]; ++i)
@@ -424,6 +474,10 @@ namespace lfg
 
         // Filter out recently completed dungeons to prevent same dungeon in a row
         LfgDungeonSet filteredDungeons = sLFGMgr->FilterCooldownDungeons(proposalDungeons, proposalRoles);
+        if (filteredDungeons.empty())
+            filteredDungeons = proposalDungeons;
+        if (filteredDungeons.empty())
+            return LFG_INCOMPATIBLES_NO_DUNGEONS;
         proposal.dungeonId = Acore::Containers::SelectRandomContainerElement(filteredDungeons);
 
         uint32 completedEncounters = 0;

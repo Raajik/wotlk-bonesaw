@@ -181,6 +181,7 @@ enum PlayerHook
     PLAYERHOOK_ON_GET_MAX_SKILL_VALUE_FOR_LEVEL,
     PLAYERHOOK_NOT_SET_ARENA_TEAM_INFO_FIELD,
     PLAYERHOOK_CAN_JOIN_LFG,
+    PLAYERHOOK_CAN_SOLO_QUEUE,
     PLAYERHOOK_CAN_ENTER_MAP,
     PLAYERHOOK_CAN_INIT_TRADE,
     PLAYERHOOK_CAN_SET_TRADE_ITEM,
@@ -221,6 +222,16 @@ enum PlayerHook
     PLAYERHOOK_ON_GET_REPUTATION_PRICE_DISCOUNT,
     PLAYERHOOK_ON_LEARN_TAXI_NODE,
     PLAYERHOOK_ON_BEFORE_GET_LEVEL_FOR_XP_GAIN,
+    PLAYERHOOK_ON_HAS_ITEM_COUNT,
+    PLAYERHOOK_ON_GET_ITEM_COUNT,
+    PLAYERHOOK_ON_DESTROY_ITEM_COUNT,
+    PLAYERHOOK_ON_OPEN_BANK,
+    PLAYERHOOK_ON_CAN_OPEN_LOCK,
+    PLAYERHOOK_ON_OPEN_LOCK,
+    PLAYERHOOK_ON_USE_GAMEOBJECT,
+    PLAYERHOOK_ON_REWARD_HONOR,
+    PLAYERHOOK_CAN_ADD_ACTION_BUTTON,
+    PLAYERHOOK_ON_BEFORE_QUEST_QUERY_RESPONSE,
     PLAYERHOOK_END
 };
 
@@ -306,6 +317,9 @@ public:
 
     // Called when a player learned new spell
     virtual void OnPlayerLearnSpell(Player* /*player*/, uint32 /*spellID*/) {}
+
+    // Return false to reject a client action-bar change (and resync bars).
+    virtual bool OnPlayerCanAddActionButton(Player* /*player*/, uint8 /*button*/, uint32 /*action*/, uint8 /*type*/) { return true; }
 
     // Called when a player forgot spell
     virtual void OnPlayerForgotSpell(Player* /*player*/, uint32 /*spellID*/) {}
@@ -459,6 +473,10 @@ public:
     // Called after computing the XP reward value for a quest
     virtual void OnPlayerQuestComputeXP(Player* /*player*/, Quest const* /*quest*/, uint32& /*xpValue*/) { }
 
+    // Before the SMSG_QUEST_QUERY_RESPONSE quest level field is written, so the
+    // difficulty the client displays can follow the viewer (zone scaling)
+    virtual void OnPlayerBeforeQuestQueryResponse(Player* /*player*/, Quest const* /*quest*/, int32& /*questLevel*/) { }
+
     // Before durability repair action, you can even modify the discount value
     virtual void OnPlayerBeforeDurabilityRepair(Player* /*player*/, ObjectGuid /*npcGUID*/, ObjectGuid /*itemGUID*/, float&/*discountMod*/, uint8 /*guildBank*/) { }
 
@@ -560,6 +578,8 @@ public:
 
     virtual void OnPlayerVictimRewardAfter(Player* /*player*/, Player* /*victim*/, uint32& /*killer_title*/, int32& /*victim_rank*/, float& /*honor_f*/) { }
 
+    virtual void OnPlayerRewardHonor(Player* /*player*/, float& /*honor*/) { }
+
     virtual void OnPlayerCustomScalingStatValueBefore(Player* /*player*/, ItemTemplate const* /*proto*/, uint8 /*slot*/, bool /*apply*/, uint32& /*CustomScalingStatValue*/) { }
 
     virtual void OnPlayerCustomScalingStatValue(Player* /*player*/, ItemTemplate const* /*proto*/, uint32& /*statType*/, int32& /*val*/, uint8 /*itemProtoStatNumber*/, uint32 /*ScalingStatValue*/, ScalingStatValuesEntry const* /*ssv*/) { }
@@ -622,6 +642,8 @@ public:
     [[nodiscard]] virtual bool OnPlayerNotSetArenaTeamInfoField(Player* /*player*/, uint8 /*slot*/, ArenaTeamInfoType /*type*/, uint32 /*value*/) { return true; } // Whats that?
 
     [[nodiscard]] virtual bool OnPlayerCanJoinLfg(Player* /*player*/, uint8 /*roles*/, std::set<uint32>& /*dungeons*/, std::string const& /*comment*/) { return true; }
+
+    [[nodiscard]] virtual bool OnPlayerCanSoloQueue(Player* /*player*/) { return false; }
 
     [[nodiscard]] virtual bool OnPlayerCanEnterMap(Player* /*player*/, MapEntry const* /*entry*/, InstanceTemplate const* /*instance*/, MapDifficulty const* /*mapDiff*/, bool /*loginCheck*/) { return true; }
 
@@ -860,6 +882,28 @@ public:
      * @param level The level that should be used for XP gain calculations
      */
     virtual void OnPlayerBeforeGetLevelForXPGain(Player const* /*player*/, uint8& /*level*/) {}
+
+    // Extra item count from module storage (quest/reagent vaults).
+    virtual void OnPlayerHasItemCount(Player const* /*player*/, uint32 /*itemId*/, uint32& /*count*/) {}
+
+    // Extra item count for GetItemCount (quest progress / turn-in).
+    virtual void OnPlayerGetItemCount(Player const* /*player*/, uint32 /*itemId*/, uint32& /*count*/) {}
+
+    // Consume leftover count from module storage after bags/bank.
+    virtual void OnPlayerDestroyItemCount(Player* /*player*/, uint32 /*itemId*/, uint32& /*remaining*/) {}
+
+    // Player opened a bank window (world banker or portable).
+    virtual void OnPlayerOpenBank(Player* /*player*/, ObjectGuid /*bankerGuid*/) {}
+
+    // Allow a lock to open from module storage (vault keys / auto pick).
+    virtual void OnPlayerCanOpenLock(Player* /*player*/, uint32 /*lockId*/, bool& /*canOpen*/,
+        uint32& /*skillId*/, int32& /*reqSkillValue*/, int32& /*skillValue*/) {}
+
+    // Consume a vault/bag key after a successful open.
+    virtual void OnPlayerOpenLock(Player* /*player*/, uint32 /*lockId*/) {}
+
+    // Player used a gameobject (chests). Set handled to skip default Use.
+    virtual void OnPlayerUseGameObject(Player* /*player*/, GameObject* /*go*/, bool& /*handled*/) {}
 };
 
 #endif

@@ -99,7 +99,14 @@ public:
         }
 
         if (sender == GOSSIP_SENDER_ICC_PORT)
+        {
             player->CastSpell(player, spell, false);
+            // Report #242: the teleport spells carry a -1/-1 duration aura,
+            // so "Rampart of Skulls Teleport" and friends sat on the buff
+            // bar forever and had to be clicked off by hand. The teleport
+            // applies on cast, so the aura has nothing left to do here.
+            player->RemoveAurasDueToSpell(spell->Id);
+        }
 
         return true;
     }

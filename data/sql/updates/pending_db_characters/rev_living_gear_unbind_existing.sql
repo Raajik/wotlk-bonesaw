@@ -1,0 +1,30 @@
+-- Un-soulbind the items players already own.
+--
+-- rev_living_gear_no_soulbind.sql (world) cleared bonding 1 and 2 from
+-- item_template, so nothing binds from here on. That does not touch gear that
+-- was already bound: item_instance carries its own soulbound flag once set, so
+-- 22,048 of the 34,592 existing items would have stayed bound forever while
+-- everything looted afterwards did not. Same item, two different rules,
+-- depending on when you happened to pick it up.
+--
+-- ITEM_FIELD_FLAG_SOULBOUND is bit 0 (ItemTemplate.h:109). Only that bit is
+-- cleared -- 4294967294 is 0xFFFFFFFE -- because the same column carries
+-- unrelated state that has to survive: WRAPPED (bit 3, 0 rows here but a gift
+-- would be destroyed by a blanket reset), BOP_TRADEABLE (bit 8, 4 rows) and
+-- REFUNDABLE (bit 12, 15 rows, whose vendor refund window is tracked separately
+-- in item_refund_instance and is unaffected by unbinding).
+--
+-- Idempotent by construction: the WHERE clause matches only rows that still
+-- have the bit, so a re-run -- which happens whenever this file is edited --
+-- updates nothing.
+--
+-- Runs at db-import time, before the worldserver starts, so no character has
+-- these rows loaded in memory to write back over the change.
+--
+-- One place still binds deliberately and is untouched: the Armory recreation
+-- path in LivingGear_Perks.cpp calls SetBinding(true) on the copy it hands out,
+-- which is what stops a free re-materialised item being sold or traded. That
+-- sets the instance flag directly and does not depend on the template, so it
+-- keeps working.
+
+UPDATE `item_instance` SET `flags` = `flags` & 4294967294 WHERE `flags` & 1;

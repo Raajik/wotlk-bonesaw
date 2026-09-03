@@ -84,6 +84,16 @@ FOREACH(subdir ${sub_DIRS})
     endif()
 ENDFOREACH()
 
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/modules/mod-playerbots/src")
+  add_compile_definitions(MOD_PLAYERBOTS)
+endif()
+
+# Bonesaw: cluster sidecar disabled. Empty INTERFACE so worldserver/scripts still link.
+if(NOT TARGET libsidecar)
+  add_library(libsidecar INTERFACE)
+  target_include_directories(libsidecar INTERFACE "${CMAKE_SOURCE_DIR}/src/server/game/TC9Sidecar")
+endif()
 CU_RUN_HOOK("AFTER_LOAD_CONF")
 
 # build in Release-mode by default if not explicitly set

@@ -1,0 +1,145 @@
+One definition of a player's dungeon role, used by every part of LFG.
+Touches: modules/mod-playerbots/src/Bot/PlayerbotAI.cpp and .h (new
+PlayerbotAI::GetDungeonRole, plus the DK case of IsTank),
+modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp (LfgFillRoleOf),
+modules/mod-playerbots/src/Ai/Base/Actions/LfgActions.cpp (LfgJoinAction::GetRoles)
+Applies on top of 0016-playerbot-lfg-fill-roles.core-patch.
+
+Why: reported as "bots still aren't being generated with the correct specs for
+the roles they should be using -- keep getting healers marked as dps or dps
+marked as healers and everyone dies".
+
+The same feature answered "what role is this player" two different ways, and
+they disagreed:
+
+  * LfgJoinAction::GetRoles -- what a bot QUEUES as -- was a per-class switch on
+    the talent tab, written out longhand, with a second and different path for
+    non-random bots.
+  * LfgFillRoleOf -- what the group fill COUNTS, what RespecBotForRole verifies
+    against, and what lands on the party-frame role icon via Group::AddMember --
+    called PlayerbotAI::IsTank/IsHeal with bySpec defaulted to false, which asks
+    the bot's ACTIVE AI STRATEGY.
+
+Talents and strategies are only in step immediately after botAI->Reset(); a bot
+that was respecced, randomised or re-targeted since then reports one role and
+plays the other. A bot could queue as a healer and be counted as dps -- so the
+fill added a second healer and no tank -- or queue as dps and be counted as the
+healer, which is the group with no healer at all.
+
+Three narrower bugs fell out of the same tangle:
+
+  * IsTank(player, bySpec = true) returned true for ANY death knight standing in
+    Frost Presence, not just blood. Real players have no bot AI, so they always
+    take the bySpec path: a frost dps in the group was counted as its tank and
+    the fill then added no tank. Now blood tab only.
+  * The feral druid tank/cat call was made differently in each place (one asked
+    for the Thick Hide aura, the other for bear form right now). It is now made
+    exactly the way AiFactory::AddDefaultCombatStrategies makes it -- cat when
+    the druid has Cat Form and no Thick Hide, bear otherwise -- so the role and
+    the behaviour cannot disagree.
+  * A ret paladin running the optional "offheal" strategy reports as a healer,
+    because OffhealRetPaladinStrategy carries STRATEGY_TYPE_HEAL. That is
+    correct for the strategy and wrong for a role, and it is unreachable now
+    that roles never consult strategies. Latent rather than live -- offheal is
+    opt-in via `co +offheal` and is not in AiFactory's defaults -- but it is the
+    same class of bug and it is closed by the same change.
+
+GetDungeonRole reads the talent tab and nothing else: no shapeshift form, no
+presence, no strategy. Those describe what someone is doing this second, and an
+LFG role has to be answerable for a bot standing in a city out of form with its
+AI not yet built, and for a real player, who has no bot AI at all.
+
+--- a/modules/mod-playerbots/src/Bot/PlayerbotAI.h
++++ b/modules/mod-playerbots/src/Bot/PlayerbotAI.h
+@@
+     static bool IsDps(Player* player, bool bySpec = false);
++    // The one answer to "which of the three roles does this player fill in a
++    // dungeon". Returns an lfg::PLAYER_ROLE_* bit. See the definition.
++    static uint8 GetDungeonRole(Player* player);
+
+--- a/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp
++++ b/modules/mod-playerbots/src/Bot/PlayerbotAI.cpp
+@@ (above IsTank)
++uint8 PlayerbotAI::GetDungeonRole(Player* player)
++{
++    constexpr uint32 DRUID_CAT_FORM = 768;
++    constexpr uint32 DRUID_THICK_HIDE = 16931;
++
++    if (!player)
++        return lfg::PLAYER_ROLE_DAMAGE;
++
++    uint8 const tab = AiFactory::GetPlayerSpecTab(player);
++    switch (player->getClass())
++    {
++        case CLASS_WARRIOR:
++            return tab == WARRIOR_TAB_PROTECTION ? lfg::PLAYER_ROLE_TANK : lfg::PLAYER_ROLE_DAMAGE;
++        case CLASS_DEATH_KNIGHT:
++            return tab == DEATH_KNIGHT_TAB_BLOOD ? lfg::PLAYER_ROLE_TANK : lfg::PLAYER_ROLE_DAMAGE;
++        case CLASS_PALADIN:
++            if (tab == PALADIN_TAB_PROTECTION)
++                return lfg::PLAYER_ROLE_TANK;
++            return tab == PALADIN_TAB_HOLY ? lfg::PLAYER_ROLE_HEALER : lfg::PLAYER_ROLE_DAMAGE;
++        case CLASS_DRUID:
++            if (tab == DRUID_TAB_RESTORATION)
++                return lfg::PLAYER_ROLE_HEALER;
++            if (tab == DRUID_TAB_FERAL
++                && !(player->HasSpell(DRUID_CAT_FORM) && !player->HasAura(DRUID_THICK_HIDE)))
++                return lfg::PLAYER_ROLE_TANK;
++            return lfg::PLAYER_ROLE_DAMAGE;
++        case CLASS_PRIEST:
++            return tab == PRIEST_TAB_SHADOW ? lfg::PLAYER_ROLE_DAMAGE : lfg::PLAYER_ROLE_HEALER;
++        case CLASS_SHAMAN:
++            return tab == SHAMAN_TAB_RESTORATION ? lfg::PLAYER_ROLE_HEALER : lfg::PLAYER_ROLE_DAMAGE;
++        default:
++            return lfg::PLAYER_ROLE_DAMAGE;
++    }
++}
++
+ bool PlayerbotAI::IsTank(Player* player, bool bySpec)
+@@ (IsTank, death knight case)
+         case CLASS_DEATH_KNIGHT:
+-            if (tab == DEATH_KNIGHT_TAB_BLOOD || player->HasAura(SPELL_DK_FROST_PRESENCE))
++            // Blood only -- see the patch note about frost dps being counted
++            // as a group's tank.
++            if (tab == DEATH_KNIGHT_TAB_BLOOD)
+             {
+                 return true;
+             }
+             break;
+
+--- a/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
++++ b/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+@@ (LfgFillRoleOf, from 0016)
+ static uint8 LfgFillRoleOf(Player* player)
+ {
+-    if (PlayerbotAI::IsTank(player))
+-        return lfg::PLAYER_ROLE_TANK;
+-
+-    if (PlayerbotAI::IsHeal(player))
+-        return lfg::PLAYER_ROLE_HEALER;
+-
+-    return lfg::PLAYER_ROLE_DAMAGE;
++    return PlayerbotAI::GetDungeonRole(player);
+ }
+
+--- a/modules/mod-playerbots/src/Ai/Base/Actions/LfgActions.cpp
++++ b/modules/mod-playerbots/src/Ai/Base/Actions/LfgActions.cpp
+@@ (LfgJoinAction::GetRoles -- the whole per-class switch is replaced)
+ uint32 LfgJoinAction::GetRoles()
+ {
+-    if (!RandomPlayerbotMgr::instance().IsRandomBot(bot))
+-    {
+-        if (botAI->IsTank(bot))
+-            return PLAYER_ROLE_TANK;
+-        ...
+-    }
+-
+-    uint8 spec = AiFactory::GetPlayerSpecTab(bot);
+-    switch (bot->getClass())
+-    {
+-        ... 50 lines of per-class tab tests ...
+-    }
+-
+-    return PLAYER_ROLE_DAMAGE;
++    return PlayerbotAI::GetDungeonRole(bot);
+ }

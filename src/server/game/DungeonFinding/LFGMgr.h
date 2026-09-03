@@ -477,6 +477,8 @@ namespace lfg
         void SetupGroupMember(ObjectGuid guid, ObjectGuid gguid);
         /// Return Lfg dungeon entry for given dungeon id
         uint32 GetLFGDungeonEntry(uint32 id);
+        [[nodiscard]] bool IsRaidDungeon(uint32 dungeonId) const;
+        [[nodiscard]] uint32 GetDungeonMaxPlayers(uint32 dungeonId) const;
 
         // cs_lfg
         /// Get current player roles
@@ -589,7 +591,7 @@ namespace lfg
         [[nodiscard]] bool IsTesting() const { return m_Testing; }
 
         void SetDungeon(ObjectGuid guid, uint32 dungeon);
-        LFGDungeonData const* GetLFGDungeon(uint32 id);
+        LFGDungeonData const* GetLFGDungeon(uint32 id) const;
 
     private:
         TeamId GetTeam(ObjectGuid guid);

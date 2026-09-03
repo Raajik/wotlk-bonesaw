@@ -15,6 +15,7 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "Config.h"
 #include "CreatureAI.h"
 #include "DisableMgr.h"
 #include "GameEventMgr.h"
@@ -375,7 +376,8 @@ bool Player::CanCompleteRepeatableQuest(Quest const* quest)
 
     if (quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_DELIVER))
         for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; i++)
-            if (quest->RequiredItemId[i] && quest->RequiredItemCount[i] && !HasItemCount(quest->RequiredItemId[i], quest->RequiredItemCount[i]))
+            if (quest->RequiredItemId[i] && quest->RequiredItemCount[i]
+                && !HasItemCount(quest->RequiredItemId[i], quest->RequiredItemCount[i], true))
                 return false;
 
     if (!CanRewardQuest(quest, false))
@@ -387,7 +389,12 @@ bool Player::CanCompleteRepeatableQuest(Quest const* quest)
 bool Player::CanRewardQuest(Quest const* quest, bool msg)
 {
     // not auto complete quest and not completed quest (only cheating case, then ignore without message)
-    if (!quest->IsDFQuest() && !quest->IsAutoComplete() && quest->GetQuestMethod() && GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_COMPLETE)
+    // Stored objective progress (including items credited into the quest vault while
+    // the quest is in the log) is enough. Do not treat leftover vault/reagent stacks
+    // as completing a newly accepted quest.
+    if (!quest->IsDFQuest() && !quest->IsAutoComplete() && quest->GetQuestMethod()
+        && GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_COMPLETE
+        && !CanCompleteQuest(quest->GetQuestId()))
         return false;
 
     // daily quest can't be rewarded (25 daily quest already completed)
@@ -398,13 +405,18 @@ bool Player::CanRewardQuest(Quest const* quest, bool msg)
     if (GetQuestRewardStatus(quest->GetQuestId()))
         return false;
 
-    // prevent receive reward with quest items in bank
+    // Bags, bank, module vaults, and stored quest progress all count for turn-in.
     if (quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_DELIVER))
     {
+        QuestStatusMap::const_iterator statusItr = m_QuestStatus.find(quest->GetQuestId());
         for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; i++)
         {
-            if (quest->RequiredItemCount[i] != 0 &&
-                GetItemCount(quest->RequiredItemId[i]) < quest->RequiredItemCount[i])
+            if (quest->RequiredItemCount[i] == 0)
+                continue;
+            uint32 have = GetItemCount(quest->RequiredItemId[i], true);
+            if (statusItr != m_QuestStatus.end() && have < statusItr->second.ItemCount[i])
+                have = statusItr->second.ItemCount[i];
+            if (have < quest->RequiredItemCount[i])
             {
                 if (msg)
                     SendEquipError(EQUIP_ERR_ITEM_NOT_FOUND, nullptr, nullptr, quest->RequiredItemId[i]);
@@ -824,7 +836,7 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
         if (quest->GetRewMailSenderEntry() != 0)
             MailDraft(mail_template_id).SendMailTo(trans, this, quest->GetRewMailSenderEntry(), MAIL_CHECK_MASK_HAS_BODY, quest->GetRewMailDelaySecs());
-        else
+        else if (questGiver)
             MailDraft(mail_template_id).SendMailTo(trans, this, questGiver, MAIL_CHECK_MASK_HAS_BODY, quest->GetRewMailDelaySecs());
         CharacterDatabase.CommitTransaction(trans);
     }
@@ -845,6 +857,32 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
     else if (quest->IsSeasonal())
         SetSeasonalQuestStatus(quest_id);
 
+    // Dailies and weeklies are infinitely repeatable (report #164). The
+    // bookkeeping above stays intact for saves and achievement criteria,
+    // but the take-gates it feeds -- the daily slot field, the DF quest
+    // set and the weekly set -- are released immediately, so the quest can
+    // be accepted again without waiting for the next reset. The single
+    // SaveToDB below then persists the released state, so a relog cannot
+    // resurrect the lockout. Daily/weekly templates are auto-flagged
+    // QUEST_SPECIAL_FLAGS_REPEATABLE at load, so turn-ins and rewards run
+    // the normal path every cycle.
+    if (sConfigMgr->GetOption<bool>("LivingGear.Quests.InfiniteDailyWeekly", true))
+    {
+        if (quest->IsDaily() || quest->IsDFQuest())
+        {
+            for (uint32 quest_daily_idx = 0; quest_daily_idx < PLAYER_MAX_DAILY_QUESTS; ++quest_daily_idx)
+                if (GetUInt32Value(PLAYER_FIELD_DAILY_QUESTS_1 + quest_daily_idx) == quest_id)
+                    SetUInt32Value(PLAYER_FIELD_DAILY_QUESTS_1 + quest_daily_idx, 0);
+            m_DFQuests.erase(quest_id);
+        }
+
+        if (quest->IsWeekly())
+        {
+            m_weeklyquests.erase(quest_id);
+            m_WeeklyQuestChanged = true;
+        }
+    }
+
     RemoveActiveQuest(quest_id, false);
     SetRewardedQuest(quest_id);
 
@@ -855,23 +893,25 @@ void Player::RewardQuest(Quest const* quest, uint32 reward, Object* questGiver, 
     if (quest->GetRewSpellCast() > 0)
     {
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(quest->GetRewSpellCast());
-        if (questGiver->IsUnit() && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL) && !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) && !spellInfo->IsSelfCast())
+        if (spellInfo && questGiver && questGiver->IsUnit() && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL)
+            && !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) && !spellInfo->IsSelfCast())
         {
             if (Creature* creature = GetMap()->GetCreature(questGiver->GetGUID()))
                 creature->CastSpell(this, quest->GetRewSpellCast(), true);
         }
-        else
+        else if (spellInfo)
             CastSpell(this, quest->GetRewSpellCast(), true);
     }
     else if (quest->GetRewSpell() > 0)
     {
         SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(quest->GetRewSpell());
-        if (questGiver->IsUnit() && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL) && !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) && !spellInfo->IsSelfCast())
+        if (spellInfo && questGiver && questGiver->IsUnit() && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL)
+            && !spellInfo->HasEffect(SPELL_EFFECT_CREATE_ITEM) && !spellInfo->IsSelfCast())
         {
             if (Creature* creature = GetMap()->GetCreature(questGiver->GetGUID()))
                 creature->CastSpell(this, quest->GetRewSpell(), true);
         }
-        else
+        else if (spellInfo)
             CastSpell(this, quest->GetRewSpell(), true);
     }
 
@@ -1699,7 +1739,9 @@ QuestGiverStatus Player::GetQuestDialogStatus(Object* questgiver)
             continue;
 
         QuestStatus status = GetQuestStatus(questId);
-        if (status == QUEST_STATUS_COMPLETE && !GetQuestRewardStatus(questId))
+        if (!GetQuestRewardStatus(questId)
+            && (status == QUEST_STATUS_COMPLETE
+                || (status == QUEST_STATUS_INCOMPLETE && CanCompleteQuest(questId))))
         {
             result2 = DIALOG_STATUS_REWARD;
         }
@@ -2353,26 +2395,15 @@ bool Player::HasQuestForItem(uint32 itemid, uint32 excludeQuestId /* 0 */, bool 
             // This part for ReqItem drop
             for (uint8 j = 0; j < QUEST_ITEM_OBJECTIVES_COUNT; ++j)
             {
-                if (itemid == qinfo->RequiredItemId[j] && q_status.ItemCount[j] < qinfo->RequiredItemCount[j])
+                if (itemid == qinfo->RequiredItemId[j])
                 {
-                    if (showInLoot)
-                    {
-                        if (GetItemCount(itemid, true) < qinfo->RequiredItemCount[j])
-                        {
-                            return true;
-                        }
-
-                        *showInLoot = false;
-                    }
-                    else
-                    {
+                    uint32 const have = GetItemCount(itemid, true);
+                    if (have < qinfo->RequiredItemCount[j])
                         return true;
-                    }
-                }
-
-                if (turnIn && q_status.ItemCount[j] >= qinfo->RequiredItemCount[j])
-                {
-                    return true;
+                    if (showInLoot)
+                        *showInLoot = false;
+                    if (turnIn)
+                        return true;
                 }
             }
             // This part - for ReqSource

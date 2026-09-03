@@ -1,0 +1,5 @@
+## Interface: 30300
+## Title: Living Gear
+## Notes: Account perks and living gear UI
+## DefaultState: enabled
+LivingGear.lua

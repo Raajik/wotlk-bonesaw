@@ -1,0 +1,23 @@
+# Core-patch 0050 -- Cold Weather Flying is account-wide (report #185)
+#
+# The riding *skill* has pooled account-wide for a while
+# (lg_account_meta.riding_skill, LivingGear_Next.cpp ApplyAccountRiding), but
+# Cold Weather Flying (spell 54197, taught by Hira Snowdawn in Dalaran or
+# granted by the Tome of Cold Weather Flight) is a plain spell, not a riding
+# skill rank, so an alt who had never visited Dalaran still could not fly in
+# Northrend.
+#
+# No core change is needed: the account collection pool
+# (lg_account_mount, Harvest/Grant/RecordAccountCollection) already shares
+# every spell in the Mounts/Companions skill lines on learn + login. This
+# change lives entirely in the module and widens that pool's membership test:
+#
+#   LivingGear_Next.cpp IsCollectionSpell() now also accepts
+#   SPELL_COLD_WEATHER_FLYING (54197). Both purchase paths (Hira's trainer
+#   learn and the Tome, spell 55097 -> 54197) funnel into 54197, so one id
+#   covers both. Characters who already know it seed the pool on their next
+#   login via the existing harvest pass; alts receive it on their next login
+#   via GrantAccountCollection.
+#
+# Recorded here because modules/mod-living-gear/src/ is untracked; this file
+# is the durable description of the change.

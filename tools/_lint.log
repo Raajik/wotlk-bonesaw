@@ -1,0 +1,50 @@
+Starting AzerothCore CPP Codestyle check...
+ 
+Please read the C++ Code Standards for AzerothCore:
+https://www.azerothcore.org/wiki/cpp-code-standards
+ 
+Multiple blank lines found in A:\wow-bonesaw\src\server\game\Battlegrounds\ArenaTeam.h at line 222
+Multiple blank lines found in A:\wow-bonesaw\src\server\game\Chat\Chat.cpp at line 452
+Multiple blank lines found in A:\wow-bonesaw\src\server\game\DataStores\DBCStores.h at line 37
+Trailing whitespace found: A:\wow-bonesaw\src\server\game\Entities\Item\Item.cpp at line 1292
+Trailing whitespace found: A:\wow-bonesaw\src\server\game\Entities\Item\Item.cpp at line 1297
+Trailing whitespace found: A:\wow-bonesaw\src\server\game\Entities\Unit\Unit.cpp at line 12733
+Multiple blank lines found in A:\wow-bonesaw\src\server\game\Groups\Group.cpp at line 404
+Multiple blank lines found in A:\wow-bonesaw\src\server\game\Maps\Map.cpp at line 1728
+Trailing whitespace found: A:\wow-bonesaw\src\server\game\Scripting\ScriptMgr.h at line 770
+Multiple blank lines found in A:\wow-bonesaw\src\server\game\Scripting\ScriptDefines\PlayerScript.cpp at line 224
+Multiple blank lines found in A:\wow-bonesaw\src\server\scripts\Commands\cs_server.cpp at line 221
+Multiple blank lines found in A:\wow-bonesaw\src\server\scripts\Commands\cs_server.cpp at line 252
+Trailing whitespace found: A:\wow-bonesaw\src\server\scripts\Commands\cs_server.cpp at line 221
+Trailing whitespace found: A:\wow-bonesaw\src\server\scripts\Commands\cs_server.cpp at line 252
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 633
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 634
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 639
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 640
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 641
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 642
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 643
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 648
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 649
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 650
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 651
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 652
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 653
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 654
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 655
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 935
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 936
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 937
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 938
+Tab found! Replace it to 4 spaces: A:\wow-bonesaw\src\server\shared\DataStores\DBCStructure.h at line 939
+
+Multiple blank lines check : Failed
+Trailing whitespace check : Passed
+GetCounter() check : Passed
+Misc codestyle check : Failed
+GetTypeId() check : Passed
+NpcFlagHelpers check : Passed
+ItemFlagHelpers check : Passed
+ItemTemplateFlagHelpers check : Passed
+
+Please fix the codestyle issues above.

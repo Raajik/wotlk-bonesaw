@@ -16,7 +16,8 @@ CollectSourceFiles(
   ${CMAKE_CURRENT_SOURCE_DIR}
   PRIVATE_SOURCES
   # Exclude
-  ${CMAKE_CURRENT_SOURCE_DIR}/PrecompiledHeaders)
+  ${CMAKE_CURRENT_SOURCE_DIR}/PrecompiledHeaders
+  ${CMAKE_CURRENT_SOURCE_DIR}/TC9Sidecar)
 
 if (USE_COREPCH)
   set(PRIVATE_PCH_HEADER PrecompiledHeaders/gamePCH.h)
@@ -41,6 +42,8 @@ target_link_libraries(game-interface
   INTERFACE
     shared)
 
+list(APPEND PRIVATE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/TC9Sidecar/TC9SidecarStub.cpp)
+
 add_library(game STATIC
   ${PRIVATE_SOURCES})
 
@@ -54,8 +57,7 @@ target_link_libraries(game
   PRIVATE
     acore-core-interface
   PUBLIC
-    game-interface
-    libsidecar)
+    game-interface)
 
 set_target_properties(game
   PROPERTIES

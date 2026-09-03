@@ -1,0 +1,95 @@
+Drop creature_template immunity to damage-dealing mechanics (bleed, disease).
+Touches: src/server/game/Entities/Unit/Unit.h, src/server/game/Entities/Unit/Unit.cpp
+
+Why: player report -- "just like elemental immunities, nothing should be
+immune to bleed damage either", then "or any type of damage".
+
+Core-patch 0017 already handled damage SCHOOLS, which is why the report is
+phrased as a comparison to it. Schools and mechanics are separate systems and
+0017 does not touch the second one. Bleed-proof is not a school immunity:
+Rend, Rupture, Garrote and Lacerate are physical spells carrying
+MECHANIC_BLEED, and an undead or elemental with template mechanic immunity
+refuses the aura outright in IsImmunedToSpell / IsImmunedToSpellEffect,
+which runs long before anything 0017 changed.
+
+Scope decision, and the reason this is not simply "all mechanics":
+
+The literal reading of "any type of damage" would mean softening every
+mechanic in m_spellImmune[IMMUNITY_MECHANIC]. That set is mostly crowd
+control -- stun, fear, root, polymorph, banish, silence, knockback. Dropping
+those would make every raid boss in the game stunnable, which deletes
+encounter design across all of WotLK and is plainly not what a report about
+bleed damage was asking for. So the softening covers the mechanics that
+classify DAMAGE:
+
+    MECHANIC_BLEED      Rend, Rupture, Garrote, Lacerate, Deep Wounds
+    MECHANIC_INFECTED   disease damage-over-time
+
+Control mechanics stay enforced. If a report later says a specific boss
+should be stunnable, that is a different and much narrower change.
+
+Same template-versus-aura split as 0017, using the same signal:
+Creature::LoadTemplateImmunities registers template entries under the
+sentinel spell id (uint32 max), so a scripted invulnerability phase (a real
+aura) still works, and if a creature holds both, the aura wins.
+
+Known limit, inherited from 0017: mechanic immunity is binary -- it refuses
+the aura or it does not -- so there is no partial to downgrade to. A bleed
+now lands at full damage rather than at an 80% resist. Bleeds are physical,
+and CalcAbsorbResist's resist block does not run for SPELL_SCHOOL_MASK_NORMAL
+anyway, so the school version could not have given it a partial either.
+
+Gated by the existing LivingGear.SoftenCreatureImmunity (default 1) -- same
+switch as 0017, because it is the same decision.
+
+--- a/src/server/game/Entities/Unit/Unit.h
++++ b/src/server/game/Entities/Unit/Unit.h
+@@ next to LivingGearSoftenedSchoolImmunity
++    [[nodiscard]] bool LivingGearSoftenedMechanicImmunity(uint32 mechanic) const;
+
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ above Unit::LivingGearSoftenedSchoolImmunity
++static bool LivingGear_IsDamageMechanic(uint32 mechanic)
++{
++    switch (mechanic)
++    {
++        case MECHANIC_BLEED:
++        case MECHANIC_INFECTED:
++            return true;
++        default:
++            return false;
++    }
++}
++
++bool Unit::LivingGearSoftenedMechanicImmunity(uint32 mechanic) const
++{
++    static uint32 constexpr templateSpellId = std::numeric_limits<uint32>::max();
++
++    if (!mechanic || !IsCreature() || !LivingGear_IsDamageMechanic(mechanic))
++        return false;
++    if (!LivingGear_SoftenCreatureImmunity())
++        return false;
++
++    bool fromTemplate = false;
++    for (auto const& [immunityMechanic, immunityAuraId] : m_spellImmune[IMMUNITY_MECHANIC])
++    {
++        if (immunityMechanic != mechanic)
++            continue;
++        if (immunityAuraId == templateSpellId)
++            fromTemplate = true;
++        else
++            return false;   // a real aura says immune, and it wins
++    }
++    return fromTemplate;
++}
+
+@@ Unit::IsImmunedToSpell, the whole-spell mechanic check
+-        if (mechanicList.count(mechanic) > 0)
++        if (mechanicList.count(mechanic) > 0 && !LivingGearSoftenedMechanicImmunity(mechanic))
+             return true;
+
+@@ Unit::IsImmunedToSpellEffect, the per-effect mechanic check
+-        if (mechanicList.count(mechanic) > 0)
++        if (mechanicList.count(mechanic) > 0 && !LivingGearSoftenedMechanicImmunity(mechanic))
+             return true;

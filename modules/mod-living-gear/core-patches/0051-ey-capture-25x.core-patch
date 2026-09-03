@@ -1,0 +1,17 @@
+Feature #167 (capture speed 25x), Eye of the Storm follow-up.
+
+The 25x capture speed shipped as rev_pvp_capture_25x.sql, which sets
+GO Data16 on the data-driven capture points (EP towers, Hellfire, Halaa,
+Zangar, Venture Bay, Terokkar, Nagrand, Wintergrasp banners). Eye of the
+Storm is NOT data-driven: its four towers use BattlegroundEY's code-driven
+progress bar, so Data16 has no effect there.
+
+Change: the per-tick bar delta in BattlegroundEY::UpdatePointsState()
+(player-count difference, clamped to +/- BG_EY_POINT_MAX_CAPTURERS_COUNT)
+is multiplied by BG_EY_CAPTURE_SPEED_MULT (25) before being applied. The
+delta is clamped to the bar's own 0..100 range on the next line, so the
+larger step cannot push the int8 status out of range. One capturer now
+captures a tower from neutral in ~2 ticks instead of ~14, matching the
+feel of the 25x data-driven points.
+
+Touches: src/server/game/Battlegrounds/Zones/BattlegroundEY.{h,cpp}

@@ -1,0 +1,26 @@
+Bot-only groups dissolve themselves: when the last real player walks out
+of (or logs off from) a raid or party made with bots, the group's bot leader
+disbands it on the next manager pass and every bot goes back to the pool.
+
+Touches: modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.{h,cpp}
+         (new DisbandBotOnlyGroups, called from UpdateAIInternal)
+         includes CharacterCache.h
+No tracked src/server/ files change -- no core diff in this record; it
+documents gitignored module edits.
+
+Why: report #157 -- "leaving a group with bots doesn't seem to disband the
+group and return them to the pool to be used, at least for raids".
+
+Root cause: the per-bot "leave group if the leader is a random bot" cleanup
+lives in ProcessBot(Player*), but ProcessBot(uint32) early-returns for
+grouped bots BEFORE ever reaching it -- so once a bot joined a group, that
+cleanup was unreachable for it. The only other check (groupValid in
+OnBotLogin) runs when a bot logs IN, so a live bot-only group outlived its
+players indefinitely.
+
+The sweep runs each manager pass (30-60s cadence) over online bots and
+disbands any non-LFG/BG/BF group whose members are all bots -- mirroring the
+login check's groupValid semantics (real player present keeps it; a member
+on a real account keeps it when PlayerbotAIConfig.KeepAltsInGroup is set).
+Only the leader bot issues the disband, so one packet frees the whole raid.
+LFG groups are left to the dungeon finder, BG/BF raids to their systems.

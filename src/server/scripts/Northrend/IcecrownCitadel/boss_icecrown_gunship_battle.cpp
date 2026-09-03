@@ -2343,11 +2343,18 @@ class spell_igb_cannon_blast : public SpellScript
         PreventHitDefaultEffect(effIndex);
     }
 
+    // Report #210: the gunship fight runs far too long with real players on
+    // the cannons; both factions' cannon shots hit 20x harder.
+    void ScaleCannonDamage(SpellEffIndex /*effIndex*/)
+    {
+        SetHitDamage(GetHitDamage() * 20);
+    }
+
     void Register() override
     {
         OnCast += SpellCastFn(spell_igb_cannon_blast::CalculatePower);
         OnEffectHitTarget += SpellEffectFn(spell_igb_cannon_blast::PreventPowerGainOnHit, EFFECT_1, SPELL_EFFECT_ENERGIZE);
-
+        OnEffectHitTarget += SpellEffectFn(spell_igb_cannon_blast::ScaleCannonDamage, EFFECT_0, SPELL_EFFECT_SCHOOL_DAMAGE);
     }
 };
 
@@ -2375,7 +2382,8 @@ class spell_igb_incinerating_blast : public SpellScript
         Position dest = GetExplTargetDest()->GetPosition();
         targets.SetDst(dest);
         CustomSpellValues values;
-        int32 damage = si->Effects[0].CalcValue() + _energyLeft * _energyLeft * 8;
+        // Report #210: 20x cannon damage so the gunship fight actually ends.
+        int32 damage = (si->Effects[0].CalcValue() + _energyLeft * _energyLeft * 8) * 20;
         values.AddSpellMod(SPELLVALUE_BASE_POINT0, damage);
         values.AddSpellMod(SPELLVALUE_BASE_POINT1, damage);
         values.AddSpellMod(SPELLVALUE_BASE_POINT2, damage);

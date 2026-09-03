@@ -1,0 +1,60 @@
+The account-wide reputation pool no longer crosses the faction line, and the
+damage it wrote during its first days alive is repaired by migration.
+
+Touches: modules/mod-living-gear/src/LivingGear_Next.cpp (gitignored module
+         edit -- RepTeamLegalTeams/RepWorstBaseFor/RepTeamBitFor helpers plus
+         four gates: capture, propagate, login backfill, login replay)
+         data/sql/updates/pending_db_characters/rev_reputation_team_scope.sql
+         (pending migration; imported with the next ship)
+No tracked src/server/ files change.
+
+Why: report #220 -- "Most of my characters are Alliance so when I logged
+into a Horde character, it set all my reputations to Alliance-levels (so
+negative). Need to have that reversed and only have reputations share
+faction-wide maybe?"
+
+Mechanics of the bug: Faction.dbc gives every faction race-dependent base
+reputation, and every one-team faction (the nine cities, the BG teams, the
+expedition factions, Kurenai vs The Mag'har, ...) puts each character of the
+OPPOSITE team at Hated (-42000) through a base-reputation slot covering that
+team's races. The pool stores DISPLAYED totals (standing + base), so a value
+captured from one team carries that team's base inside it. Replaying it onto
+a character of the other team writes raw = total - base(other team): the
+account's Alliance characters' Hated Silvermoon (-32110 displayed) landed on
+the blood-elf alt as raw -36110 (her base with Silvermoon is +4000), i.e.
+Hated with her own capital. The reverse hop wrote Alliance-city exalted onto
+her, and each push/replay round trip through characters with different bases
+ratcheted values further (her saved raw -45500 for the Horde umbrella faction
+is pool -42000 minus her 3500 blood-elf base -- exact arithmetic
+confirmation).
+
+Fix, per the reporter's own suggestion ("only share faction-wide"):
+RepTeamLegalTeams(faction) computes, exactly like
+ReputationMgr::GetBaseReputation (first matching slot, both wildcard rules),
+the worst base reputation any race/class of each team starts the faction
+with; a team is legal when that worst base is above the Hated floor. The
+nine cities, BG teams, expedition factions and one-team quest factions then
+sync ONLY between characters of their own team. Neutral factions share
+account-wide unchanged, and factions that start EVERYONE at Hated
+(Netherwing, Brood of Nozdormu, Sons of Hodir) have a team-independent base
+and stay shareable. The gate sits on all four paths: capture
+(PushAccountReputation never stores a standing earned by the wrong team),
+live propagate (PropagateAccountReputation skips opposite-team alts), login
+backfill (seeding skips factions illegal for the logging-in character) and
+login replay (stored values for illegal factions are ignored). Helper is
+pure -- no cached state, no new threading exposure.
+
+The migration (validated inside a rolled-back transaction on live data)
+repairs what the pool already wrote:
+  * opposite-team character_reputation rows deleted outright (9054 + 8683
+    rows realm-wide, mostly bot default states the engine recreates at load);
+  * own-team rows below neutral floored to 0 (17 horde-side + 2
+    alliance-side rows -- no gameplay path drops a character below neutral
+    with a faction its own team owns, so every negative is sync damage);
+  * the 37 contaminated lg_account_reputation rows for one-team factions
+    dropped; the gated backfill re-seeds them from correct-team characters
+    at next login.
+
+Players whose own-faction city reputations were damaged start those back at
+neutral and regrow them (fast under the realm's reputation perks); enemy-city
+standings reset to "never contacted", which is what a fresh character shows.

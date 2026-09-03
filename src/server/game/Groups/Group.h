@@ -230,6 +230,12 @@ public:
     ObjectGuid GetGUID() const;
     char const* GetLeaderName() const;
     LootMethod GetLootMethod() const;
+    // Loot method with the personal-loot override applied: when
+    // CONFIG_PERSONAL_LOOT_ALL ("Loot.PersonalLootAll", default true) is on,
+    // every shared/group method (Round Robin, Master Loot, Group Loot,
+    // Need Before Greed) reads as FREE_FOR_ALL so all loot is lootable
+    // personally by every eligible member - no rolls, no master looter.
+    LootMethod GetEffectiveLootMethod() const;
     ObjectGuid GetLooterGuid() const;
     ObjectGuid GetMasterLooterGuid() const;
     ItemQualities GetLootThreshold() const;
@@ -308,6 +314,8 @@ public:
     void GroupLoot(Loot* loot, WorldObject* pLootedObject);
     void NeedBeforeGreed(Loot* loot, WorldObject* pLootedObject);
     void MasterLoot(Loot* loot, WorldObject* pLootedObject);
+    static bool IsPersonalLootBoss(Creature const* creature);
+    void PersonalLoot(Creature* creature, Player* reference);
     Rolls::iterator GetRoll(ObjectGuid Guid);
     void CountTheRoll(Rolls::iterator roll);
     bool CountRollVote(ObjectGuid playerGUID, ObjectGuid Guid, uint8 Choise);

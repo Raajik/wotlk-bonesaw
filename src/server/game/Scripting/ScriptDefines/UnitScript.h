@@ -44,12 +44,16 @@ enum UnitHook
     UNITHOOK_ON_UNIT_EXIT_COMBAT,
     UNITHOOK_ON_UNIT_DEATH,
     UNITHOOK_ON_UNIT_SET_SHAPESHIFT_FORM,
+    UNITHOOK_ON_CREATURE_LEVEL_FOR_TARGET,
+    UNITHOOK_ON_CALCULATE_THREAT,
     UNITHOOK_END
 };
 
 enum ReputationRank : uint8;
 class ByteBuffer;
 struct BuildValuesCachePosPointers;
+class WorldObject;
+class Unit;
 
 class UnitScript : public ScriptObject
 {
@@ -108,8 +112,17 @@ public:
     virtual void OnUnitEnterEvadeMode(Unit* /*unit*/, uint8 /*evadeReason*/) { }
     virtual void OnUnitEnterCombat(Unit* /*unit*/, Unit* /*victim*/) { }
     virtual void OnUnitExitCombat(Unit* /*unit*/) { }
+    // Living Gear zone scaling (#88/#89): let the module answer "what level
+    // does this creature fight at against this viewer". outLevel arrives set
+    // to the creature's real level; a module may overwrite it per-viewer.
+    virtual void OnCreatureLevelForTarget(Unit const* /*creature*/, WorldObject const* /*target*/, uint8& /*outLevel*/) { }
     virtual void OnUnitDeath(Unit* /*unit*/, Unit* /*killer*/) { }
     virtual void OnUnitSetShapeshiftForm(Unit* /*unit*/, uint8 /*form*/) { }
+    // Living Gear tanking (#91): let the module multiply threat a unit
+    // generates. threat arrives already modified (spell threat entries,
+    // SPELLMOD_THREAT, school modifiers); a module may scale it further.
+    // attacker is the unit generating threat, victim the one holding it.
+    virtual void OnCalculateThreat(Unit* /*attacker*/, Unit* /*victim*/, float& /*threat*/, SpellInfo const* /*spell*/) { }
 };
 
 #endif

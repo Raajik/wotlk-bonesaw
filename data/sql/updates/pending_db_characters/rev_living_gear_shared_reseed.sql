@@ -1,0 +1,24 @@
+-- Re-seed the account-wide currency pool (bug report #24, 2026-08-22).
+--
+-- Account-wide gold/honor/arena existed before the 14k-line LivingGear.cpp was
+-- split, and was lost in that split. The lg_account_meta columns survived with
+-- data in them -- but that data is now badly stale, because characters kept
+-- earning while nothing was pooling them.
+--
+-- Applying those stored values on login would have been straightforward theft:
+--   account 2   stored 79,624   but Muckfuppet is carrying 261,881
+--   account 108 stored 220,532  but Swayss is carrying 1,922,571
+-- That is 1.7 million copper off one character. Exactly the shape of bug #21,
+-- and not a mistake worth making twice.
+--
+-- Clearing shared_inited makes EnsureSharedCurrencies re-seed each account once
+-- from MAX() across its characters: nobody drops below what their best
+-- character was holding, and unlike SUM() nothing is minted -- which matters
+-- most on accounts that WERE synced before, where every character already holds
+-- the same pool and summing would multiply it by the character count.
+--
+-- The stored gold/honor/arena values are deliberately left in place rather than
+-- zeroed. They are the last known good pool, and if a re-seed ever needs
+-- auditing they are the only record of it.
+
+UPDATE `lg_account_meta` SET `shared_inited` = 0;

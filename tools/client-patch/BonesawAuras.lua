@@ -1,0 +1,22 @@
+-- Bonesaw aura display caps (Feature #149, in-game report id 149).
+--
+-- Stock 3.3.5 asks the server for at most 16 harmful auras on the target
+-- frame and 16 on the player frame, so a 25-player raid on a boss drops
+-- everything past the first 16 debuffs on the floor. Both numbers are plain
+-- globals that the stock update loops re-read every refresh and both frame
+-- sets create their buttons on demand (TargetFrame_UpdateAuras does
+-- CreateFrame for TargetDebuffFrameTemplate as needed; AuraButton_Update
+-- does the same for DebuffButtonTemplate), so overriding the constants from
+-- a file loaded after TargetFrame.xml and BuffFrame.xml is the whole fix.
+-- No templates are touched.
+--
+-- 40 is the ceiling, not a choice: the 3.3.5 aura update packets only carry
+-- 40 aura slots per unit, so UnitDebuff/UnitAura can never return index 41.
+-- 40 debuffs x4 rows is also exactly what the stock target-frame anchor
+-- math (TargetFrame_UpdateAuraPositions / DebuffButton_UpdateAnchors)
+-- already handles for 40 buffs, so no layout code changes either.
+--
+-- Buffs are left at stock (BUFF_MAX_DISPLAY 32 on the player bar,
+-- MAX_TARGET_BUFFS 32 on the target frame); the request was debuffs only.
+MAX_TARGET_DEBUFFS = 40; -- stock 16, TargetFrame.lua
+DEBUFF_MAX_DISPLAY = 40; -- stock 16, BuffFrame.lua

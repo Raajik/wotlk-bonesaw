@@ -1,0 +1,1393 @@
+"""
+Build Bonesaw client patch-Y.MPQ.
+
+Adds *Account Perks (910001) to Spell.dbc + SkillLineAbility.dbc.
+FrameXML UI ships in patch-enUS-4.MPQ and patch-enGB-4.MPQ. Needs the patched Wow.exe.
+
+Do not overwrite Data/patch-Z.mpq -- that archive already ships Item.dbc.
+
+Usage (Windows or Linux):
+  python tools/client-patch/build_patch.py
+
+Windows uses the vendored StormLib.dll. Linux needs StormLib installed
+(Arch: `yay -S stormlib`, Debian/Ubuntu: `libstorm-dev`, Fedora: `StormLib-devel`),
+or set BONESAW_STORMLIB to a libstorm.so.
+"""
+from __future__ import annotations
+
+import ctypes
+import ctypes.util
+import os
+import re
+import shutil
+import struct
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+BS = chr(92)  # MPQ path separator
+STAGING = ROOT / "staging"
+DBC_DIR = STAGING / "DBFilesClient"
+SPELL_DBC = DBC_DIR / "Spell.dbc"
+SPELL_DBC_BASE = ROOT / "cache" / "Spell.dbc.base"
+SLA_DBC = DBC_DIR / "SkillLineAbility.dbc"
+SLA_DBC_BASE = ROOT / "cache" / "SkillLineAbility.dbc.base"
+AREATABLE_DBC = DBC_DIR / "AreaTable.dbc"
+AREATABLE_DBC_BASE = ROOT / "cache" / "AreaTable.dbc.base"
+# Report #218: the client refuses flying mounts in Dalaran with "You can't
+# use that here." because its own AreaTable.dbc (the 3.3.5a patch-enUS-3
+# copy) still carries AREA_FLAG_NO_FLY_ZONE (0x20000000, raw column 4) on
+# Dalaran City (4395) and fourteen sub-areas. The server clears the flag at
+# startup (SpellInfoCorrections, shipped 0.1.118), but the client checks its
+# own DBC before the mount cast is even sent, so the fix must ride the
+# client patch. The 3.3.5a client has no SpellArea.dbc at all (verified:
+# no candidate MPQ carries one), so the area flags are the only client
+# gate. Report #235 removed Wintergrasp's Flightless (58730) spell_area
+# rows server-side instead; the WG area rows carry no NO_FLY flag in the
+# client DBC (verified: 18 WG-tree rows, zero flagged), so no client
+# AreaTable change is needed for it -- its rows are left untouched here.
+# AreaTable.dbc ships in patch-Y.MPQ and
+# in both locale patch-<locale>-4.MPQ archives: the locale patch-4 outranks
+# blizzard's locale patch-3, which is where the pristine copy lives.
+AREA_FLAG_NO_FLY_ZONE = 0x20000000
+DALARAN_CITY = 4395
+DALARAN_MAP = 571
+OUT_MPQ = ROOT / "dist" / "patch-Y.MPQ"
+LOCALES = ("enUS", "enGB")
+FRAME_TOC_BASE = ROOT / "cache" / "FrameXML.toc.base"
+FRAME_TOC = STAGING / "Interface" / "FrameXML" / "FrameXML.toc"
+UI_LUA_SRC = (
+    ROOT.parent.parent / "modules" / "mod-living-gear" / "client_addon" / "LivingGear" / "LivingGear.lua"
+)
+UI_LUA = STAGING / "Interface" / "FrameXML" / "LivingGear.lua"
+# Feature #149: aura display caps. Static override file, shipped next to
+# LivingGear.lua; must load AFTER TargetFrame.xml/BuffFrame.xml (the module
+# insertion marker in FrameXML.toc is past both).
+AURA_LUA_SRC = ROOT / "BonesawAuras.lua"
+AURA_LUA = STAGING / "Interface" / "FrameXML" / "BonesawAuras.lua"
+STORMLIB_DLL = (
+    ROOT.parent.parent
+    / "archive"
+    / "failed-eotw-cota-20260814"
+    / "client-patch"
+    / "bin"
+    / "stormlib"
+    / "x64"
+    / "StormLib.dll"
+)
+
+CUSTOM_SPELLS = {
+    910001: ("*Account Perks", "Open account perks and Living Gear.", 2610),
+    910002: ("*Mailbox", "Open your mailbox.", 2030),
+    910003: ("*Auction House", "Open the auction house.", 2801),
+    910004: ("*Class Trainer", "Open your class trainer.", 2610),
+    910005: ("*Bank", "Open your bank.", 2492),
+    910006: ("*Stable", "Open the pet stable.", 455),
+    910007: ("*Bind", "Bind your hearthstone here.", 776),
+    910008: ("*Autoloot", "Toggle automatic looting. On by default.", 3210),
+    910009: ("*Flight Master", "Open the flight map from anywhere.", 2274),
+    910010: ("*Honor: Defeat", "Honor gains +100%. Unlocked by losing a battleground.", 1703),
+    910011: ("*Honor: Victory", "Honor gains +200%. Unlocked by winning a battleground.", 1704),
+    910012: ("*Honor: Bloodied", "Honor gains +200%. Unlocked by 100 honorable kills.", 2300),
+    910013: ("*Rep: First Exalted", "Reputation gains +100%. Unlocked by 1 exalted faction.", 3605),
+    910014: ("*Rep: Five Exalted", "Reputation gains +100%. Unlocked by 5 exalted factions.", 3604),
+    910015: ("*Rep: Ten Exalted", "Reputation gains +100%. Unlocked by 10 exalted factions.", 3603),
+    910016: ("*Rep: Bloodsail", "Reputation gains +100%. Unlocked by Bloodsail Buccaneers exalted.", 3602),
+    910017: ("*Rep: Darkmoon", "Reputation gains +100%. Unlocked by Darkmoon Faire exalted.", 3602),
+    910018: ("*Rep: Ravenholdt", "Reputation gains +100%. Unlocked by Ravenholdt exalted.", 3602),
+    910019: ("*Rep: Shendralar", "Reputation gains +100%. Unlocked by Shendralar exalted.", 3602),
+    910020: ("*Rep: Arathor", "Reputation gains +100%. Unlocked by League of Arathor exalted.", 3602),
+    910021: ("*Rep: Defilers", "Reputation gains +100%. Unlocked by The Defilers exalted.", 3602),
+    910022: ("*Rep: Silverwing", "Reputation gains +100%. Unlocked by Silverwing Sentinels exalted.", 3602),
+    910023: ("*Rep: Warsong", "Reputation gains +100%. Unlocked by Warsong Outriders exalted.", 3602),
+    910024: ("*Rep: Stormpike", "Reputation gains +100%. Unlocked by Stormpike Guard exalted.", 3602),
+    910025: ("*Rep: Frostwolf", "Reputation gains +100%. Unlocked by Frostwolf Clan exalted.", 3602),
+    910026: ("*Trade: 75", "Profession skill-ups +100%. Unlocked by reaching skill 75.", 339),
+    910027: ("*Trade: 150", "Profession skill-ups +100%. Unlocked by reaching skill 150.", 339),
+    910028: ("*Trade: 225", "Profession skill-ups +100%. Unlocked by reaching skill 225.", 339),
+    910029: ("*Trade: 300", "Profession skill-ups +100%. Unlocked by reaching skill 300.", 339),
+    910030: ("*Trade: 375", "Profession skill-ups +100%. Unlocked by reaching skill 375.", 339),
+    910031: ("*Trade: 450", "Profession skill-ups +100%. Unlocked by reaching skill 450.", 339),
+    910032: ("*Mage: Arcane", "While in combat, Mirror Images appear and chain-cast. They linger 60 sec after combat.", 225),
+    910033: ("*Mage: Fire", "Fire spells apply Living Bomb and grant Combustion. Living Bomb spreads to enemies within 15 yards every 1 sec.", 11),
+    910034: ("*Mage: Frost", "Blizzard is instant, no cooldown, and lingers like Death and Decay. In combat, Ice Lance hits enemies within 15 yards every 2 sec.", 188),
+    910035: ("*Rogue: Assassination", "Poisons deal 300% increased damage. DoT poisons spread to enemies within 10 yards.", 500),
+    910036: ("*Rogue: Combat", "Blade Flurry is always active. Energy regeneration increased by 50%. Combo builders have a 30% chance to cast free Killing Spree.", 514),
+    910037: ("*Rogue: Subtlety", "Gain Shadowstep (2 sec cooldown). Pickpocket hits every humanoid within 10 yards. Hemorrhage spreads a boosted Ambush and Garrote bleed to everything within 10 yards. Learn Shadow Dance.", 250),
+    # Jack in the Box dropped entirely 2026-08-21, replaced by Shadow Dance
+    # (reuses its freed spell ID). Icon 95 (Kill Combo's) reused
+    # deliberately -- confirmed rendering fine in this build already; MPQ
+    # extraction tooling to look up a real shadow-dance icon was broken
+    # when this was attempted for the old totem icon (StormLib opens the
+    # archives fine, but SFileOpenFileEx returns ERROR_FILE_NOT_FOUND for
+    # paths that should exist -- not investigated further). Revisit with a
+    # real icon once that's fixed or verified another way.
+    910102: ("*Shadow Dance", "Permanent. Stealth-only abilities (Ambush, Garrote, Cheap Shot, etc.) can be used without being stealthed. +10% attack power to your party/raid.", 95),
+    910104: ("*Movement: Mounted Opener", "While mounted: jump forward for a boosted leap (+50% forward momentum). Jump again midair to slam down, pull enemies within 20 yards, and Thunder Clap. Unlocked at level 40.", 1299),
+    910105: ("*Auto-Mount", "Automatically mount when you leave combat. Toggle on the World tab or by casting this perk. Unlocked by learning a mount.", 836),
+    910106: ("*Class Buffs", "After you clear Naxxramas 25 on a class, that class applies 10% primary stats to you and nearby party.", 1802),
+    910107: ("*Riding", "Riding skill is account-wide. Alts can mount from level 1 once anyone trained riding.", 1176),
+    910108: ("*Auto-Accept", "Auto-accept quests when you talk to an NPC. Hold Shift to skip. Does not accept on login.", 4035),
+    910109: ("*Mine: 150", "Mining nodes yield 2x. Unlocked by Mining 150. Stacks: 2x / 4x / 8x at 150 / 300 / 450.", 336),
+    910110: ("*Mine: 300", "Mining nodes yield 4x. Unlocked by Mining 300.", 336),
+    910111: ("*Mine: 450", "Mining nodes yield 8x. Unlocked by Mining 450.", 336),
+    910112: ("*Mine: Reach 75", "Auto-gather mining nodes from +3 yards. Unlocked by Mining 75. Stacks to +9 yards at 375.", 336),
+    910113: ("*Mine: Reach 225", "Auto-gather mining nodes from +6 yards. Unlocked by Mining 225.", 336),
+    910114: ("*Mine: Reach 375", "Auto-gather mining nodes from +9 yards. Unlocked by Mining 375.", 336),
+    910115: ("*Herb: 150", "Herb nodes yield 2x. Unlocked by Herbalism 150. Stacks: 2x / 4x / 8x at 150 / 300 / 450.", 345),
+    910116: ("*Herb: 300", "Herb nodes yield 4x. Unlocked by Herbalism 300.", 345),
+    910117: ("*Herb: 450", "Herb nodes yield 8x. Unlocked by Herbalism 450.", 345),
+    910118: ("*Herb: Reach 75", "Auto-gather herbs from +3 yards. Unlocked by Herbalism 75. Stacks to +9 yards at 375.", 345),
+    910119: ("*Herb: Reach 225", "Auto-gather herbs from +6 yards. Unlocked by Herbalism 225.", 345),
+    910120: ("*Herb: Reach 375", "Auto-gather herbs from +9 yards. Unlocked by Herbalism 375.", 345),
+    910121: ("*Skin: 150", "Skinning yields 2x. Unlocked by Skinning 150. Stacks: 2x / 4x / 8x at 150 / 300 / 450.", 2682),
+    910122: ("*Skin: 300", "Skinning yields 4x. Unlocked by Skinning 300.", 2682),
+    910123: ("*Skin: 450", "Skinning yields 8x. Unlocked by Skinning 450.", 2682),
+    910124: ("*Skin: Reach 75", "Auto-skin from +3 yards. Unlocked by Skinning 75. Stacks to +9 yards at 375.", 2682),
+    910125: ("*Skin: Reach 225", "Auto-skin from +6 yards. Unlocked by Skinning 225.", 2682),
+    910126: ("*Skin: Reach 375", "Auto-skin from +9 yards. Unlocked by Skinning 375.", 2682),
+    910127: ("*Fish: 150", "Fishing yields 2x. Unlocked by Fishing 150. Stacks: 2x / 4x / 8x at 150 / 300 / 450.", 580),
+    910128: ("*Fish: 300", "Fishing yields 4x. Unlocked by Fishing 300.", 580),
+    910129: ("*Fish: 450", "Fishing yields 8x. Unlocked by Fishing 450.", 580),
+    910130: ("*Fish: Reach 75", "Auto-loot fishing pools from +3 yards. Unlocked by Fishing 75. Stacks to +9 yards at 375.", 580),
+    910131: ("*Fish: Reach 225", "Auto-loot fishing pools from +6 yards. Unlocked by Fishing 225.", 580),
+    910132: ("*Fish: Reach 375", "Auto-loot fishing pools from +9 yards. Unlocked by Fishing 375.", 580),
+    910133: ("*Eng: 150", "Engineering crafts and blasting/salvage loot yield 2x. Unlocked by Engineering 150.", 333),
+    910134: ("*Eng: 300", "Engineering crafts and blasting/salvage loot yield 4x. Unlocked by Engineering 300.", 333),
+    910135: ("*Eng: 450", "Engineering crafts and blasting/salvage loot yield 8x. Unlocked by Engineering 450.", 333),
+    910136: ("*Eng: Reach 75", "Auto-gather engineering blasting nodes and salvage from +3 yards. Unlocked by Engineering 75.", 333),
+    910137: ("*Eng: Reach 225", "Auto-gather engineering blasting nodes and salvage from +6 yards. Unlocked by Engineering 225.", 333),
+    910138: ("*Eng: Reach 375", "Auto-gather engineering blasting nodes and salvage from +9 yards. Unlocked by Engineering 375.", 333),
+    910139: ("*Gather Sparkle Herb", "Herb node sparkle visual (Beacon of Light).", 179),
+    910140: ("*Gather Sparkle Mine", "Mining node sparkle visual (Beacon of Light heal).", 179),
+    910141: ("*Gather Sparkle Fish", "Fishing pool sparkle visual.", 179),
+    910142: ("*Rare Pulse", "Rare creature pulse visual (Beacon of Light).", 179),
+    910038: ("*Wayfarer", "Balance movement speed against damage on one slider. Everything spent on one comes out of the other. Mounted and flying speed gain half the movement share. Changing the balance takes 30 seconds and cannot be done in combat. Unlocked by exploring your home zone, or by Going Down?.", 516),
+    910175: ("*Wayfarer: Focus", "The damage half of Wayfarer.", 516),
+    910176: ("*Wayfarer: Wide", "Wayfarer reaches +75% instead of +50%. Unlocked by Explore Eastern Kingdoms or Explore Kalimdor.", 516),
+    910177: ("*Wayfarer: Full", "Wayfarer reaches the full +100%. Unlocked by Explore Outland or Explore Northrend.", 516),
+    910039: ("*Wayfarer 4", "Movement speed +80% on foot, mounted and flying.", 516),
+    910040: ("*Wayfarer 5", "Movement speed +100% on foot, mounted and flying.", 516),
+    910041: ("*Gear: Auto-Attune", "Auto-attune looted gear. Poor starts unlocked. Higher qualities unlock as you attune more items (10, 100, 1000, ...).", 997),
+    # 910042 *Attune Backpack removed 2026-08-26 (#99): the destructive one-time
+    # attune it described was retired in the 2026-08-20 redesign (attunement is
+    # now continuous while worn), and the spell had no handler and no UI. A dead
+    # spellbook button. Perk IDs are not reused; the freed id is simply vacant.
+    910053: ("*Leveling: 1", "XP gains +50%. Unlocked by 1 character at level 80.", 3268),
+    910054: ("*Leveling: 2", "XP gains +50%. Unlocked by 2 characters at level 80.", 3269),
+    910055: ("*Leveling: 3", "XP gains +50%. Unlocked by 3 characters at level 80.", 3270),
+    910056: ("*Leveling: 4", "XP gains +50%. Unlocked by 4 characters at level 80.", 3271),
+    910057: ("*Leveling: 5", "XP gains +50%. Unlocked by 5 characters at level 80.", 3272),
+    910058: ("*Leveling: 6", "XP gains +50%. Unlocked by 6 characters at level 80.", 3273),
+    910059: ("*Leveling: 7", "XP gains +50%. Unlocked by 7 characters at level 80.", 3274),
+    910060: ("*Leveling: 8", "XP gains +50%. Unlocked by 8 characters at level 80.", 3275),
+    910061: ("*Leveling: 9", "XP gains +50%. Unlocked by 9 characters at level 80.", 3276),
+    910062: ("*Leveling: 10", "XP gains +50%. Unlocked by 10 characters at level 80.", 3277),
+    910063: ("*Cooking: 75", "Out of combat, heal 1% of max health and mana every second. Unlocked by Cooking 75.", 1467),
+    910064: ("*Cooking: 150", "Out of combat, heal 2% of max health and mana every second. Unlocked by Cooking 150.", 1467),
+    910065: ("*Cooking: 225", "Out of combat, heal 3% of max health and mana every second. Unlocked by Cooking 225.", 1467),
+    910066: ("*Cooking: 300", "Out of combat, heal 4% of max health and mana every second. Unlocked by Cooking 300.", 1467),
+    910067: ("*Cooking: 375", "Out of combat, heal 5% of max health and mana every second. Unlocked by Cooking 375.", 1467),
+    910068: ("*Cooking: 450", "Out of combat, heal 6% of max health and mana every second. Unlocked by Cooking 450.", 1467),
+    910069: ("*Paladin: Holy", "Consecration follows you and toggles off if recast. Consecration damage +1000%. Holy Shock damage +300% and hits enemies within 10 yards of the target.", 51),
+    910070: ("*Paladin: Protection", "Avenger's Shield bounces 30 times and can rehit. Range 60 yards. Devotion Aura: 10% damage reduction and +20% run/mount speed for allies. You deal Holy thorns equal to 50% of your armor.", 2172),
+    910071: ("*Paladin: Retribution", "Divine Storm radius doubled and each press hits 4 times. Learn Crusader Strike. While Retribution Aura is up, Crusader Strike also casts Exorcism on nearby enemies.", 3027),
+    910072: ("*Paladin: Devotion Speed", "Run and mount speed +20% while a Protection paladin's Devotion Aura is active.", 291),
+    910073: ("*Travel: 1", "Hearthstone cast time and cooldown -20%. Unlocked by using your Hearthstone 1 time.", 776),
+    910074: ("*Travel: 2", "Hearthstone cast time and cooldown -20%. Unlocked by using your Hearthstone 2 times.", 776),
+    910075: ("*Travel: 3", "Hearthstone cast time and cooldown -20%. Unlocked by using your Hearthstone 3 times.", 776),
+    910076: ("*Travel: 4", "Hearthstone cast time and cooldown -20%. Unlocked by using your Hearthstone 4 times.", 776),
+    910077: ("*Travel: 5", "Hearthstone cast time and cooldown -20%. Unlocked by using your Hearthstone 5 times.", 776),
+    910083: ("*Warrior: Arms", "Learn Bladestorm. No rage cost, no cooldown, and it does not end. Recast to stop. You can use other abilities while spinning.", 193),
+    910084: ("*Warrior: Fury", "Titan's Grip. Each melee hit: +5% attack speed (20 stacks) and heal 1% of max health in combat. Attack speed lingers 60 sec after combat. Rend and Deep Wounds deal +300% damage.", 38),
+    910085: ("*Warrior: Protection", "Learn Shockwave with no cooldown and +300% damage. Thunder Clap radius doubled. Thunder Clap applies your Rend and Deep Wounds if trained.", 1672),
+    910086: ("*Warrior: Fury Haste", "Melee haste from the Fury class perk.", 38),
+    910087: ("*Living Gear Speed", "Movement speed +40% for 30 seconds.", 230),
+    910088: ("*Quests - Find", "Adds up to 5 available quests in your current zone, lowest level first. Unlocked by completing 50 quests.", 2846),
+    # No leading asterisk (bug report #14): the "*" prefix marks perks the player
+    # casts from the Account Perks panel. Kill Combo is a buff that happens TO
+    # you, so it reads as a normal buff and is named like one.
+    910090: ("*Quests - Finish", "Summon the questgivers for completed quests in your log for 60 sec. Turn in and take follow-ups from them. Unlocked by completing 1 quest.", 2846),
+    910091: ("*Attuned Armory", "Make a wearable copy of an item you have attuned. The attunement stays on the account.", 297),
+    910092: ("*Solo Queue", "Queue for dungeons and raids by yourself. No group required.", 3224),
+    910093: ("*Craft: 1", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 75 in a crafting profession.", 335),
+    910094: ("*Craft: 2", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 150 in a crafting profession.", 335),
+    910095: ("*Craft: 3", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 225 in a crafting profession.", 335),
+    910096: ("*Craft: 4", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 300 in a crafting profession.", 335),
+    910097: ("*Craft: 5", "Tradeskill craft time 20% faster. Stacks with other Craft ranks. Unlocked by reaching skill 375 in a crafting profession.", 335),
+    910098: ("*Travel: Swim", "Swim speed +500%. Unlocked at level 10.", 545),
+    910101: ("*Gear: Curator", "Passively levels your 5 lowest collection pieces. Unlocked at 1000 attuned items.", 444),
+    # Icon 95 (Kill Combo's icon, confirmed rendering) reused as a safe
+    # placeholder for all three -- same reasoning as Jack in the Box's icon
+    # swap above: MPQ extraction tooling to look up real class-ability
+    # icons is broken (see Bonesaw.md), so this avoids guessing a
+    # SpellIconID blind. Revisit once that tooling works.
+    910150: ("*Hunter: Marksmanship", "Chimera Shot has no cooldown and refreshes Serpent Sting to full duration. Ranged shots have a chance to grant a free, instant Aimed Shot.", 95),
+    910151: ("*Shaman: Elemental", "Thunderstorm has no cooldown. Lava Burst deals double damage. Chain Lightning has no target cap.", 95),
+    910152: ("*Death Knight: Unholy", "Summon Gargoyle has no cooldown. Army of the Dead has no cooldown and also summons a 5-ghoul group: 1 tank, 1 healer, 3 dps.", 95),
+    910153: ("*Hunter: Beast Mastery", "Bestial Wrath has no cooldown/focus cost. Call up to 4 more beasts from your stable to fight alongside your pet, each at 50% stats.", 95),
+    910154: ("*Hunter: Survival", "Explosive Shot deals double damage. Traps lose their cooldown and get a bigger blast radius. You are immune to your own trap damage.", 95),
+    910155: ("*Shaman: Enhancement", "Feral Spirit is a free toggle: your 2 spirit wolves never expire while it's active and deal double damage. Stormstrike has no cooldown.", 95),
+    910156: ("*Shaman: Restoration", "Riptide has no cooldown and also jumps to 2 more injured allies within 15 yards. Chain Heal has no bounce cap.", 95),
+    # Trap Engineer castable. Also ships server-side in
+    # rev_living_gear_call_of_the_wilds.sql; icon 406 (confirmed rendering).
+    910181: ("*Call of the Wilds", "Summons 2 tank bears cloned from your pet (or the wilds themselves if you have no pet) at 50% health. They taunt nearby enemies and hold them while you shoot. Lasts 60 sec.", 406),
+    910157: ("*Warlock: Affliction", "Your DoTs spread to enemies within 15 yards every 1 sec. DoT tick damage is increased by your haste.", 95),
+    910158: ("*Warlock: Demonology", "Metamorphosis has no cooldown or shard cost. Your demon pet's damage is doubled.", 95),
+    910159: ("*Warlock: Destruction", "Chaos Bolt has no cooldown. Conflagrate also casts a free, instant Chaos Bolt.", 95),
+    910160: ("*Druid: Balance", "Starfall is a free toggle: cast to switch it on, recast to switch it off, and it never expires. While it is up, your Arcane and Nature damage is tripled. You are permanently in both Solar and Lunar Eclipse at once.", 95),
+    910161: ("*Druid: Feral", "Berserk is a free toggle. While active, Cat/Bear abilities cost no energy/rage and lose their cooldowns.", 95),
+    910162: ("*Druid: Restoration", "Wild Growth has no cooldown and heals up to 10 allies within 30 yards. Rejuvenation spreads to injured allies within 15 yards every 3 sec.", 95),
+    910163: ("*Priest: Discipline", "Penance has no cooldown, also applies Power Word: Shield to the target, and ricochets to up to 5 nearby enemies.", 95),
+    910164: ("*Priest: Holy", "Guardian Spirit has no cooldown and also applies to 2 more injured allies within 20 yards.", 95),
+    910165: ("*Priest: Shadow", "Shadowfiend has no cooldown. Mind Flay deals quadruple damage.", 95),
+    910166: ("*Death Knight: Blood", "Dancing Rune Weapon has no cooldown/runic cost. While active, melee hits heal you for 5% of the damage dealt.", 95),
+    910167: ("*Death Knight: Frost", "Hungering Cold has no cooldown/runic cost. Frost Strike and Obliterate deal double damage.", 95),
+    # 910168-910172 were added server-side after this table was last touched
+    # and had no client entry at all, so they had no name, tooltip or icon in
+    # game. Added 2026-08-22 alongside the two below.
+    910168: ("*Pull Radius", "Toggle. Quadruples the distance at which enemies notice you.", 201),
+    910170: ("*Track Ore", "Toggle. Shows nearby mineral veins on the minimap.", 122),
+    910171: ("*Track Herbs", "Toggle. Shows nearby herbs on the minimap.", 3088),
+    910172: ("*CC Reduction", "Passive. Stuns, roots, fears, snares and other crowd control last 95% less on you.", 2812),
+    910173: ("*Shadow Dance", "Attack power increased by 10%. Granted by a Subtlety Rogue in your party.", 95),
+    910174: ("*Well Fed", "Your cooking keeps you going. Restores 1% of your health and mana per second for each cooking tier you have unlocked, at 75, 150, 225, 300, 375 and 450 skill.", 231),
+    910178: ("*Curator 2", "Items in your bags and bank count for 50% of their value.", 444),
+    910179: ("*Curator 3", "Items in your bags and bank count for 75% of their value.", 444),
+    910180: ("*Curator 4", "Items in your bags and bank count for 100% of their value.", 444),
+}
+
+# Copy SpellVisualID[2] from vanilla spells onto hidden sparkle/pulse dummies.
+# 53563 Beacon of Light, 53652 Beacon heal, 7731 Fishing rank 2.
+VISUAL_COPY = {
+    910139: 53563,
+    910140: 53652,
+    910141: 7731,
+    910142: 53563,
+}
+
+# Usable abilities only. World-tab ticks stay in Spell.dbc for names but are not
+# added to SkillLineAbility, so they do not appear as spellbook skills.
+#
+# Autoloot (910008), Solo Queue (910092) and Auto-Mount (910105) were removed
+# on 2026-08-23. They are STATE, not actions: casting one only flipped an
+# account boolean that the Account Perks window already toggles, through
+# ALSET / SOLOSET / AMSET, all of which have server handlers. A spellbook
+# button that duplicates a checkbox is a second source of truth for the same
+# switch, and they were the three worst entries on the missing-button list
+# (733 and 723 characters had no Auto-Mount or Solo Queue button) precisely
+# because nobody needed to notice they were gone.
+CASTABLE_SPELLS = {
+    910001, 910002, 910003, 910004, 910005, 910006, 910007, 910009,
+    910088, 910090, 910091,
+}
+
+# Hidden HoT used by First Aid Instant. Not added to SkillLineAbility / spellbook.
+HOT_SPELLS = {
+    910052: ("First Aid", "Heals the target over time.", 104),
+}
+
+# Timed buffs shown on the aura bar.
+# Fields: duration, stacks, then (effect, aura, die_sides, base_points, target_a) per effect.
+# 6 = APPLY_AURA. Do not mark PASSIVE (0x40) or the client hides the icon.
+# 129/130 = run/mount speed.
+#
+# DurationIndex values, read out of var/mmap-output/dbc/SpellDuration.dbc on
+# 2026-08-22 rather than assumed -- the previous comment here claimed 21 = 30
+# seconds and 32 = 180 seconds, and both were wrong:
+#   3  = 60000ms     6  = 600000ms (10 min)
+#   21 = -1 (permanent, module-managed)
+#   32 = 6000ms  <-- Kill Combo was pointed at this, so the client believed
+#                    the buff lasted six seconds.
+VISIBLE_AURAS = {
+    910087: (21, 1, ((6, 129, 1, 39, 1), (6, 130, 1, 39, 1))),
+    910098: (0, 0, ((6, 58, 1, 499, 1),)),
+    # +10% attack power, permanent while a Subtlety Rogue is in the party.
+    910173: (21, 0, ((6, 166, 0, 10, 1),)),
+    # MOD_REGEN / MOD_POWER_REGEN, base points set per cast by the server.
+    910174: (21, 0, ((6, 84, 0, 0, 1), (6, 85, 0, 0, 1))),
+}
+BANDAGE_TEMPLATE_ID = 746
+CHANNELED_ATTR = 0x4 | 0x40
+# Rank 1-9 Blizzard. Instant lingering AoE like Death and Decay.
+BLIZZARD_RANKS = {10, 6141, 8427, 10185, 10186, 10187, 27085, 42939, 42940}
+BLADESTORM_ID = 46924
+# Haunt ranks (spell_ranks chain 48181). Report #125: the server makes Haunt
+# instant for Affliction perk holders (core-patch 0032 zeroes m_casttime in
+# Spell::prepare), but the CLIENT keeps its own DBC copy where Haunt is a
+# 1.5s spell with the movement interrupt bit, and the client's own
+# Spell::CanCast refuses to even send CMSG_CAST_SPELL while moving. Mirror the
+# shipped mount-spell treatment: CastingTimeIndex 1 (instant) and InterruptFlags
+# minus the movement bit, so the client sends the cast and the server (which
+# already instant-casts it for perk holders) accepts it mid-move.
+RESEARCH_NO_COOLDOWN_IDS = {60893, 61177, 61288}
+HAUNT_IDS = {48181, 59161, 59163, 59164}
+# SPELL_ATTR5_ALLOW_ACTION_DURING_CHANNEL
+ATTR5_ACTION_DURING_CHANNEL = 0x1
+
+# Smelting: instant profession opener, no category, no recovery.
+TEMPLATE_SPELL_ID = 2656
+GENERIC_SKILL_LINE = 183
+SLA_TEMPLATE_SPELL = 2656
+# Ability + usable while mounted. Do not copy racial category 1182.
+ATTR_ABILITY_MOUNTED = 0x01000010
+ATTR_NOT_IN_COMBAT = 0x10000000
+INTERRUPT_ON_HIT = 0x08 | 0x10
+
+# make_custom() forces every custom spell's *effect* target to self
+# (ImplicitTargetA_1 = 1), but never touches field 16 (Targets, the spell's
+# own cast-time targeting *requirement*) -- that's inherited as-is from
+# TEMPLATE_SPELL_ID, whatever it happens to require. If the template
+# requires an enemy/unit target, every custom spell that isn't a toggle
+# cast via a UI click (which never needs to pass a real target) inherits
+# that requirement too, and casting from the action bar with nothing
+# selected fails client-side with "Invalid target". No entries currently
+# need this (Shadow Dance, 910102, isn't castable at all -- passive perk
+# flag only, not in CASTABLE_SPELLS).
+TARGETS_OVERRIDE = {}
+# All custom spells currently get RecoveryTime/CategoryRecoveryTime forced
+# to 0 (see make_custom), i.e. no real cooldown beyond the client's default
+# GCD. Per-spell overrides (milliseconds) for anything that actually needs
+# a real recast timer.
+RECOVERY_OVERRIDE_MS = {}
+# Pick Lock + Opening / Treasure / kneeling / tinkering / vehicle.
+CHEST_OPEN_LOCKTYPES = {1, 5, 6, 10, 12, 13, 14, 17, 21}
+# SPELL_AURA_MOUNTED = 78. Instant cast and usable while moving.
+SPELL_AURA_MOUNTED = 78
+INTERRUPT_FLAG_MOVEMENT = 0x08
+
+
+def _find_stormlib() -> str:
+    """Locate StormLib. BONESAW_STORMLIB always wins, so a developer can point
+    at a self-built copy without touching this file."""
+    override = os.environ.get("BONESAW_STORMLIB")
+    if override:
+        if not Path(override).exists():
+            raise SystemExit(f"BONESAW_STORMLIB does not exist: {override}")
+        return override
+
+    if sys.platform == "win32":
+        if not STORMLIB_DLL.exists():
+            raise SystemExit(f"Missing StormLib at {STORMLIB_DLL}")
+        return str(STORMLIB_DLL)
+
+    found = ctypes.util.find_library("storm")
+    if found:
+        return found
+    for candidate in ("libstorm.so.9", "libstorm.so", "libStorm.so"):
+        try:
+            ctypes.CDLL(candidate)
+            return candidate
+        except OSError:
+            continue
+    raise SystemExit(
+        "StormLib not found. Install it (Arch: `yay -S stormlib`, "
+        "Debian/Ubuntu: `libstorm-dev`, Fedora: `StormLib-devel`) or set "
+        "BONESAW_STORMLIB to a libstorm.so."
+    )
+
+
+class Storm:
+    """The three StormLib calls we need, with the one real cross-platform
+    difference handled in one place: StormLib's TCHAR paths are wchar_t on
+    Windows and plain char (UTF-8) on everything else. Archived names are
+    `const char *` on both, so those stay bytes throughout."""
+
+    def __init__(self) -> None:
+        self.path = _find_stormlib()
+        self.windows = sys.platform == "win32"
+        if self.windows:
+            self.lib = ctypes.WinDLL(self.path)
+            tchar_p = ctypes.c_wchar_p
+            ok_t = ctypes.c_int32
+        else:
+            self.lib = ctypes.CDLL(self.path, use_errno=True)
+            tchar_p = ctypes.c_char_p
+            ok_t = ctypes.c_bool
+
+        self.lib.SFileCreateArchive.argtypes = [
+            tchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.lib.SFileCreateArchive.restype = ok_t
+        self.lib.SFileAddFileEx.argtypes = [
+            ctypes.c_void_p,
+            tchar_p,
+            ctypes.c_char_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        ]
+        self.lib.SFileAddFileEx.restype = ok_t
+        self.lib.SFileCloseArchive.argtypes = [ctypes.c_void_p]
+        self.lib.SFileCloseArchive.restype = ok_t
+
+        # Read side, used to pull base files back out of the client.
+        self.lib.SFileOpenArchive.argtypes = [
+            tchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.lib.SFileOpenArchive.restype = ok_t
+        self.lib.SFileHasFile.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        self.lib.SFileHasFile.restype = ok_t
+        self.lib.SFileOpenFileEx.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self.lib.SFileOpenFileEx.restype = ok_t
+        self.lib.SFileGetFileSize.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        self.lib.SFileGetFileSize.restype = ctypes.c_uint32
+        self.lib.SFileReadFile.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_void_p,
+        ]
+        self.lib.SFileReadFile.restype = ok_t
+        self.lib.SFileCloseFile.argtypes = [ctypes.c_void_p]
+        self.lib.SFileCloseFile.restype = ok_t
+
+    # MPQ_OPEN_READ_ONLY: without it SFileOpenArchive takes a write lock and
+    # fails with a sharing violation while the client has the archive open,
+    # which reads as "file not found" rather than "busy".
+    MPQ_OPEN_READ_ONLY = 0x00000100
+
+    def read_archived(self, archive: Path, name: bytes) -> bytes | None:
+        """Return one file's bytes from an MPQ, or None if it is not in there."""
+        h = ctypes.c_void_p()
+        if not self.lib.SFileOpenArchive(
+            self._path(archive), 0, self.MPQ_OPEN_READ_ONLY, ctypes.byref(h)
+        ):
+            return None
+        try:
+            if not self.lib.SFileHasFile(h, name):
+                return None
+            f = ctypes.c_void_p()
+            if not self.lib.SFileOpenFileEx(h, name, 0, ctypes.byref(f)):
+                return None
+            try:
+                size = self.lib.SFileGetFileSize(f, None)
+                buf = ctypes.create_string_buffer(size)
+                got = ctypes.c_uint32()
+                if not self.lib.SFileReadFile(f, buf, size, ctypes.byref(got), None):
+                    return None
+                return buf.raw[: got.value]
+            finally:
+                self.lib.SFileCloseFile(f)
+        finally:
+            self.lib.SFileCloseArchive(h)
+
+    def _path(self, p) -> bytes | str:
+        return str(p) if self.windows else os.fsencode(p)
+
+    def last_error(self) -> int:
+        return ctypes.GetLastError() if self.windows else ctypes.get_errno()
+
+    def create_archive(self, dest, flags: int, max_files: int) -> ctypes.c_void_p:
+        h = ctypes.c_void_p()
+        if not self.lib.SFileCreateArchive(
+            self._path(dest), flags, max_files, ctypes.byref(h)
+        ):
+            raise SystemExit(
+                f"SFileCreateArchive failed for {dest} err={self.last_error()}"
+            )
+        return h
+
+    def add_file(
+        self, h, local, archived: bytes, flags: int, comp: int, comp_next: int
+    ) -> bool:
+        return bool(
+            self.lib.SFileAddFileEx(h, self._path(local), archived, flags, comp, comp_next)
+        )
+
+    def close_archive(self, h) -> None:
+        self.lib.SFileCloseArchive(h)
+
+
+def load_storm() -> Storm:
+    storm = Storm()
+    print(f"StormLib: {storm.path}")
+    return storm
+
+
+def ensure_base_dbc():
+    SPELL_DBC_BASE.parent.mkdir(parents=True, exist_ok=True)
+    if not SPELL_DBC_BASE.exists():
+        if not SPELL_DBC.exists():
+            raise SystemExit(f"Missing Spell.dbc at {SPELL_DBC}")
+        shutil.copy2(SPELL_DBC, SPELL_DBC_BASE)
+        print(f"Cached base Spell.dbc -> {SPELL_DBC_BASE}")
+    if not SLA_DBC_BASE.exists():
+        if not SLA_DBC.exists():
+            raise SystemExit(f"Missing SkillLineAbility.dbc at {SLA_DBC}")
+        shutil.copy2(SLA_DBC, SLA_DBC_BASE)
+        print(f"Cached base SkillLineAbility.dbc -> {SLA_DBC_BASE}")
+
+
+def patch_spell_dbc():
+    ensure_base_dbc()
+    data = bytearray(SPELL_DBC_BASE.read_bytes())
+    magic, records, fields, recsize, strsize = struct.unpack_from("<4sIIII", data, 0)
+    if magic != b"WDBC" or fields != 234 or recsize != 936:
+        raise SystemExit(f"Unexpected Spell.dbc header: {magic} {fields} {recsize}")
+
+    str_off = 20 + records * recsize
+    string_block = bytearray(data[str_off:])
+
+    def get_str(off: int) -> str:
+        if off == 0:
+            return ""
+        end = string_block.index(b"\x00", off)
+        return string_block[off:end].decode("utf-8", errors="replace")
+
+    def add_str(text: str) -> int:
+        off = len(string_block)
+        string_block.extend(text.encode("utf-8") + b"\x00")
+        return off
+
+    def read_rec(i: int) -> list[int]:
+        off = 20 + i * recsize
+        return list(struct.unpack_from("<" + "I" * fields, data, off))
+
+    idx_by_id = {read_rec(i)[0]: i for i in range(records)}
+    if TEMPLATE_SPELL_ID not in idx_by_id:
+        raise SystemExit(f"Template spell {TEMPLATE_SPELL_ID} missing from Spell.dbc")
+
+    template = read_rec(idx_by_id[TEMPLATE_SPELL_ID])
+    print(f"Template {TEMPLATE_SPELL_ID}: {get_str(template[136])!r}")
+
+    keep_indices = []
+    for i in range(records):
+        rec = read_rec(i)
+        if rec[0] in CUSTOM_SPELLS or rec[0] in HOT_SPELLS:
+            continue
+        keep_indices.append(i)
+
+    new_records_data = bytearray()
+    combat_open = 0
+    blizzard_n = 0
+    bladestorm_n = 0
+    research_n = 0
+    mount_n = 0
+    haunt_n = 0
+    for i in keep_indices:
+        rec = read_rec(i)
+        is_mount = SPELL_AURA_MOUNTED in (rec[95], rec[96], rec[97])
+        if rec[0] in HAUNT_IDS:
+            rec[28] = 1
+            rec[31] &= ~INTERRUPT_FLAG_MOVEMENT
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            haunt_n += 1
+        elif rec[0] in BLIZZARD_RANKS:
+            rec[5] &= ~CHANNELED_ATTR
+            rec[28] = 1
+            rec[29] = 0
+            rec[30] = 0
+            rec[33] = 0
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            blizzard_n += 1
+        elif rec[0] in RESEARCH_NO_COOLDOWN_IDS:
+            # Reports #108-#110/#139/#140/#154: the server zeroes these via
+            # spell_cooldown_overrides, but the CLIENT's own DBC still carries
+            # the 20h/3d RecoveryTime and predicts the cooldown on every cast
+            # (relogging clears it). Zero it client-side too.
+            rec[29] = 0
+            rec[30] = 0
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            research_n += 1
+        elif rec[0] == BLADESTORM_ID:
+            rec[9] |= ATTR5_ACTION_DURING_CHANNEL
+            rec[29] = 0
+            rec[30] = 0
+            rec[33] = 0
+            rec[42] = 0
+            rec[73] = 0
+            rec[97] = 0
+            rec[204] = 0
+            rec[205] = 0
+            rec[206] = 0
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            bladestorm_n += 1
+        elif rec[71] == 33 and rec[110] in CHEST_OPEN_LOCKTYPES:
+            rec[4] &= ~ATTR_NOT_IN_COMBAT
+            rec[31] &= ~INTERRUPT_ON_HIT
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            combat_open += 1
+        elif is_mount:
+            rec[28] = 1
+            rec[31] &= ~INTERRUPT_FLAG_MOVEMENT
+            new_records_data.extend(struct.pack("<" + "I" * fields, *rec))
+            mount_n += 1
+        else:
+            off = 20 + i * recsize
+            new_records_data.extend(data[off : off + recsize])
+    print(f"Chest-open spells usable in combat: {combat_open}")
+    print(f"Blizzard ranks made instant: {blizzard_n}")
+    print(f"Bladestorm action-during-channel, no rage: {bladestorm_n}")
+    print(f"Research spells cooldown-free client-side: {research_n}")
+    print(f"Mount spells instant while moving: {mount_n}")
+    print(f"Haunt ranks instant while moving: {haunt_n}")
+
+    def make_custom(spell_id: int, name: str, desc: str, icon: int) -> bytes:
+        rec = list(template)
+        rec[0] = spell_id
+        rec[1] = 0
+        rec[4] = ATTR_ABILITY_MOUNTED
+        rec[5] = 0
+        for attr_ex in range(6, 12):
+            rec[attr_ex] = 0
+        rec[28] = 1
+        rec[29] = 0
+        rec[30] = 0
+        rec[35] = 101
+        rec[40] = 0
+        rec[46] = 1
+        rec[68] = 0xFFFFFFFF
+        rec[69] = 0xFFFFFFFF
+        rec[71] = 3
+        rec[72] = 0
+        rec[73] = 0
+        rec[75] = 0
+        rec[86] = 1
+        rec[87] = 0
+        rec[88] = 0
+        for f in (95, 96, 97, 98, 99, 100):
+            rec[f] = 0
+        aura = VISIBLE_AURAS.get(spell_id)
+        if aura:
+            duration, stacks, effects = aura
+            rec[31] = 0
+            rec[32] = 0
+            rec[33] = 0
+            rec[40] = duration
+            rec[49] = stacks
+            rec[71] = 0
+            rec[72] = 0
+            rec[73] = 0
+            rec[74] = 0
+            rec[75] = 0
+            rec[76] = 0
+            rec[80] = 0
+            rec[81] = 0
+            rec[82] = 0
+            rec[86] = 0
+            rec[87] = 0
+            rec[88] = 0
+            rec[95] = 0
+            rec[96] = 0
+            rec[97] = 0
+            for i, (effect, aura_name, die_sides, base_points, target_a) in enumerate(effects):
+                rec[71 + i] = effect
+                rec[74 + i] = die_sides
+                rec[80 + i] = base_points
+                rec[86 + i] = target_a
+                rec[95 + i] = aura_name
+        rec[111] = 0
+        for f in range(122, 131):
+            rec[f] = 0
+        rec[133] = icon
+        rec[134] = 0
+        rec[135] = 0
+        visual_src = VISUAL_COPY.get(spell_id)
+        if visual_src and visual_src in idx_by_id:
+            src = read_rec(idx_by_id[visual_src])
+            rec[131] = src[131]
+            rec[132] = src[132]
+        rec[205] = 0
+        rec[206] = 0
+        rec[208] = 0
+        rec[209] = 0
+        rec[210] = 0
+        rec[211] = 0
+        name_off = add_str(name)
+        desc_off = add_str(desc)
+        for loc in range(136, 152):
+            rec[loc] = name_off
+        rec[152] = 16712190
+        for loc in range(153, 169):
+            rec[loc] = 0
+        rec[169] = 0
+        for loc in range(170, 186):
+            rec[loc] = desc_off
+        rec[186] = 16712190
+        for loc in range(187, 203):
+            rec[loc] = 0
+        rec[203] = 0
+        if spell_id in TARGETS_OVERRIDE:
+            rec[16] = TARGETS_OVERRIDE[spell_id]
+        if spell_id in RECOVERY_OVERRIDE_MS:
+            rec[29] = RECOVERY_OVERRIDE_MS[spell_id]
+        return struct.pack("<" + "I" * fields, *rec)
+
+    for spell_id, (name, desc, icon) in CUSTOM_SPELLS.items():
+        new_records_data.extend(make_custom(spell_id, name, desc, icon))
+        print(f"Added spell {spell_id}: {name!r} icon={icon}")
+
+    if BANDAGE_TEMPLATE_ID not in idx_by_id:
+        raise SystemExit(f"Bandage template {BANDAGE_TEMPLATE_ID} missing from Spell.dbc")
+
+    def make_hot(spell_id: int, name: str, desc: str, icon: int) -> bytes:
+        rec = read_rec(idx_by_id[BANDAGE_TEMPLATE_ID])
+        rec[0] = spell_id
+        rec[3] = 0
+        rec[5] &= ~CHANNELED_ATTR
+        rec[31] = 0
+        rec[32] = 0
+        rec[33] = 0
+        rec[133] = icon
+        name_off = add_str(name)
+        desc_off = add_str(desc)
+        for loc in range(136, 152):
+            rec[loc] = name_off
+        rec[152] = 16712190
+        for loc in range(170, 186):
+            rec[loc] = desc_off
+        rec[186] = 16712190
+        return struct.pack("<" + "I" * fields, *rec)
+
+    for spell_id, (name, desc, icon) in HOT_SPELLS.items():
+        new_records_data.extend(make_hot(spell_id, name, desc, icon))
+        print(f"Added HoT spell {spell_id}: {name!r} icon={icon}")
+
+    new_count = len(keep_indices) + len(CUSTOM_SPELLS) + len(HOT_SPELLS)
+    header = struct.pack("<4sIIII", b"WDBC", new_count, fields, recsize, len(string_block))
+    DBC_DIR.mkdir(parents=True, exist_ok=True)
+    SPELL_DBC.write_bytes(header + bytes(new_records_data) + bytes(string_block))
+    print(f"Wrote {SPELL_DBC} ({new_count} records)")
+
+
+def patch_areatable():
+    if not AREATABLE_DBC_BASE.exists():
+        raise SystemExit(
+            f"Missing {AREATABLE_DBC_BASE} -- run python tools/client-patch/extract_areatable.py first"
+        )
+    data = bytearray(AREATABLE_DBC_BASE.read_bytes())
+    magic, records, fields, recsize, strsize = struct.unpack_from("<4sIIII", data, 0)
+    if magic != b"WDBC" or fields != 36 or recsize != 144:
+        raise SystemExit(f"Unexpected AreaTable.dbc header: {magic} {fields} {recsize}")
+
+    MAP_COL, PARENT_COL, FLAGS_COL = 1, 2, 4
+    dalaran = {DALARAN_CITY}
+    for _ in range(4):
+        for i in range(records):
+            rec = struct.unpack_from("<" + "I" * fields, data, 20 + i * recsize)
+            if rec[MAP_COL] == DALARAN_MAP and rec[PARENT_COL] in dalaran:
+                dalaran.add(rec[0])
+    cleared = 0
+    for i in range(records):
+        rec = struct.unpack_from("<" + "I" * fields, data, 20 + i * recsize)
+        if rec[MAP_COL] == DALARAN_MAP and rec[0] in dalaran and rec[FLAGS_COL] & AREA_FLAG_NO_FLY_ZONE:
+            off = 20 + i * recsize + FLAGS_COL * 4
+            data[off : off + 4] = struct.pack("<I", rec[FLAGS_COL] & ~AREA_FLAG_NO_FLY_ZONE)
+            cleared += 1
+    for i in range(records):
+        rec = struct.unpack_from("<" + "I" * fields, data, 20 + i * recsize)
+        if rec[MAP_COL] == DALARAN_MAP and rec[0] in dalaran:
+            assert not rec[FLAGS_COL] & AREA_FLAG_NO_FLY_ZONE, f"row {rec[0]} still no-fly"
+    if cleared != 15:
+        raise SystemExit(
+            f"patch_areatable cleared {cleared} rows, expected 15 -- base drifted, re-extract"
+        )
+    DBC_DIR.mkdir(parents=True, exist_ok=True)
+    AREATABLE_DBC.write_bytes(data)
+    print(f"Dalaran flight: cleared AREA_FLAG_NO_FLY_ZONE on {cleared} of {len(dalaran)} tree areas")
+
+
+def verify_dbc():
+    data = SPELL_DBC.read_bytes()
+    magic, records, fields, recsize, strsize = struct.unpack_from("<4sIIII", data, 0)
+    str_off = 20 + records * recsize
+    sb = data[str_off:]
+
+    def get_str(off: int) -> str:
+        if not off:
+            return ""
+        return sb[off : sb.index(b"\x00", off)].decode("utf-8", "replace")
+
+    found = {}
+    for i in range(records):
+        rec = list(struct.unpack_from("<" + "I" * fields, data, 20 + i * recsize))
+        if rec[0] in CUSTOM_SPELLS:
+            found[rec[0]] = rec
+    for spell_id, expected in CUSTOM_SPELLS.items():
+        if spell_id not in found:
+            raise SystemExit(f"Verify failed: missing {spell_id}")
+        rec = found[spell_id]
+        name = get_str(rec[136])
+        print(
+            f"Verify {spell_id}: name={name!r} icon={rec[133]} effect={rec[71]} "
+            f"attr={rec[4]} dur={rec[40]} stacks={rec[49]} cat={rec[1]} cd={rec[29]}/{rec[30]}"
+        )
+        aura = VISIBLE_AURAS.get(spell_id)
+        want_effect = 6 if aura else 3
+        if name != expected[0] or rec[133] != expected[2] or rec[71] != want_effect:
+            raise SystemExit(f"Verify mismatch for {spell_id}")
+        if aura and (rec[40] != aura[0] or rec[49] != aura[1]):
+            raise SystemExit(f"Spell {spell_id} aura duration/stacks mismatch")
+        if rec[4] & 0x40:
+            raise SystemExit(f"Spell {spell_id} still marked PASSIVE")
+        want_recovery = RECOVERY_OVERRIDE_MS.get(spell_id, 0)
+        if rec[1] or rec[29] != want_recovery or rec[30]:
+            raise SystemExit(f"Spell {spell_id} still has a cooldown/category")
+
+
+def patch_skill_line_ability():
+    data = bytearray(SLA_DBC_BASE.read_bytes())
+    magic, records, fields, recsize, strsize = struct.unpack_from("<4sIIII", data, 0)
+    if magic != b"WDBC" or fields != 14 or recsize != 56:
+        raise SystemExit(f"Unexpected SkillLineAbility.dbc header: {magic} {fields} {recsize}")
+
+    def read_rec(i: int) -> list[int]:
+        return list(struct.unpack_from("<" + "I" * fields, data, 20 + i * recsize))
+
+    template = None
+    max_id = 0
+    keep = []
+    for i in range(records):
+        rec = read_rec(i)
+        max_id = max(max_id, rec[0])
+        if rec[2] in CUSTOM_SPELLS:
+            continue
+        keep.append(rec)
+        if rec[2] == SLA_TEMPLATE_SPELL and template is None:
+            template = list(rec)
+
+    if template is None:
+        raise SystemExit(f"SLA template spell {SLA_TEMPLATE_SPELL} not found")
+
+    new_blob = bytearray()
+    for rec in keep:
+        new_blob.extend(struct.pack("<" + "I" * fields, *rec))
+
+    next_id = max(max_id + 1, 910001)
+    for spell_id in CASTABLE_SPELLS:
+        rec = list(template)
+        rec[0] = next_id
+        next_id += 1
+        rec[1] = GENERIC_SKILL_LINE
+        rec[2] = spell_id
+        rec[3] = 0
+        rec[4] = 0
+        rec[7] = 0
+        rec[9] = 2
+        new_blob.extend(struct.pack("<" + "I" * fields, *rec))
+        print(f"Added SkillLineAbility {rec[0]} -> spell {spell_id}")
+
+    new_count = len(keep) + len(CASTABLE_SPELLS)
+    string_block = data[20 + records * recsize :]
+    header = struct.pack("<4sIIII", b"WDBC", new_count, fields, recsize, len(string_block))
+    DBC_DIR.mkdir(parents=True, exist_ok=True)
+    SLA_DBC.write_bytes(header + bytes(new_blob) + bytes(string_block))
+    print(f"Wrote {SLA_DBC} ({new_count} records)")
+
+
+LUA_UPVALUE_WARN_LIMIT = 55  # Lua 5.1's real hard ceiling is 60; warn with margin to spare.
+LUA_LOCAL_WARN_LIMIT = 180  # Lua 5.1's real hard ceiling is 200 *main-chunk* locals; same margin idea.
+
+
+def check_lua_limits():
+    """
+    Lua 5.1 (what the WotLK 3.3.5 client actually runs) hard-caps any single
+    function at 60 upvalues (outer-scope variables it references, including
+    ones only used inside its own nested closures), AND separately caps the
+    main chunk -- the whole file, treated as one implicit function -- at 200
+    local variables, where every top-level `local`/`local function` costs
+    one slot for the rest of the file. Both are *compile-time* failures --
+    the whole file fails to load, silently, with no in-game symptom beyond
+    "nothing in the addon works" (see Bonesaw.md, "Lua 5.1's 60-upvalue-
+    per-function limit killed the entire addon silently" and "Lua 5.1's
+    200-local main-chunk limit", both 2026-08-20 -- the second one was hit
+    *by the fix for the first one*: extracting more top-level functions to
+    fix the upvalue ceiling pushed the main-chunk local count over its own,
+    separate ceiling the same night).
+
+    Static analysis, not a real Lua 5.1 compile (none was available in this
+    environment -- `lupa` wraps a later Lua version with a higher ceiling,
+    so it can't be used to validate this specific limit). Walks every
+    function in the file (top-level and nested), tracking which names are
+    local to it or an enclosing function vs. which resolve to a file-level
+    `local` declared before it -- the latter are upvalues. Requires the
+    `luaparser` PyPI package; skips with a warning (does not fail the
+    build) if it isn't installed, since it's a dev-time safety net, not a
+    hard runtime dependency of this pipeline.
+    """
+    try:
+        from luaparser import ast as lua_ast
+        from luaparser import astnodes as A
+    except ImportError:
+        print("WARNING: luaparser not installed (pip install luaparser) -- "
+              "skipped the Lua 5.1 upvalue and main-chunk-local checks. This "
+              "is how the addon silently failed to load for an entire "
+              "session on 2026-08-20 (twice) -- install it so this build "
+              "actually catches that class of bug instead of shipping it.",
+              file=sys.stderr)
+        return
+
+    src = UI_LUA_SRC.read_text(encoding="utf-8")
+    tree = lua_ast.parse(src)
+    body = tree.body.body if hasattr(tree.body, "body") else tree.body
+
+    def stmt_local_names(stmt):
+        names = []
+        if isinstance(stmt, A.LocalAssign):
+            names.extend(t.id for t in stmt.targets if isinstance(t, A.Name))
+        elif isinstance(stmt, A.LocalFunction) and isinstance(stmt.name, A.Name):
+            names.append(stmt.name.id)
+        return names
+
+    def upvalue_count(func_node, outer_locals):
+        used = set()
+
+        def walk(node, local_stack):
+            if node is None:
+                return
+            if isinstance(node, list):
+                for n in node:
+                    walk(n, local_stack)
+                return
+            if isinstance(node, (A.Function, A.AnonymousFunction, A.LocalFunction)):
+                new_stack = local_stack + [set()]
+                for a in getattr(node, "args", None) or []:
+                    if isinstance(a, A.Name):
+                        new_stack[-1].add(a.id)
+                walk(getattr(node, "body", None), new_stack)
+                return
+            if isinstance(node, A.LocalAssign):
+                for e in node.values or []:
+                    walk(e, local_stack)
+                for t in node.targets:
+                    if isinstance(t, A.Name):
+                        local_stack[-1].add(t.id)
+                return
+            if isinstance(node, A.Fornum):
+                new_stack = local_stack + [set()]
+                if isinstance(node.target, A.Name):
+                    new_stack[-1].add(node.target.id)
+                for e in (node.start, node.stop, node.step):
+                    if e is not None:
+                        walk(e, local_stack)
+                walk(node.body, new_stack)
+                return
+            if isinstance(node, A.Forin):
+                new_stack = local_stack + [set()]
+                for t in node.targets:
+                    if isinstance(t, A.Name):
+                        new_stack[-1].add(t.id)
+                for e in node.iter:
+                    walk(e, local_stack)
+                walk(node.body, new_stack)
+                return
+            if isinstance(node, A.Name):
+                name = node.id
+                if any(name in scope for scope in local_stack):
+                    return
+                if name in outer_locals:
+                    used.add(name)
+                return
+            if not hasattr(node, "__dict__"):
+                return
+            for field in vars(node):
+                if field.startswith("_"):
+                    continue
+                val = getattr(node, field)
+                if isinstance(val, A.Node):
+                    walk(val, local_stack)
+                elif isinstance(val, list):
+                    for item in val:
+                        if isinstance(item, A.Node):
+                            walk(item, local_stack)
+
+        params = set()
+        for a in getattr(func_node, "args", None) or []:
+            if isinstance(a, A.Name):
+                params.add(a.id)
+        walk(getattr(func_node, "body", None), [params])
+        return used
+
+    # Walk the whole file collecting (name, line, upvalue_count) for every
+    # function -- top-level LocalFunction/Function statements, and anything
+    # nested inside them -- checked against the set of file-level locals
+    # declared before that function's own definition point.
+    toplevel_locals = set()
+    problems = []
+
+    def check_named(stmt, name):
+        count = upvalue_count(stmt, toplevel_locals)
+        if len(count) > LUA_UPVALUE_WARN_LIMIT:
+            line = getattr(stmt, "line", "?")
+            problems.append((name, line, len(count), sorted(count)))
+
+    for stmt in body:
+        if isinstance(stmt, A.LocalFunction) and isinstance(stmt.name, A.Name):
+            check_named(stmt, stmt.name.id)
+        toplevel_locals.update(stmt_local_names(stmt))
+
+    if problems:
+        lines = [
+            f"Lua 5.1 upvalue check failed -- {len(problems)} function(s) at or near "
+            f"the real 60 ceiling (warn threshold {LUA_UPVALUE_WARN_LIMIT}):"
+        ]
+        for name, line, count, names in problems:
+            lines.append(f"  {name} (line {line}): {count} upvalues")
+            lines.append(f"    {', '.join(names)}")
+        lines.append(
+            "Extract part of the function's body into its own local function "
+            "(gets a fresh 60-upvalue budget) rather than adding more outer-"
+            "scope references directly -- see BuildClassTabs/BuildLootPanel "
+            "in LivingGear.lua for the pattern, and the matching Bonesaw.md "
+            "entry for why this matters."
+        )
+        raise SystemExit("\n".join(lines))
+    print("Lua upvalue check: OK")
+
+    local_count = len(toplevel_locals)
+    if local_count > LUA_LOCAL_WARN_LIMIT:
+        raise SystemExit(
+            f"Lua 5.1 main-chunk local check failed -- {local_count} top-level "
+            f"local declarations (warn threshold {LUA_LOCAL_WARN_LIMIT}, real "
+            f"ceiling 200). Don't add another top-level `local function Foo()` "
+            f"-- attach it as `function LG2.Foo()` instead (see LG2 at the top "
+            f"of LivingGear.lua and the matching Bonesaw.md entry). That keeps "
+            f"its own independent 60-upvalue budget without costing a main-"
+            f"chunk local slot. Reserve top-level `local function` for things "
+            f"actually called from many places, where a name is clearer than "
+            f"a table lookup."
+        )
+    print(f"Lua main-chunk local check: OK ({local_count}/200)")
+
+
+def patch_framexml():
+    if not FRAME_TOC_BASE.exists():
+        raise SystemExit(f"Missing {FRAME_TOC_BASE}")
+    if not UI_LUA_SRC.exists():
+        raise SystemExit(f"Missing UI {UI_LUA_SRC}")
+    raw = FRAME_TOC_BASE.read_bytes()
+    newline = b"\r\n" if b"\r\n" in raw else b"\n"
+    text = raw.decode("utf-8")
+    modules = ["LivingGear.lua", "BonesawAuras.lua"]
+    for module in modules:
+        if module not in text:
+            needle = "## add new modules above here"
+            if needle not in text:
+                raise SystemExit("FrameXML.toc is missing the module insertion marker")
+            text = text.replace(needle, f"{module}\n" + needle)
+    FRAME_TOC.parent.mkdir(parents=True, exist_ok=True)
+    body = text.replace("\r\n", "\n").replace("\n", "\r\n" if newline == b"\r\n" else "\n")
+    FRAME_TOC.write_bytes(body.encode("utf-8"))
+    lua = UI_LUA_SRC.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    UI_LUA.write_bytes(lua)
+    aura = AURA_LUA_SRC.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    AURA_LUA.write_bytes(aura)
+    print(f"Wrote {FRAME_TOC}, {UI_LUA} and {AURA_LUA}")
+
+
+# --------------------------------------------------------------------------
+# GlueXML: the login and character-select screens.
+#
+# These are stock Blizzard files we rewrite, so each one has to start from the
+# version the client actually loads. WoW resolves a file from the highest
+# numbered patch archive that contains it, NOT from patch-<locale>.MPQ -- e.g.
+# GlueParent.lua is in patch-enUS.MPQ (11620 bytes) and again in
+# patch-enUS-3.MPQ (16897 bytes), and the -3 copy is the live one. Basing a
+# patch on the wrong copy silently reverts everything Blizzard changed in
+# between, because our archive outranks all of them.
+# --------------------------------------------------------------------------
+GLUE_DIR = STAGING / "Interface" / "GlueXML"
+# Lowest priority first. Bonesaw's own outputs are deliberately absent: this
+# list reads stock bases, and patch-<locale>-4 is ours.
+GLUE_SOURCE_ARCHIVES = (
+    "base-{loc}.MPQ",
+    "locale-{loc}.MPQ",
+    "patch-{loc}.MPQ",
+    "patch-{loc}-2.MPQ",
+    "patch-{loc}-3.MPQ",
+)
+GLUE_FILES = ("GlueButtons.xml", "GlueParent.lua", "CharacterSelect.lua")
+
+# Glue-Panel-Button-Up.blp is 256x64; the templates draw TexCoords
+# (0..0.578125, 0..0.75) = 148x48px. Column analysis of that art puts the
+# rounded end caps at 0..26px and 122..148px with a uniform middle between.
+GLUE_CAP_L = 26 / 256
+GLUE_CAP_R = 122 / 256
+GLUE_ART_R = 148 / 256
+GLUE_ART_B = 0.75
+
+# Widths these buttons declare in CharacterSelect.xml but do not get.
+GLUE_BUTTON_WIDTHS = {
+    "CharSelectCreateCharacterButton": 200,
+    "CharSelectChangeRealmButton": 135,
+    "CharSelectEnterWorldButton": 200,
+    "CharSelectDeleteButton": 150,
+    "CharSelectBackButton": 150,
+    "CharSelectAddonsButton": 150,
+}
+
+
+def glue_base(name: str) -> Path:
+    return ROOT / "cache" / f"{name}.base"
+
+
+def refresh_glue_bases(data_dir: Path) -> None:
+    """Re-extract the stock GlueXML files from a client into cache/.
+
+        python build_patch.py --refresh-glue-bases "<client>/Data"
+    """
+    storm = load_storm()
+    loc = "enUS"
+    for name in GLUE_FILES:
+        archived = ("Interface" + BS + "GlueXML" + BS + name).encode()
+        found = None
+        for pattern in GLUE_SOURCE_ARCHIVES:
+            arc = data_dir / loc / pattern.format(loc=loc)
+            if not arc.exists():
+                continue
+            data = storm.read_archived(arc, archived)
+            if data:
+                found = (arc.name, data)  # keep going: later archives win
+        if not found:
+            raise SystemExit(f"{name} not found under {data_dir / loc}")
+        arc_name, data = found
+        glue_base(name).parent.mkdir(parents=True, exist_ok=True)
+        glue_base(name).write_bytes(data)
+        print(f"glue base {name:22} <- {arc_name} ({len(data)} bytes)")
+
+
+def _glue_caps(art: str, cap: int) -> str:
+    art_path = "Interface" + BS + "Glues" + BS + "Common" + BS + art
+    return (
+        '\t\t<Layers>\n\t\t\t<Layer level="BACKGROUND">\n'
+        f'\t\t\t\t<Texture name="$parentLeftCap" file="{art_path}">\n'
+        '\t\t\t\t\t<Anchors>\n\t\t\t\t\t\t<Anchor point="TOPLEFT"/>\n'
+        '\t\t\t\t\t\t<Anchor point="BOTTOMRIGHT" relativePoint="BOTTOMLEFT">'
+        f'<Offset><AbsDimension x="{cap}" y="0"/></Offset></Anchor>\n'
+        '\t\t\t\t\t</Anchors>\n'
+        f'\t\t\t\t\t<TexCoords left="0" right="{GLUE_CAP_L}" top="0" bottom="{GLUE_ART_B}"/>\n'
+        '\t\t\t\t</Texture>\n'
+        f'\t\t\t\t<Texture name="$parentRightCap" file="{art_path}">\n'
+        '\t\t\t\t\t<Anchors>\n'
+        '\t\t\t\t\t\t<Anchor point="TOPLEFT" relativePoint="TOPRIGHT">'
+        f'<Offset><AbsDimension x="-{cap}" y="0"/></Offset></Anchor>\n'
+        '\t\t\t\t\t\t<Anchor point="BOTTOMRIGHT"/>\n\t\t\t\t\t</Anchors>\n'
+        f'\t\t\t\t\t<TexCoords left="{GLUE_CAP_R}" right="{GLUE_ART_R}" top="0" bottom="{GLUE_ART_B}"/>\n'
+        '\t\t\t\t</Texture>\n\t\t\t</Layer>\n\t\t</Layers>\n'
+    )
+
+
+def _glue_middle(tag: str, tex: str, cap: int) -> str:
+    return (
+        f'\t\t<{tag} inherits="{tex}">\n\t\t\t<Anchors>\n'
+        f'\t\t\t\t<Anchor point="TOPLEFT"><Offset><AbsDimension x="{cap}" y="0"/></Offset></Anchor>\n'
+        f'\t\t\t\t<Anchor point="BOTTOMRIGHT"><Offset><AbsDimension x="-{cap}" y="0"/></Offset></Anchor>\n'
+        f'\t\t\t</Anchors>\n\t\t</{tag}>\n'
+    )
+
+
+def patch_gluexml():
+    """3-slice the glue button templates and pin the character-select widths.
+
+    Stock buttons draw one texture stretched across the whole button, so the
+    rounded end caps smear wider as the button gets wider -- and these buttons
+    are very wide. Fixed-width caps plus a stretched middle fixes that with no
+    Lua involved.
+    """
+    for name in GLUE_FILES:
+        if not glue_base(name).exists():
+            raise SystemExit(
+                f"Missing {glue_base(name)}. Run:\n"
+                f"  python {Path(__file__).name} --refresh-glue-bases <client>/Data"
+            )
+    GLUE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def write(name: str, text: str) -> None:
+        (GLUE_DIR / name).write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+
+    def read(name: str) -> str:
+        return glue_base(name).read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+    # --- GlueButtons.xml: 3-slice the four button templates ---
+    xml = read("GlueButtons.xml")
+    defs = "".join(
+        f'\t<Texture name="GluePanelButton{kind}MiddleTexture{suffix}" '
+        f'file="Interface{BS}Glues{BS}Common{BS}Glue-Panel-Button-{art}" virtual="true">\n'
+        f'\t\t<TexCoords left="{GLUE_CAP_L}" right="{GLUE_CAP_R}" top="0" bottom="{GLUE_ART_B}"/>\n'
+        f'\t</Texture>\n'
+        for kind, art, suffix in (
+            ("Up", "Up", ""), ("Down", "Down", ""), ("Disabled", "Disabled", ""),
+            ("Up", "Up-Blue", "Blue"), ("Down", "Down-Blue", "Blue"),
+        )
+    )
+    anchor = '\t<Button name="GlueButtonTemplate" virtual="true">'
+    if anchor not in xml:
+        raise SystemExit("GlueButtons.xml: GlueButtonTemplate not found")
+    xml = xml.replace(anchor, defs + anchor, 1)
+
+    # Cap width is fixed in UI units, sized per template height: the art's caps
+    # are 26px of 48px-tall art, so ~24u on a 45-tall button, ~21u on a 38.
+    for tmpl, cap, art, suffix in (
+        ("GlueButtonTemplate", 24, "Glue-Panel-Button-Up", ""),
+        ("GlueButtonTemplateBlue", 24, "Glue-Panel-Button-Up-Blue", "Blue"),
+        ("GlueButtonSmallTemplate", 21, "Glue-Panel-Button-Up", ""),
+        ("GlueButtonSmallTemplateBlue", 21, "Glue-Panel-Button-Up-Blue", "Blue"),
+    ):
+        m = re.search(
+            r'(\t<Button name="' + tmpl + r'" virtual="true">)(.*?)(\t</Button>)', xml, re.S
+        )
+        if not m:
+            raise SystemExit(f"GlueButtons.xml: {tmpl} not found")
+        body = m.group(2)
+        if "\t\t</Size>\n" not in body:
+            raise SystemExit(f"GlueButtons.xml: {tmpl} has no <Size> to place caps after")
+        body = body.replace("\t\t</Size>\n", "\t\t</Size>\n" + _glue_caps(art, cap), 1)
+        # HighlightTexture is left whole on purpose: it is an additive glow
+        # where stretching does not read, so this change stays off the hover path.
+        for tag, tex in (
+            ("NormalTexture", f"GluePanelButtonUpMiddleTexture{suffix}"),
+            ("PushedTexture", f"GluePanelButtonDownMiddleTexture{suffix}"),
+            ("DisabledTexture", "GluePanelButtonDisabledMiddleTexture"),
+        ):
+            body = re.sub(
+                r'\t\t<' + tag + r' inherits="[^"]+"/>\n', _glue_middle(tag, tex, cap), body
+            )
+        xml = xml[: m.start(2)] + body + xml[m.end(2):]
+    write("GlueButtons.xml", xml)
+
+    # --- GlueParent.lua: a uniform scale knob for the whole glue UI ---
+    lua = read("GlueParent.lua")
+    clamp = '\t\tself:SetPoint("TOPLEFT", barWidth, 0); \n\t\tself:SetPoint("BOTTOMRIGHT", -barWidth, 0);'
+    if clamp not in lua:
+        raise SystemExit("GlueParent.lua: 16:9 clamp block not found")
+    lua = lua.replace(
+        "function GlueParent_OnLoad(self)",
+        "-- Bonesaw: uniform shrink for the whole glue UI. 1.0 is stock.\n"
+        "BONESAW_GLUE_SCALE = 1.0;\n\n"
+        "function GlueParent_OnLoad(self)\n"
+        "\tlocal scale = BONESAW_GLUE_SCALE or 1;\n"
+        "\tif ( scale ~= 1 ) then\n\t\tself:SetScale(scale);\n\tend",
+        1,
+    )
+    # Anchor offsets are in the frame's own scaled units, so the screen-pixel
+    # bar width has to be divided back out or the pillarbox grows with scale.
+    lua = lua.replace(
+        clamp,
+        '\t\tself:SetPoint("TOPLEFT", barWidth / (BONESAW_GLUE_SCALE or 1), 0);\n'
+        '\t\tself:SetPoint("BOTTOMRIGHT", -barWidth / (BONESAW_GLUE_SCALE or 1), 0);',
+        1,
+    )
+    write("GlueParent.lua", lua)
+
+    # --- CharacterSelect.lua: force the widths the XML already declares ---
+    cs = read("CharacterSelect.lua")
+    if "function CharacterSelect_OnShow" not in cs:
+        raise SystemExit("CharacterSelect.lua: CharacterSelect_OnShow not found")
+    widths = "".join(f'\t["{n}"] = {w},\n' for n, w in sorted(GLUE_BUTTON_WIDTHS.items()))
+    cs += (
+        "\n-- Bonesaw: these buttons declare their size in CharacterSelect.xml but\n"
+        "-- render several times wider. Nothing in GlueXML resizes them and the\n"
+        "-- cause is still unknown, so put the declared width back on every show.\n"
+        "BONESAW_GLUE_BUTTON_WIDTHS = {\n" + widths + "};\n\n"
+        "function Bonesaw_FixGlueButtonWidths()\n"
+        "\tfor name, w in pairs(BONESAW_GLUE_BUTTON_WIDTHS) do\n"
+        "\t\tlocal b = _G[name];\n"
+        "\t\tif ( b and b.SetWidth ) then\n\t\t\tb:SetWidth(w);\n\t\tend\n"
+        "\tend\nend\n\n"
+        "local Bonesaw_Orig_CharacterSelect_OnShow = CharacterSelect_OnShow;\n"
+        "function CharacterSelect_OnShow()\n"
+        "\tBonesaw_Orig_CharacterSelect_OnShow();\n"
+        "\tBonesaw_FixGlueButtonWidths();\nend\n"
+    )
+    write("CharacterSelect.lua", cs)
+    print(f"Wrote {len(GLUE_FILES)} GlueXML files to {GLUE_DIR}")
+
+
+def _create_mpq(storm, dest: Path, files: list[tuple[Path, bytes]]):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+
+    MPQ_CREATE_LISTFILE = 0x00100000
+    MPQ_CREATE_ATTRIBUTES = 0x00200000
+    MPQ_CREATE_ARCHIVE_V1 = 0x00000000
+    flags = MPQ_CREATE_LISTFILE | MPQ_CREATE_ATTRIBUTES | MPQ_CREATE_ARCHIVE_V1
+    # Large hash table so lookups for files we do not ship miss instead of colliding.
+    h = storm.create_archive(dest, flags, 4096)
+
+    MPQ_FILE_COMPRESS = 0x00000200
+    MPQ_FILE_REPLACEEXISTING = 0x80000000
+    MPQ_COMPRESSION_ZLIB = 0x02
+    for local, archived in files:
+        if not storm.add_file(
+            h,
+            local,
+            archived,
+            MPQ_FILE_COMPRESS | MPQ_FILE_REPLACEEXISTING,
+            MPQ_COMPRESSION_ZLIB,
+            MPQ_COMPRESSION_ZLIB,
+        ):
+            err = storm.last_error()
+            storm.close_archive(h)
+            raise SystemExit(f"Failed to add {local} as {archived!r} err={err}")
+        print(f"Added {archived.decode()} <- {local.name}")
+
+    storm.close_archive(h)
+    print(f"Built {dest} ({dest.stat().st_size} bytes)")
+
+
+def build_mpq():
+    storm = load_storm()
+    _create_mpq(
+        storm,
+        OUT_MPQ,
+        [
+            (SPELL_DBC, b"DBFilesClient\\Spell.dbc"),
+            (SLA_DBC, b"DBFilesClient\\SkillLineAbility.dbc"),
+            (AREATABLE_DBC, b"DBFilesClient\\AreaTable.dbc"),
+            (DBC_DIR / "LFGDungeons.dbc", b"DBFilesClient\\LFGDungeons.dbc"),
+            (DBC_DIR / "LFGDungeonGroup.dbc", b"DBFilesClient\\LFGDungeonGroup.dbc"),
+        ],
+    )
+    locale_files = [
+        *[
+            (GLUE_DIR / n, ("Interface" + BS + "GlueXML" + BS + n).encode())
+            for n in GLUE_FILES
+        ],
+        (FRAME_TOC, b"Interface\\FrameXML\\FrameXML.toc"),
+        (UI_LUA, b"Interface\\FrameXML\\LivingGear.lua"),
+        (AURA_LUA, b"Interface\\FrameXML\\BonesawAuras.lua"),
+        (AREATABLE_DBC, b"DBFilesClient\\AreaTable.dbc"),
+    ]
+    for locale in LOCALES:
+        _create_mpq(storm, ROOT / "dist" / f"patch-{locale}-4.MPQ", locale_files)
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] == "--refresh-glue-bases":
+        if len(args) < 2:
+            raise SystemExit("usage: build_patch.py --refresh-glue-bases <client>/Data")
+        return refresh_glue_bases(Path(args[1]))
+    check_lua_limits()
+    patch_spell_dbc()
+    verify_dbc()
+    patch_skill_line_ability()
+    patch_areatable()
+    patch_framexml()
+    patch_gluexml()
+    sys.path.insert(0, str(ROOT))
+    from patch_lfg_raids import patch as patch_lfg
+    patch_lfg()
+    build_mpq()
+    print("Done. Copy patch-Y.MPQ to Data/ and patch-<locale>-4.MPQ to Data/<locale>/.")
+
+
+if __name__ == "__main__":
+    main()

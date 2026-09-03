@@ -1,0 +1,91 @@
+Turn creature_template damage-school immunity into an 80% resist.
+Touches: src/server/game/Entities/Unit/Unit.h, src/server/game/Entities/Unit/Unit.cpp
+
+Why: player report -- "enemy resistances should cap at 80% so that mobs
+immune to certain damage types don't exist (but still resist a significant
+amount of damage that they were previously immune to)". Patch 0002 already
+caps the discrete RESIST roll at 80%, but that only governs the resistance
+formula. It has nothing to say about outright immunity, which is a separate
+mechanism: Unit::IsImmunedToDamage / IsImmunedToSchool short-circuit the
+damage long before CalcAbsorbResist ever runs, so a Fire-immune mob was
+still taking exactly zero from every Fire spell no matter what patch 0002
+did.
+
+Scope: creature_template immunities ONLY. Creature::LoadTemplateImmunities
+registers template-sourced entries under a sentinel spell id (uint32 max)
+specifically so they can be told apart from aura-sourced ones -- the core
+already relies on that distinction itself in
+IgnoresSchoolImmunityFromFriendlyCaster. Using the same test means a boss
+that goes invulnerable for a phase (a real spell, real aura) is completely
+unaffected, and so is every player immunity (Divine Shield, Ice Block,
+Anti-Magic Shell) since the check bails on !IsCreature() first. If a
+template-immune creature additionally gains a real immunity aura covering
+the same school, the aura wins and it is genuinely immune again.
+
+Known limit: CalcAbsorbResist's resist block does not run for physical
+(SPELL_SCHOOL_MASK_NORMAL) damage, so a creature with template PHYSICAL
+immunity stops being immune but does not pick up the 80% resist -- it would
+take full melee damage. No such creature is known to be reachable in open
+world content here; revisit if one turns up.
+
+Gated by LivingGear.SoftenCreatureImmunity (default 1), read via
+LivingGear_SoftenCreatureImmunity() in LivingGear_Perks.cpp.
+
+--- a/src/server/game/Entities/Unit/Unit.h
++++ b/src/server/game/Entities/Unit/Unit.h
+@@ near GetSchoolImmunityMask/GetDamageImmunityMask
+     [[nodiscard]] uint32 GetSchoolImmunityMask() const;
+     [[nodiscard]] uint32 GetDamageImmunityMask() const;
++
++    // Living Gear core-patch: true "this school cannot hurt me at all"
++    // invulnerability coming from creature_template is downgraded to an 80%
++    // resist. Template-sourced immunity only -- see the implementation.
++    [[nodiscard]] bool LivingGearSoftenedSchoolImmunity(SpellSchoolMask schoolMask) const;
+
+--- a/src/server/game/Entities/Unit/Unit.cpp
++++ b/src/server/game/Entities/Unit/Unit.cpp
+@@ above Unit::GetDamageImmunityMask()
++bool LivingGear_SoftenCreatureImmunity();
++
++bool Unit::LivingGearSoftenedSchoolImmunity(SpellSchoolMask schoolMask) const
++{
++    static uint32 constexpr templateSpellId = std::numeric_limits<uint32>::max();
++
++    if (schoolMask == SPELL_SCHOOL_MASK_NONE || !IsCreature())
++        return false;
++    if (!LivingGear_SoftenCreatureImmunity())
++        return false;
++
++    uint32 templateMask = 0;
++    uint32 auraMask = 0;
++    for (uint32 op : { uint32(IMMUNITY_SCHOOL), uint32(IMMUNITY_DAMAGE) })
++        for (auto const& [immunitySchoolMask, immunityAuraId] : m_spellImmune[op])
++        {
++            if (immunityAuraId == templateSpellId)
++                templateMask |= immunitySchoolMask;
++            else
++                auraMask |= immunitySchoolMask;
++        }
++
++    return Unit::IsImmuneMaskFully(SpellSchoolMask(templateMask), schoolMask)
++        && !Unit::IsImmuneMaskFully(SpellSchoolMask(auraMask), schoolMask);
++}
+
+@@ Unit::IsImmunedToDamage(SpellSchoolMask), Unit::IsImmunedToDamage(Unit const*, SpellInfo const*), Unit::IsImmunedToSchool(SpellSchoolMask)
+     if (schoolMask == SPELL_SCHOOL_MASK_NONE)
+         return false;
+
++    if (LivingGearSoftenedSchoolImmunity(schoolMask))
++        return false;
++
+
+@@ Unit::CalcAbsorbResist(), immediately after patch 0002's cap
+         if (i > 8)
+             i = 8;
+
++        // A creature whose template says it is flat-out immune to this school
++        // resists 80% instead. Without this it would take FULL damage, since
++        // the immunity checks above now deliberately report "not immune" in
++        // order to get the hit this far.
++        if (victim->LivingGearSoftenedSchoolImmunity(schoolMask))
++            i = 8;

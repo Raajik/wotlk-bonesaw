@@ -1,0 +1,26 @@
+Give LFG-raid-fill bots a valid LFG role so proposal packets don't carry
+role=0 (PLAYER_ROLE_NONE).
+Touches: modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp, RandomPlayerbotMgr::FillLfgRaidGroup()
+
+Why: FillLfgRaidGroup() inserts idle bots straight into a group via
+group->AddMember(bot), bypassing the normal LFG queue/role-check flow
+entirely, so the bot's LFG role never gets set (stays PLAYER_ROLE_NONE).
+SendLfgProposalUpdate (LFGHandler.cpp) writes that role straight onto the
+wire with no validation. The 3.3.5 client's FrameXML then throws
+"Interface\FrameXML\LFGFrame.lua:337: Unknown role: UNKNOWN" trying to
+pick a role icon for it when the player accepts the dungeon-ready pop-up.
+
+--- a/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
++++ b/modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+@@ RandomPlayerbotMgr::FillLfgRaidGroup(Group* group, uint32 maxPlayers, uint8 minLevel, uint8 maxLevel)
+         if (!group->AddMember(bot))
+             break;
++        // Bots added this way skip the normal LFG queue/role-check flow
++        // entirely, so their LFG role stays PLAYER_ROLE_NONE. The dungeon
++        // proposal packet writes that role straight to the wire with no
++        // validation (LFGHandler.cpp SendLfgProposalUpdate), and the client's
++        // FrameXML errors "Unknown role: UNKNOWN" trying to render an icon
++        // for it. A flat DAMAGE role here is just for that packet/icon --
++        // it doesn't affect the bot's actual combat AI role.
++        sLFGMgr->SetRoles(bot->GetGUID(), lfg::PLAYER_ROLE_DAMAGE);
+         ++added;

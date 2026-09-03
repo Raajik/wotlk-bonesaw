@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# Start the Bonesaw 3.3.5a client under Wine, optionally logging in for you.
+#
+#   bonesaw                 launch (auto-login if credentials are stored)
+#   bonesaw --set-login     store account + password in the login keyring
+#   bonesaw --forget-login  remove them
+#   bonesaw --no-login      launch without auto-login
+#   bonesaw --set-dir DIR   remember where the client lives
+#   bonesaw --sessions      show recorded session/shutdown timings
+#
+# The password is kept in the Secret Service keyring (gnome-keyring, KWallet),
+# never on disk, and is handed to ydotool on stdin so it never appears in argv
+# where ps would show it. Only the account name reaches Config.wtf, which is
+# what the client already stores itself.
+#
+# Requires: wine, ydotool (+ the ydotoold daemon), libsecret (secret-tool), and
+# a running Secret Service. See README.md for the ydotoold unit.
+set -euo pipefail
+
+STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/bonesaw"
+ACCOUNT_FILE="$STATE_DIR/account"
+GAMEDIR_FILE="$STATE_DIR/gamedir"
+WM_CLASS="wow.exe"
+
+# Session tracing. Samples /proc once a second (a few file reads, no subprocess)
+# so shutdown behaviour can be correlated with session length and memory over
+# time. Set BONESAW_TRACE=0 to turn it off.
+TRACE="${BONESAW_TRACE:-1}"
+TRACE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/bonesaw"
+SESSIONS_CSV="$TRACE_DIR/sessions.csv"
+
+# Seconds the game must hold focus continuously before anything is typed.
+# Matches the Windows launcher's SETTLE.
+SETTLE="${BONESAW_SETTLE:-6}"
+# Overall budget for the game to start, take focus and settle. Windows uses 12s
+# for its window wait, but that launcher starts a client that is already warm;
+# here the client needs ~30s to reach the login screen from a cold start.
+WINDOW_TIMEOUT="${BONESAW_WINDOW_TIMEOUT:-90}"
+# Milliseconds between keystrokes.
+KEY_DELAY="${BONESAW_KEY_DELAY:-20}"
+# ydotoold's control socket. Input is injected through /dev/uinput as a real
+# kernel input device -- wtype's Wayland virtual keyboard reliably wedges the
+# Wine client, see README.md.
+export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-/run/ydotoold.socket}"
+KEY_ENTER=28  # linux/input-event-codes.h KEY_ENTER
+# Set to 0 to type the password but leave Enter to you. The fallback if the
+# client ever wedges on the synthetic Return again.
+SEND_ENTER="${BONESAW_SEND_ENTER:-1}"
+
+die() { echo "bonesaw: $*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+resolve_game_dir() {
+    if [[ -n "${BONESAW_DIR:-}" ]]; then echo "$BONESAW_DIR"; return; fi
+    if [[ -f "$GAMEDIR_FILE" ]]; then head -n1 "$GAMEDIR_FILE"; return; fi
+    echo "$HOME/Games/World of Warcraft/3.3.5/Bonesaw"
+}
+
+set_dir() {
+    local dir="${1:?usage: bonesaw --set-dir DIR}"
+    [[ -f "$dir/Wow.exe" ]] || die "no Wow.exe in $dir"
+    mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
+    printf '%s\n' "$dir" > "$GAMEDIR_FILE"
+    echo "Client directory set to $dir"
+}
+
+set_login() {
+    have secret-tool || die "secret-tool not installed (package: libsecret)"
+    local acct pw
+    read -r -p "Account name: " acct
+    [[ -n "$acct" ]] || die "no account name given"
+    read -r -s -p "Password: " pw; echo
+    [[ -n "$pw" ]] || die "no password given"
+    # 3.3.5a truncates to 16 characters and uppercases, so a longer secret from
+    # a password manager would silently not be what the client sends.
+    (( ${#pw} <= 16 )) || die "3.3.5a truncates passwords to 16 characters"
+    printf '%s' "$pw" | secret-tool store --label="Bonesaw ($acct)" \
+        service bonesaw account "$acct"
+    mkdir -p "$STATE_DIR"; chmod 700 "$STATE_DIR"
+    printf '%s\n' "$acct" > "$ACCOUNT_FILE"; chmod 600 "$ACCOUNT_FILE"
+    echo "Stored. 'bonesaw' will now log in as $acct."
+}
+
+forget_login() {
+    local acct=""
+    [[ -f "$ACCOUNT_FILE" ]] && acct=$(<"$ACCOUNT_FILE")
+    if [[ -n "$acct" ]]; then
+        secret-tool clear service bonesaw account "$acct" 2>/dev/null || true
+    fi
+    rm -f "$ACCOUNT_FILE"
+    echo "Auto-login credentials removed."
+}
+
+# The client prefills the account field from Config.wtf at login-screen init,
+# so the launcher never types the account name. Only safe with the game closed:
+# WoW rewrites this file wholesale on a clean exit.
+prefill_account() {
+    local acct="$1" cfg="$2/WTF/Config.wtf"
+    [[ -f "$cfg" ]] || return 0
+    if grep -qi '^SET accountName ' "$cfg"; then
+        sed -i "s/^SET accountName .*/SET accountName \"$acct\"/I" "$cfg"
+    else
+        printf 'SET accountName "%s"\n' "$acct" >> "$cfg"
+    fi
+}
+
+focused_is_game() {
+    have hyprctl || return 1
+    hyprctl activewindow -j 2>/dev/null | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("class",""))
+except Exception: print("")' 2>/dev/null | grep -qx "$WM_CLASS"
+}
+
+# Mirrors paste_login() in the Windows launcher: with the account prefilled
+# from Config.wtf the client focuses the password field itself, so the password
+# is typed straight in with no Tab. (A Tab moves focus OFF the password field
+# and the password lands somewhere visible -- the comment in login.rs about
+# "our one Tab" describes a mechanism that was removed.)
+#
+# Everything is guarded on the game holding focus, because a stray keystroke
+# here lands in whatever the player has in front of them.
+autologin() {
+    local acct="$1" game_pid="${2:-}"
+    have ydotool || { echo "bonesaw: ydotool not installed, skipping auto-login" >&2; return; }
+    have secret-tool || return
+    if [[ ! -S "$YDOTOOL_SOCKET" ]]; then
+        echo "bonesaw: no ydotoold socket at $YDOTOOL_SOCKET, skipping auto-login" >&2
+        return
+    fi
+
+    # Wait for the game to hold focus for SETTLE seconds *continuously*. The
+    # earlier version sampled focus at two instants six seconds apart, so a
+    # glance at another window between them cancelled auto-login outright.
+    # Losing focus should postpone the keystrokes, not abandon them -- and
+    # requiring an unbroken run means the game is still focused when we type,
+    # which is the property that actually matters.
+    local deadline=$((SECONDS + WINDOW_TIMEOUT)) held=0
+    while (( SECONDS < deadline )); do
+        # Give up immediately if the player quit: otherwise this keeps polling
+        # for the rest of the timeout after the game is gone, and the launcher
+        # sits there long after the window has closed.
+        if [[ -n "$game_pid" ]] && ! kill -0 "$game_pid" 2>/dev/null; then
+            return
+        fi
+        if focused_is_game; then
+            (( ++held >= SETTLE )) && break
+        else
+            held=0
+        fi
+        sleep 1
+    done
+    if (( held < SETTLE )); then
+        echo "bonesaw: game did not hold focus for ${SETTLE}s, skipping auto-login" >&2
+        return
+    fi
+
+    local pw
+    if ! pw=$(secret-tool lookup service bonesaw account "$acct" 2>/dev/null) || [[ -z "$pw" ]]; then
+        echo "bonesaw: no stored password for $acct, skipping auto-login" >&2
+        return
+    fi
+
+    # --file - keeps the password off argv, where ps would show it.
+    printf '%s' "$pw" | ydotool type --key-delay "$KEY_DELAY" --file -
+    unset pw
+
+    if [[ "$SEND_ENTER" == "1" ]]; then
+        sleep 0.25   # the 250ms the Windows launcher waits before Enter
+        ydotool key "${KEY_ENTER}:1" "${KEY_ENTER}:0"
+    else
+        echo "bonesaw: password typed; press Enter to log in" >&2
+    fi
+}
+
+# Watch the game until it exits and append one row per session.
+#
+# The launcher cannot see the SUPER+W keypress, so "when did closing start" is
+# inferred from the render loop: the client burns CPU continuously while it is
+# running, and that stops the moment it begins shutting down. quiet_s is how
+# long it sat there after that before the process actually went away, which is
+# the number that matters for "closing takes forever".
+trace_session() {
+    local pid="$1" started="$2"
+    local hz; hz=$(getconf CLK_TCK)
+    local t0 prev=-1 last_busy peak=0 samples=0 rss thr cpu now quiet_s life_s ws_s
+    t0=$(date +%s); last_busy=$t0
+    while [[ -d "/proc/$pid" ]]; do
+        # utime+stime, num_threads, VmRSS -- all plain reads, no forks.
+        read -r -a st < "/proc/$pid/stat" 2>/dev/null || break
+        cpu=$(( ${st[13]:-0} + ${st[14]:-0} )); thr=${st[19]:-0}
+        rss=$(( ${st[23]:-0} * 4096 / 1048576 ))
+        (( rss > peak )) && peak=$rss
+        now=$(date +%s)
+        # More than ~5% of a core since the last sample counts as "still alive".
+        if (( prev >= 0 && cpu - prev > hz / 20 )); then last_busy=$now; fi
+        prev=$cpu; samples=$((samples + 1))
+        sleep 1
+    done
+    now=$(date +%s)
+    life_s=$((now - t0)); quiet_s=$((now - last_busy))
+    local tw; tw=$(date +%s)
+    while pgrep -x wineserver >/dev/null 2>&1; do sleep 1; done
+    ws_s=$(( $(date +%s) - tw ))
+    mkdir -p "$TRACE_DIR"
+    if [[ ! -f "$SESSIONS_CSV" ]]; then
+        echo "started,session_s,quiet_s,wineserver_s,peak_rss_mb,threads,samples" > "$SESSIONS_CSV"
+    fi
+    printf '%s,%s,%s,%s,%s,%s,%s\n' \
+        "$started" "$life_s" "$quiet_s" "$ws_s" "$peak" "$thr" "$samples" >> "$SESSIONS_CSV"
+}
+
+show_sessions() {
+    [[ -f "$SESSIONS_CSV" ]] || { echo "No sessions recorded yet ($SESSIONS_CSV)"; return; }
+    column -s, -t < "$SESSIONS_CSV"
+    echo
+    echo "session_s     how long the client ran"
+    echo "quiet_s       seconds it sat with no CPU before the process exited"
+    echo "              (this is the 'closing takes forever' number)"
+    echo "wineserver_s  extra seconds wineserver lingered after that"
+}
+
+case "${1:-}" in
+    --set-login)    set_login; exit 0 ;;
+    --forget-login) forget_login; exit 0 ;;
+    --set-dir)      shift; set_dir "${1:-}"; exit 0 ;;
+    --sessions)     show_sessions; exit 0 ;;
+    --no-login)     shift; NO_LOGIN=1 ;;
+    -h|--help)      sed -n '2,16p' "$0" | sed 's/^# \?//'; exit 0 ;;
+esac
+
+GAME_DIR="$(resolve_game_dir)"
+[[ -f "$GAME_DIR/Wow.exe" ]] || die "no Wow.exe in $GAME_DIR (set it with: bonesaw --set-dir DIR)"
+have wine || die "wine is not installed"
+
+export WINEPREFIX="${WINEPREFIX:-$HOME/.local/share/wineprefixes/bonesaw}"
+export WINEDEBUG="${WINEDEBUG:--all}"
+# WoW needs neither .NET nor IE; without this Wine offers to install them.
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=}"
+
+ACCOUNT=""
+if [[ -z "${NO_LOGIN:-}" && -f "$ACCOUNT_FILE" ]]; then
+    ACCOUNT=$(<"$ACCOUNT_FILE")
+    [[ -n "$ACCOUNT" ]] && prefill_account "$ACCOUNT" "$GAME_DIR"
+fi
+
+cd "$GAME_DIR"
+wine Wow.exe "$@" &
+game_pid=$!
+
+# The tracer watches the Wine-side Wow.exe rather than the `wine` wrapper,
+# since that is the process that actually holds the session.
+if [[ "$TRACE" == "1" ]]; then
+    (
+        started=$(date -Iseconds)
+        for _ in $(seq 1 30); do
+            wow_pid=$(ps -eo pid,comm | awk '$2=="Wow.exe"{print $1; exit}')
+            [[ -n "$wow_pid" ]] && break
+            sleep 1
+        done
+        [[ -n "${wow_pid:-}" ]] && trace_session "$wow_pid" "$started"
+    ) &
+fi
+
+[[ -n "$ACCOUNT" ]] && autologin "$ACCOUNT" "$game_pid"
+wait "$game_pid"

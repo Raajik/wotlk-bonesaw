@@ -1,0 +1,22 @@
+Bots filled into an LFG dungeon are teleported to the entrance.
+Touches: modules/mod-playerbots/src/Bot/RandomPlayerbotMgr.cpp
+         (FillLfgRaidGroup per-add teleport)
+
+Why: report #131 -- "playerbots should automatically be summoned to dungeons
+when they join the queue (i can summon them by typing "summon" in party
+chat, but i shouldn't have to)".
+
+FillLfgRaidGroup adds idle bots directly to the proposal group, bypassing
+the normal queue/rolecheck/teleport flow -- so the bot materialises wherever
+it was standing. MakeNewGroup teleports only the players it knows about
+(playersToTeleport) and never sees the fill's additions; the player was left
+typing "summon" five times per dungeon.
+
+Teleport happens per-add inside the fill loop: dungeon coords come from the
+leader's selected dungeons (the group's own dungeon id is not written until
+MakeNewGroup finishes, after this hook returns -- GetDungeon(group) reads
+empty here). Dead, in-combat or mid-teleport bots are skipped, matching the
+refusals TeleportPlayer itself would raise; a dead bot must not be
+resurrected into a dungeon for free. RANDOM-dungeon entries whose coords
+were filled from areatrigger data at startup teleport to the same entrance
+square MakeNewGroup uses.

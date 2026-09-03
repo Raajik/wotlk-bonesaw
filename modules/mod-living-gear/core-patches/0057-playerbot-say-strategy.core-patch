@@ -1,0 +1,52 @@
+Register the playerbot "say" strategy so combat chatter can fire at all.
+
+Touches: modules/mod-playerbots/src/Ai/Base/StrategyContext.h,
+         modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp
+         (AiFactory::AddDefaultCombatStrategies)
+
+Why: SayStrategy (say::taunt, say::aoe, say::low health, say::low mana,
+say::critical health) and SayAction have existed in the module since the
+start, but StrategyContext never had a "say" creator and AiFactory never
+added the strategy to any engine, so none of its triggers ever ran and
+no bot ever said a taunt. Bug report #176 ("generate or add a bunch of
+funny things for playerbots to say -- don't be afraid to use language
+like 'glass that cunt!'") is half a content job (new SQL lines) and half
+this wiring job; without this patch the new taunt pool is as silent as
+the old one. SayAction self-throttles (one line per ~30s, and after
+anyone in the group speaks, every member's clock is pushed ~20s per
+member index), and per-line chance weights live in
+ai_playerbot_texts_chance (aoe lowered 75 -> 40, low health 100 -> 60,
+low mana 100 -> 50, taunt kept at 30) so the lines stay occasional.
+
+--- a/modules/mod-playerbots/src/Ai/Base/StrategyContext.h
++++ b/modules/mod-playerbots/src/Ai/Base/StrategyContext.h
+@@ includes
+ #include "RunawayStrategy.h"
++#include "SayStrategy.h"
+ #include "StayStrategy.h"
+@@ StrategyContext::StrategyContext()
+         creators["chat"] = &StrategyContext::chat;
++        creators["say"] = &StrategyContext::say;
+         creators["default"] = &StrategyContext::world_packet;
+@@ StrategyContext private factories
+     static Strategy* chat(PlayerbotAI* botAI) { return new ChatCommandHandlerStrategy(botAI); }
++    static Strategy* say(PlayerbotAI* botAI) { return new SayStrategy(botAI); }
+
+--- a/modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp
++++ b/modules/mod-playerbots/src/Bot/Factory/AiFactory.cpp
+@@ AiFactory::AddDefaultCombatStrategies
+     if (sPlayerbotAIConfig.autoAvoidAoe && facade->HasRealPlayerMaster())
+         engine->addStrategy("avoid aoe", false);
+
+     engine->addStrategy("formation", false);
++
++    // Report #176: combat chatter. The "say" strategy (taunt / aoe / low
++    // health / low mana one-liners from ai_playerbot_texts) existed in the
++    // module but was never registered in StrategyContext, so none of its
++    // triggers ever ran and every bot stayed silent in combat. SayAction
++    // self-throttles (one line per ~30s, and after anyone in the group
++    // speaks, everyone else's clock is pushed ~20s per member), and the
++    // per-line chance weights live in ai_playerbot_texts_chance.
++    engine->addStrategy("say", false);
+
+     switch (player->getClass())

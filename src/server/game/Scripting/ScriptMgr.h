@@ -116,6 +116,10 @@ public:
     bool IsDatabaseBound() const { return false; }
 
     [[nodiscard]] virtual bool OnPlayerbotCheckLFGQueue(lfg::Lfg5Guids const& /*guidsList*/) { return true; }
+    [[nodiscard]] virtual bool OnLfgAllowBotFill(lfg::Lfg5Guids const& /*check*/, uint32 /*waitedSec*/, bool /*isRaid*/,
+        bool /*hasSoloQueuePlayer*/) { return false; }
+    virtual void OnPlayerbotFillLfgRaid(Group* /*group*/, uint32 /*maxPlayers*/, uint8 /*minLevel*/, uint8 /*maxLevel*/) { }
+    virtual void OnPlayerbotFillLfgDungeon(Group* /*group*/, uint32 /*maxPlayers*/, uint8 /*minLevel*/, uint8 /*maxLevel*/) { }
     virtual void OnPlayerbotCheckKillTask(Player* /*player*/, Unit* /*victim*/) { }
     virtual void OnPlayerbotCheckPetitionAccount(Player* /*player*/, bool& /*found*/) { }
     [[nodiscard]] virtual bool OnPlayerbotCheckUpdatesToSend(Player* /*player*/) { return true; }
@@ -339,6 +343,7 @@ public: /* PlayerScript */
     void OnPlayerReputationRankChange(Player* player, uint32 factionID, ReputationRank newRank, ReputationRank oldRank, bool increased);
     void OnPlayerGiveReputation(Player* player, int32 factionID, float& amount, ReputationSource repSource);
     void OnPlayerLearnSpell(Player* player, uint32 spellID);
+    bool OnPlayerCanAddActionButton(Player* player, uint8 button, uint32 action, uint8 type);
     void OnPlayerForgotSpell(Player* player, uint32 spellID);
     void OnPlayerDuelRequest(Player* target, Player* challenger);
     void OnPlayerDuelStart(Player* player1, Player* player2);
@@ -389,6 +394,7 @@ public: /* PlayerScript */
     bool OnPlayerBeforeOpenItem(Player* player, Item* item);
     bool OnPlayerBeforeQuestComplete(Player* player, uint32 quest_id);
     void OnPlayerQuestComputeXP(Player* player, Quest const* quest, uint32& xpValue);
+    void OnPlayerBeforeQuestQueryResponse(Player* player, Quest const* quest, int32& questLevel);
     void OnPlayerBeforeDurabilityRepair(Player* player, ObjectGuid npcGUID, ObjectGuid itemGUID, float& discountMod, uint8 guildBank);
     void OnPlayerBeforeBuyItemFromVendor(Player* player, ObjectGuid vendorguid, uint32 vendorslot, uint32& item, uint8 count, uint8 bag, uint8 slot);
     void OnPlayerBeforeStoreOrEquipNewItem(Player* player, uint32 vendorslot, uint32& item, uint8 count, uint8 bag, uint8 slot, ItemTemplate const* pProto, Creature* pVendor, VendorItem const* crItem, bool bStore);
@@ -456,10 +462,12 @@ public: /* PlayerScript */
     void OnPlayerFfaPvpStateUpdate(Player* player, bool result);
     void OnPlayerGetArenaTeamId(Player* player, uint8 slot, uint32& result);
     void OnPlayerIsFFAPvP(Player* player, bool& result);
+    void OnPlayerRewardHonor(Player* player, float& honor);
     void OnPlayerIsPvP(Player* player, bool& result);
     void OnPlayerGetMaxSkillValueForLevel(Player* player, uint16& result);
     bool OnPlayerNotSetArenaTeamInfoField(Player* player, uint8 slot, ArenaTeamInfoType type, uint32 value);
     bool OnPlayerCanJoinLfg(Player* player, uint8 roles, lfg::LfgDungeonSet& dungeons, std::string const& comment);
+    bool OnPlayerCanSoloQueue(Player* player);
     bool OnPlayerCanEnterMap(Player* player, MapEntry const* entry, InstanceTemplate const* instance, MapDifficulty const* mapDiff, bool loginCheck);
     bool OnPlayerCanInitTrade(Player* player, Player* target);
     bool OnPlayerCanSetTradeItem(Player* player, Item* tradedItem, uint8 tradeSlot);
@@ -492,6 +500,14 @@ public: /* PlayerScript */
     void OnPlayerGetReputationPriceDiscount(Player const* player, FactionTemplateEntry const* factionTemplate, float& discount);
     void OnPlayerLearnTaxiNode(Player const* player, uint32 nodeId);
     void OnPlayerBeforeGetLevelForXPGain(Player const* player, uint8& level);
+    void OnPlayerHasItemCount(Player const* player, uint32 itemId, uint32& count);
+    void OnPlayerGetItemCount(Player const* player, uint32 itemId, uint32& count);
+    void OnPlayerDestroyItemCount(Player* player, uint32 itemId, uint32& remaining);
+    void OnPlayerOpenBank(Player* player, ObjectGuid bankerGuid);
+    void OnPlayerCanOpenLock(Player* player, uint32 lockId, bool& canOpen,
+        uint32& skillId, int32& reqSkillValue, int32& skillValue);
+    void OnPlayerOpenLock(Player* player, uint32 lockId);
+    void OnPlayerUseGameObject(Player* player, GameObject* go, bool& handled);
 
     // Anti cheat
     void AnticheatSetCanFlybyServer(Player* player, bool apply);
@@ -574,6 +590,8 @@ public: /* UnitScript */
     void ModifyHealReceived(Unit* target, Unit* healer, uint32& addHealth, SpellInfo const* spellInfo);
     uint32 DealDamage(Unit* AttackerUnit, Unit* pVictim, uint32 damage, DamageEffectType damagetype);
     void OnBeforeRollMeleeOutcomeAgainst(Unit const* attacker, Unit const* victim, WeaponAttackType attType, int32& attackerMaxSkillValueForLevel, int32& victimMaxSkillValueForLevel, int32& attackerWeaponSkill, int32& victimDefenseSkill, int32& crit_chance, int32& miss_chance, int32& dodge_chance, int32& parry_chance, int32& block_chance);
+    void OnCreatureLevelForTarget(Unit const* creature, WorldObject const* target, uint8& outLevel);
+    void OnCalculateThreat(Unit* attacker, Unit* victim, float& threat, SpellInfo const* spell);
     void OnAuraApply(Unit* /*unit*/, Aura* /*aura*/);
     void OnAuraRemove(Unit* unit, AuraApplication* aurApp, AuraRemoveMode mode);
     bool IfNormalReaction(Unit const* unit, Unit const* target, ReputationRank& repRank);
@@ -752,6 +770,9 @@ public: /* LootScript */
 public: /* PlayerbotScript */
     
     bool OnPlayerbotCheckLFGQueue(lfg::Lfg5Guids const& guidsList);
+    bool OnLfgAllowBotFill(lfg::Lfg5Guids const& check, uint32 waitedSec, bool isRaid, bool hasSoloQueuePlayer);
+    void OnPlayerbotFillLfgRaid(Group* group, uint32 maxPlayers, uint8 minLevel, uint8 maxLevel);
+    void OnPlayerbotFillLfgDungeon(Group* group, uint32 maxPlayers, uint8 minLevel, uint8 maxLevel);
     void OnPlayerbotCheckKillTask(Player* player, Unit* victim);
     void OnPlayerbotCheckPetitionAccount(Player* player, bool& found);
     bool OnPlayerbotCheckUpdatesToSend(Player* player);

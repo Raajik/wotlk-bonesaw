@@ -4,8 +4,42 @@ AzerothCore is a C++ MMORPG server emulator for World of Warcraft 3.3.5a (WotLK)
 
 ## Agent rules
 
-- **Do not configure or build unless explicitly asked.** Builds are slow and rarely needed for code changes.
+- **Hold live until explicit ship.** Default is accumulate changes only. Until the user explicitly says to ship, restart, deploy, or push live: do not `docker compose up` / replace / restart `ac-worldserver`; do not run `tools/restart_worldserver.ps1` or saveall-for-reboot (`saveall` without reboot is also unnecessary unless they ask); do not `deploy_client.ps1`; do not `gh release` / push updater MPQs; do not git push unless they asked; do not Discord "this is live" notes (draft pending notes in chat/wiki is OK). Do keep writing C++, pending SQL, and client-patch sources. `Bonesaw.version` may bump in git but is not published. When they later say ship, `/bonesaw-ship` owns the order: build first (nothing live moves, and a compile failure aborts before it can), then 45s warn, `saveall`, container replace, SQL import, client deploy, `ship/X.Y.Z` tag, GitHub latest, numbered Discord.
+- **Build to verify; never deploy to verify.** `docker compose build ac-worldserver ac-db-import` compiles into images and does not touch the running container -- it is safe, and it is the last step of every change set. Run it in the background and carry on. A change that has never compiled is not "ready to deploy", it is a guess, and batching a week of guesses means every compile error surfaces on ship day at once. Only `docker compose up` / restart moves anything live, and that still needs an explicit ship.
+- **Rebuild `ac-db-import`, not just `ac-worldserver`.** That image bakes `data/sql/updates/pending_db_*` in; there is no bind mount. Rebuilding worldserver alone means new migrations are silently never applied -- `rev_living_gear_account_keys.sql` sat unapplied from 2026-08-21 for exactly this reason, so the account key ring was dead while its code read perfectly.
+- **Two commands own the lifecycle.** `/bonesaw-status` answers what is committed, built, imported, published and still pending -- read-only, safe any time, and the right first move when the user asks "did that ship?". `/bonesaw-ship` is the only thing permitted to touch the live realm, and only on an explicit ship request. Both are defined in `.claude/skills/`.
+- **Every ship gets a `ship/X.Y.Z` git tag**, created by `/bonesaw-ship`. That tag is the only durable record of what players actually have, and `git log ship/<latest>..HEAD` is the pending list. Without it, work that was merely committed is indistinguishable from work that shipped -- which is how eight commits accumulated behind 0.1.50 with nothing anywhere saying so.
+- **"Ready to deploy" means:** compiles clean, committed on `Playerbot` with a message that would read as patch notes, pending SQL written under `data/sql/updates/pending_db_*/`, and `/bonesaw-status` showing nothing unexpected. It does not mean "the code is written".
 - **Never edit SQL files outside `data/sql/updates/pending_db_*/` unless explicitly requested. ** `data/sql/base/`, `data/sql/archive/`, and `data/sql/updates/db_*/` are immutable.
+- When Bonesaw / Living Gear / playerbots features ship, include a short Discord-ready patch notes bullet list in the reply (player-facing, grouped by theme, ASCII-friendly). Patch notes must also end with a **Please test these things** section built from `python tools/retest_list.py` (1-4 player-facing asks about this ship's changes, then the longest-waiting open GitHub `status:awaiting-retest` issues, rephrased, no issue numbers; `tools/retest_list.py --check` gates it) - details in `.claude/skills/bonesaw-ship/SKILL.md` phase 6. Title `Bonesaw X.Y.Z - patch notes` from `tools/client-update/Bonesaw.version` after bumping it for this ship (including server-only; do not skip numbers). No file paths, no spell IDs unless needed. List only what actually shipped. Extra jump is disabled; do not advertise it. Until ship, draft notes as pending; do not post live.
+- Append durable learnings (crashes, UI rules, deploy, spell IDs, do-not-repeat mistakes) to `A:\obsidian\jeremy\wiki\Bonesaw.md` as part of shipping, not after. Client-facing strings are ASCII only.
+- **When shipping: never restart/replace worldserver without warning players, then saving.** Run `powershell tools/restart_worldserver.ps1` before `docker compose up` / `restart` / `kill` of `ac-worldserver`. (Linux host: no PowerShell and `tools/worldserver_cli.py` is Windows-only, so use `python3 tools/save_world.py` for the saveall and send the countdown announcements through its `--command`; see the ship skill's Phase 2.) (Not before `build` -- building only writes an image and is deliberately done first, so a broken compile never reaches the warn.) That announces in-game, waits **45 seconds**, then `saveall`. Skip only if the container is not running. Do not use AzerothCore `server shutdown` for docker replace. Do not start this sequence unless the user asked to ship or restart.
+
+## Session planning protocol (planning-with-files SOP)
+
+- Session state lives in three planning files at repo root (skill
+  `planning-with-files` v3, installed at `~/.agents/skills/planning-with-files`):
+  `task_plan.md` (goal, phases, ship backlog), `findings.md` (gotchas,
+  mechanisms, DB semantics), `progress.md` (session log). All three are
+  gitignored. There is no `HANDOFF.md` anymore — do not create one.
+- **At session start, before anything else:** read `task_plan.md`,
+  `findings.md`, and `progress.md` (load the `planning-with-files` skill first
+  if its conventions are not already in context), then run
+  `git log ship/<latest-tag>..HEAD --oneline` for the unshipped list and
+  `python tools/bug_resolve.py --all` for the live queue. No manual invocation
+  from the user is needed — this instruction is the trigger.
+- **Update continuously:** after each meaningful unit, append a line to
+  `progress.md`; new discoveries/gotchas go to `findings.md` (permanent
+  learnings still go to the Obsidian `Bonesaw.md` wiki at ship time); mark
+  phase `**Status:**` in `task_plan.md`. Re-read the plan before decisions;
+  after any 2 search/research actions, write findings down before moving on.
+- **When closing in on the context cap (roughly under 15% remaining):** stop
+  starting new multi-step work. Finish or commit whatever is already
+  mid-flight, bring the planning files up to date (open threads with exact
+  file/line pointers, unshipped commits), then tell the user to start a fresh
+  session. Never leave an edit half-applied across sessions. Long sessions
+  lose fine detail before they lose coarse intent — record exact line numbers,
+  not vibes.
 
 ## Build
 

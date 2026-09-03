@@ -17,6 +17,7 @@
 
 #include "ScriptMgr.h"
 #include "ScriptMgrMacros.h"
+#include "Group.h"
 
 bool ScriptMgr::OnPlayerbotCheckLFGQueue(lfg::Lfg5Guids const& guidsList)
 {
@@ -31,6 +32,37 @@ bool ScriptMgr::OnPlayerbotCheckLFGQueue(lfg::Lfg5Guids const& guidsList)
     }
 
     return true;
+}
+
+bool ScriptMgr::OnLfgAllowBotFill(lfg::Lfg5Guids const& check, uint32 waitedSec, bool isRaid, bool hasSoloQueuePlayer)
+{
+    auto ret = IsValidBoolScript<PlayerbotScript>([&](PlayerbotScript* script)
+    {
+        return script->OnLfgAllowBotFill(check, waitedSec, isRaid, hasSoloQueuePlayer);
+    });
+
+    if (ret && *ret)
+    {
+        return *ret;
+    }
+
+    return false;
+}
+
+void ScriptMgr::OnPlayerbotFillLfgRaid(Group* group, uint32 maxPlayers, uint8 minLevel, uint8 maxLevel)
+{
+    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
+    {
+        script->OnPlayerbotFillLfgRaid(group, maxPlayers, minLevel, maxLevel);
+    });
+}
+
+void ScriptMgr::OnPlayerbotFillLfgDungeon(Group* group, uint32 maxPlayers, uint8 minLevel, uint8 maxLevel)
+{
+    ExecuteScript<PlayerbotScript>([&](PlayerbotScript* script)
+    {
+        script->OnPlayerbotFillLfgDungeon(group, maxPlayers, minLevel, maxLevel);
+    });
 }
 
 void ScriptMgr::OnPlayerbotCheckKillTask(Player* player, Unit* victim)

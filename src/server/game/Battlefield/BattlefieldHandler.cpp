@@ -101,6 +101,39 @@ void WorldSession::HandleBfQueueInviteResponse(WorldPacket& recvData)
         bf->PlayerAcceptInviteToQueue(_player);
 }
 
+// Sent by the client's own Wintergrasp queue button.
+//
+// Blizzard shipped both the button and this opcode, and it was left wired to
+// Handle_NULL with STATUS_NEVER in Opcodes.cpp -- the packet was discarded, the
+// button appeared to do nothing, and .wg was the only way into the queue.
+//
+// Everything the button needs already existed: PlayerAcceptInviteToQueue puts
+// the player in the queue and answers with SMSG_BATTLEFIELD_MGR_QUEUE_REQUEST_
+// RESPONSE. Only the handler was missing.
+void WorldSession::HandleBfQueueRequest(WorldPacket& recvData)
+{
+    uint32 battleId;
+
+    recvData >> battleId;
+
+    Battlefield* bf = sBattlefieldMgr->GetBattlefieldByBattleId(battleId);
+    if (!bf || !_player)
+        return;
+
+    if (!bf->IsEnabled())
+        return;
+
+    // Idempotent: the queue is a set, so a repeat click re-sends the response
+    // packet and changes nothing else.
+    bf->PlayerAcceptInviteToQueue(_player);
+
+    // Queueing mid-battle otherwise waits for the next invite sweep, which on a
+    // realm where a match may be four people is most of the fight. Pull them
+    // straight in if the war is running and their side has room.
+    if (bf->IsWarTime() && bf->HasWarVacancy(_player->GetTeamId()))
+        bf->InvitePlayerToWar(_player);
+}
+
 // Sent by client on clicking accept or refuse of invitation window to join game
 void WorldSession::HandleBfEntryInviteResponse(WorldPacket& recvData)
 {

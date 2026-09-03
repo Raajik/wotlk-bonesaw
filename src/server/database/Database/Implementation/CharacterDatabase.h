@@ -546,6 +546,10 @@ enum CharacterDatabaseStatements : uint32
 
     CHAR_NO_OP_PROVIDE_REALM_CONTEXT,
 
+    // LivingGear (modules/mod-living-gear): in-game bug reports.
+    CHAR_INS_LG_BUG_REPORT,
+    CHAR_SEL_LG_BUG_REPORT_VERIFY,
+
     MAX_CHARACTERDATABASE_STATEMENTS
 };
 

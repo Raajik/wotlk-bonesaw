@@ -150,11 +150,16 @@ public:
                 case BOSS_ZURAMAT:
                     if (state == DONE)
                     {
-                        if (_waveCount == 6)
+                        // Report #173: every prison boss is its own encounter
+                        // now. The first two killed in a run still fill the
+                        // legacy slots so loot gating and old saves work.
+                        if (GetBossState(DATA_1ST_BOSS) != DONE)
                             SetBossState(DATA_1ST_BOSS, DONE);
-                        else if (_waveCount == 12)
+                        else if (GetBossState(DATA_2ND_BOSS) != DONE)
                             SetBossState(DATA_2ND_BOSS, DONE);
-                        _events.RescheduleEvent(EVENT_SUMMON_PORTAL, 35s);
+                        // 35s of silence after every boss was the worst part
+                        // of the old pace; the next portal opens right away.
+                        _events.RescheduleEvent(EVENT_SUMMON_PORTAL, 6s);
                     }
                     else if (state == FAIL || state == NOT_STARTED)
                     {
@@ -210,7 +215,10 @@ public:
                             sinclari->RemoveNpcFlag(UNIT_NPC_FLAG_GOSSIP);
                             sinclari->AI()->Talk(SAY_SINCLARI_LEAVING);
                         }
-                        _events.RescheduleEvent(EVENT_GUARDS_FALL_BACK, 4s);
+                        // Report #173: the guards-march-out chain stacks
+                        // four scheduled waits; each is shortened so the first
+                        // portal opens ~9s after the player starts the event.
+                        _events.RescheduleEvent(EVENT_GUARDS_FALL_BACK, 2s);
                         _events.RescheduleEvent(EVENT_CHECK_PLAYERS, 5s);
                     }
                     break;
@@ -228,10 +236,8 @@ public:
                     DoUpdateWorldState(WORLD_STATE_VIOLET_HOLD_PRISON_STATE, (uint32)_gateHealth);
                     break;
                 case ACTION_RELEASE_BOSS:
-                    if (_waveCount == 6)
-                        StartBossEncounter(GetPersistentData(PERSISTENT_DATA_FIRST_BOSS));
-                    else
-                        StartBossEncounter(GetPersistentData(PERSISTENT_DATA_SECOND_BOSS));
+                    if (uint32 bossId = BossForCurrentWave())
+                        StartBossEncounter(bossId);
                     break;
             }
         }
@@ -267,6 +273,8 @@ public:
                     return (uint32)_waveCount;
                 case DATA_PORTAL_LOCATION:
                     return _portalLocation;
+                case DATA_BOSS_FOR_CURRENT_WAVE:
+                    return BossForCurrentWave();
             }
 
             return 0;
@@ -339,7 +347,7 @@ public:
                 boss->RemoveUnitFlag(UNIT_FLAG_NON_ATTACKABLE);
                 boss->SetImmuneToNPC(false);
                 boss->SetReactState(REACT_AGGRESSIVE);
-                if ((_waveCount == 6 && GetBossState(DATA_1ST_BOSS) == DONE) || (_waveCount == 12 && GetBossState(DATA_2ND_BOSS) == DONE))
+                if (GetBossState(bossId) == DONE)
                     boss->SetLootMode(0);
             }
         }
@@ -363,13 +371,13 @@ public:
                             guard->RemoveUnitMovementFlag(MOVEMENTFLAG_WALKING);
                             guard->GetMotionMaster()->MovePoint(0, guardMovePosition);
                         }
-                    _events.RescheduleEvent(EVENT_GUARDS_DISAPPEAR, 5s);
+                    _events.RescheduleEvent(EVENT_GUARDS_DISAPPEAR, 2s);
                     break;
                 case EVENT_GUARDS_DISAPPEAR:
                     for (ObjectGuid const& guid : _guardGuid)
                         if (Creature* guard = instance->GetCreature(guid))
                             guard->SetVisible(false);
-                    _events.RescheduleEvent(EVENT_SINCLARI_FALL_BACK, 2s);
+                    _events.RescheduleEvent(EVENT_SINCLARI_FALL_BACK, 1s);
                     break;
                 case EVENT_SINCLARI_FALL_BACK:
                     if (Creature* sinclari = GetCreature(DATA_SINCLARI))
@@ -378,7 +386,7 @@ public:
                         sinclari->GetMotionMaster()->MovePoint(0, sinclariOutsidePosition);
                     }
                     SummonDefenseSystem();
-                    _events.RescheduleEvent(EVENT_START_ENCOUNTER, 4s);
+                    _events.RescheduleEvent(EVENT_START_ENCOUNTER, 2s);
                     break;
                 case EVENT_START_ENCOUNTER:
                     if (Creature* sinclari = GetCreature(DATA_SINCLARI))
@@ -400,7 +408,7 @@ public:
                             HandleGameObject(ObjectGuid::Empty, false, go);
                             go->RemoveGameObjectFlag(GO_FLAG_NOT_SELECTABLE);
                         }
-                    _events.RescheduleEvent(EVENT_SUMMON_PORTAL, 4s);
+                    _events.RescheduleEvent(EVENT_SUMMON_PORTAL, 2s);
                     break;
                 case EVENT_SUMMON_PORTAL:
                     ++_waveCount;
@@ -408,22 +416,13 @@ public:
                     SetData(DATA_PORTAL_LOCATION, (GetData(DATA_PORTAL_LOCATION) + urand(1, 5)) % 6);
                     if (Creature* sinclari = GetCreature(DATA_SINCLARI))
                     {
-                        if (_waveCount % 6 != 0)
-                            sinclari->SummonCreature(NPC_TELEPORTATION_PORTAL, PortalLocations[GetData(DATA_PORTAL_LOCATION)], TEMPSUMMON_CORPSE_DESPAWN);
-                        else if (_waveCount == 6 || _waveCount == 12)
-                        {
-                            if (!GetPersistentData(PERSISTENT_DATA_FIRST_BOSS) || !GetPersistentData(PERSISTENT_DATA_SECOND_BOSS))
-                            {
-                                uint32 firstBoss = urand(BOSS_MORAGG, BOSS_ZURAMAT);
-                                uint32 secondBoss;
-                                do { secondBoss = urand(BOSS_MORAGG, BOSS_ZURAMAT); }
-                                while (firstBoss == secondBoss);
-                                StorePersistentData(PERSISTENT_DATA_FIRST_BOSS, firstBoss);
-                                StorePersistentData(PERSISTENT_DATA_SECOND_BOSS, secondBoss);
-                            }
-                            sinclari->SummonCreature(NPC_TELEPORTATION_PORTAL, MiddleRoomPortalSaboLocation, TEMPSUMMON_CORPSE_DESPAWN);
-                        }
-                        else
+                        // Report #173: one monster-group portal per boss
+                        // release. Even waves 2..12 each open a boss portal (a
+                        // shuffled order of all six prison bosses, so every
+                        // boss of the visit gets released); wave 13 is
+                        // Cyanigosa.
+                        EnsureBossOrder();
+                        if (_waveCount == VH_WAVE_CYANIGOSA)
                         {
                             if (Creature* cyanigosa = sinclari->SummonCreature(NPC_CYANIGOSA, CyanigosasSpawnLocation, TEMPSUMMON_DEAD_DESPAWN))
                             {
@@ -431,8 +430,12 @@ public:
                                 cyanigosa->AI()->Talk(CYANIGOSA_SAY_SPAWN);
                                 cyanigosa->GetMotionMaster()->MoveJump(MiddleRoomLocation.GetPositionX(), MiddleRoomLocation.GetPositionY(), MiddleRoomLocation.GetPositionZ(), 10.0f, 20.0f);
                             }
-                            _events.RescheduleEvent(EVENT_CYANIGOSA_TRANSFORM, 10s);
+                            _events.RescheduleEvent(EVENT_CYANIGOSA_TRANSFORM, 5s);
                         }
+                        else if (_waveCount % 2 == 0)
+                            sinclari->SummonCreature(NPC_TELEPORTATION_PORTAL, MiddleRoomPortalSaboLocation, TEMPSUMMON_CORPSE_DESPAWN);
+                        else
+                            sinclari->SummonCreature(NPC_TELEPORTATION_PORTAL, PortalLocations[GetData(DATA_PORTAL_LOCATION)], TEMPSUMMON_CORPSE_DESPAWN);
                     }
                     break;
                 case EVENT_CYANIGOSA_TRANSFORM:
@@ -564,12 +567,15 @@ public:
             DoUpdateWorldState(WORLD_STATE_VIOLET_HOLD_SHOW, 0);
             _encounterStatus = NOT_STARTED;
             _gateHealth = 100;
-            if (GetBossState(DATA_2ND_BOSS) == DONE)
-                _waveCount = 12;
-            else if (GetBossState(DATA_1ST_BOSS) == DONE)
-                _waveCount = 6;
-            else
-                _waveCount = 0;
+            // Report #173: resume after the last released boss. Killed
+            // bosses * 2 lands the group on a trash wave, so a re-entering
+            // group still gets its one monster-group portal before the next
+            // boss portal opens (and a fresh run starts at wave 1).
+            uint8 releasedBosses = 0;
+            for (uint32 id = BOSS_MORAGG; id <= BOSS_ZURAMAT; ++id)
+                if (GetBossState(id) == DONE)
+                    ++releasedBosses;
+            _waveCount = releasedBosses * 2;
             _defensesUsed = false;
             if (GetBossState(DATA_CYANIGOSA) == DONE)
                 _encounterStatus = DONE;
@@ -594,6 +600,47 @@ public:
         {
             Position const pos = {1919.09546f, 812.29724f, 86.2905f, M_PI};
             instance->SummonCreature(NPC_DEFENSE_SYSTEM, pos, 0, 6499);
+        }
+
+        // Report #173: the release order of all six prison bosses, stored
+        // in persistent data (survives save/load) the first time it is
+        // needed. Old saves that recorded only two bosses keep them as the
+        // first two releases so a dead boss is never fought again.
+        void EnsureBossOrder()
+        {
+            if (GetPersistentData(PERSISTENT_DATA_BOSS_ORDER_0))
+                return;
+
+            uint32 pool[6] = { BOSS_MORAGG, BOSS_EREKEM, BOSS_ICHORON, BOSS_LAVANTHOR, BOSS_XEVOZZ, BOSS_ZURAMAT };
+            for (int8 i = 5; i > 0; --i)
+            {
+                uint8 const j = uint8(urand(0, uint32(i)));
+                uint32 const tmp = pool[i];
+                pool[i] = pool[j];
+                pool[j] = tmp;
+            }
+
+            uint32 const legacy[2] = { GetPersistentData(PERSISTENT_DATA_FIRST_BOSS), GetPersistentData(PERSISTENT_DATA_SECOND_BOSS) };
+            for (uint8 slot = 0; slot < 2; ++slot)
+                if (legacy[slot])
+                    for (uint8 i = slot; i < 6; ++i)
+                        if (pool[i] == legacy[slot])
+                        {
+                            uint32 const tmp = pool[slot];
+                            pool[slot] = pool[i];
+                            pool[i] = tmp;
+                            break;
+                        }
+
+            for (uint8 i = 0; i < 6; ++i)
+                StorePersistentData(PERSISTENT_DATA_BOSS_ORDER_0 + i, pool[i]);
+        }
+
+        uint32 BossForCurrentWave() const
+        {
+            if (_waveCount < VH_WAVE_FIRST_BOSS || _waveCount > VH_WAVE_LAST_BOSS || (_waveCount % 2) != 0)
+                return 0;
+            return GetPersistentData(PERSISTENT_DATA_BOSS_ORDER_0 + (_waveCount / 2 - 1));
         }
 
     private:

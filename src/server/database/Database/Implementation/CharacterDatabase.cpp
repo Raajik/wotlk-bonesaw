@@ -642,6 +642,14 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     // By providing the realm ID explicitly, this ensures that mysql reverse proxy will use
     // correct realm database for the transaction.
     PrepareStatement(CHAR_NO_OP_PROVIDE_REALM_CONTEXT, "SELECT ? AS no_op", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_INS_LG_BUG_REPORT,
+        "INSERT INTO lg_bug_report (report_type, is_critical, is_recurring, account_id, character_guid,"
+        " character_name, reported_at, map_id, zone_id, zone_name, pos_x, pos_y, pos_z, player_level,"
+        " target_entry, target_name, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_LG_BUG_REPORT_VERIFY,
+        "SELECT id FROM lg_bug_report WHERE account_id = ? AND reported_at = ? AND description = ?",
+        CONNECTION_ASYNC);
 }
 
 CharacterDatabaseConnection::CharacterDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)

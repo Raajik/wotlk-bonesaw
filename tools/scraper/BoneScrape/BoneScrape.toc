@@ -1,0 +1,7 @@
+## Interface: 30300
+## Title: BoneScrape
+## Notes: Passive data recorder. Logs everything the server sends this client to SavedVariables.
+## Author: Bonesaw
+## Version: 1.0
+## SavedVariables: BoneScrapeDB
+BoneScrape.lua

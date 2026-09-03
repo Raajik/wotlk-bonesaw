@@ -446,6 +446,21 @@ class spell_hun_ascpect_of_the_viper : public AuraScript
     }
 };
 
+// Chimera Shot pays out a share of the sting's whole-duration output, so it
+// scales off the tick count. A permanent sting reports zero ticks, which would
+// silently zero the payout -- fall back to the count the spell was designed for.
+static int32 GetStingTickCount(Aura const* aura, AuraEffect const* aurEff)
+{
+    int32 const ticks = aurEff->GetTotalTicks();
+    if (ticks > 0)
+        return ticks;
+
+    int32 const amplitude = aurEff->GetAmplitude();
+    int32 const duration = aura->GetSpellInfo()->GetMaxDuration();
+    int32 const designed = (amplitude > 0 && duration > 0) ? duration / amplitude : 0;
+    return designed > 0 ? designed : 1;
+}
+
 // 53209 Chimera Shot
 class spell_hun_chimera_shot : public SpellScript
 {
@@ -479,7 +494,7 @@ class spell_hun_chimera_shot : public SpellScript
                     // Serpent Sting - Instantly deals 40% of the damage done by your Serpent Sting.
                     if (familyFlag[0] & 0x4000)
                     {
-                        int32 TickCount = aurEff->GetTotalTicks();
+                        int32 TickCount = GetStingTickCount(aura, aurEff);
                         spellId = SPELL_HUNTER_CHIMERA_SHOT_SERPENT;
                         basePoint = aurEff->GetAmount();
                         ApplyPct(basePoint, TickCount * 40);
@@ -488,7 +503,7 @@ class spell_hun_chimera_shot : public SpellScript
                     // Viper Sting - Instantly restores mana to you equal to 60% of the total amount drained by your Viper Sting.
                     else if (familyFlag[1] & 0x00000080)
                     {
-                        int32 TickCount = aura->GetEffect(0)->GetTotalTicks();
+                        int32 TickCount = GetStingTickCount(aura, aurEff);
                         spellId = SPELL_HUNTER_CHIMERA_SHOT_VIPER;
 
                         // Amount of one aura tick

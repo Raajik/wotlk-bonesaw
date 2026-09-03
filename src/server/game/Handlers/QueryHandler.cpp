@@ -16,10 +16,12 @@
  */
 
 #include "Common.h"
+#include "Creature.h"
 #include "GameTime.h"
 #include "Log.h"
 #include "MapMgr.h"
 #include "NPCHandler.h"
+#include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Opcodes.h"
 #include "Pet.h"
@@ -98,6 +100,19 @@ void WorldSession::HandleCreatureQueryOpcode(WorldPacket& recvData)
         std::string Name, Title;
         Name = ci->Name;
         Title = ci->SubName;
+
+        // Living Gear's Subtlety "Shadow Clone" (entry 910201, mod-living-gear)
+        // is meant to be visually indistinguishable from the owning player --
+        // this query is keyed by template entry, not GUID, so every instance
+        // normally gets the same static "Shadow Clone" name from
+        // creature_template regardless of who owns it. Substitute the real
+        // owner's character name for this one entry only; falls straight
+        // through to the normal name on any lookup failure.
+        if (entry == 910201 && _player)
+            if (Creature* clone = ObjectAccessor::GetCreature(*_player, guid))
+                if (Unit* owner = clone->GetOwner())
+                    if (Player* ownerPlayer = owner->ToPlayer())
+                        Name = ownerPlayer->GetName();
 
         LocaleConstant loc_idx = GetSessionDbLocaleIndex();
         if (loc_idx >= 0)

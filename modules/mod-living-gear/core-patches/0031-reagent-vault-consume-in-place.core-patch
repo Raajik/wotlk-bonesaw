@@ -1,0 +1,74 @@
+Consuming from the reagent vault without putting the materials in a bag
+first. Retires the movement half of 0011; keeps the vault connected to
+the engine's reagent machinery.
+
+Touches: src/server/game/Spells/Spell.cpp -- Spell::CheckItems() (the
+Reagent[] gate) and Spell::TakeReagents() (consumption), plus the
+SPELL_FAILED_REAGENTS branch of Spell::WriteCastResultInfo() so the
+"missing reagent" name uses the same arithmetic as the gate.
+
+Why: the reagent bank is a STORE the player deliberately files materials
+and tools into. Craft-from-vault was implemented (0011) by topping the
+bag up -- withdrawing the shortfall into the backpack right before the
+engine's HasItemCount check -- and normal consumption then destroyed it
+from the bag. The observable behaviour was exactly what players
+complained about: craft anything a few times and the vault was drained
+into the backpack, tools included in the pre-0022 era, materials always.
+Any craft whose later checks failed (or a craft-all batch cancelled
+halfway) left the topped-up reagents stranded in the bags with no
+command to send them back except DEPOSITALL.
+
+The fix is the same shape 0022 already used for tools: ANSWER the check
+in place instead of moving anything.
+
+  Spell::CheckItems, the Reagent[] check
+-                LivingGear_TopUpReagentFromVault(player, itemid, itemcount);
+-                if (!player->HasItemCount(itemid, itemcount, true))
++                if (!player->HasItemCount(itemid, itemcount, true)
++                    && !LivingGear_VaultCoversReagent(player, itemid, itemcount))
+                     return SPELL_FAILED_REAGENTS;
+
+  Spell::TakeReagents, the consumption loop
+-        p_caster->DestroyItemCount(itemid, itemcount, true);
++        LivingGear_ConsumeReagent(p_caster, itemid, itemcount);
+
+LivingGear_VaultCoversReagent (LivingGear_Vault.cpp) returns true when
+bags + bank + vault cover the requirement. LivingGear_ConsumeReagent
+pays from bags/bank via the normal DestroyItemCount bookkeeping and
+burns only the shortfall directly out of the vault (VaultRemove), then
+sends the VLT| sync line so the client's vault panel and craftable
+totals stay fresh mid-batch -- the stale-count lesson from 2026-08-24,
+kept.
+
+Nothing else changes. Tools still satisfy Totem[]/TotemCategory[] in
+place via 0022 and are never consumed. The client addon's CRAFTPREP
+staging request and its watchdog/fallback machinery are removed at the
+same time -- their only job was to stage materials into the bag for a
+cast the client might refuse, and no such cast exists: the Create
+button already counts the vault (GetTradeSkillInfo / GetCraftInfo /
+GetTradeSkillReagentInfo / GetCraftReagentInfo hooks), so a refused
+craft is now refused for a real reason instead of being papered over
+with a quiet withdrawal.
+
+--- a/src/server/game/Spells/Spell.cpp
++++ b/src/server/game/Spells/Spell.cpp
+@@ near the other Living Gear forward declarations
+-void LivingGear_TopUpReagentFromVault(Player* player, uint32 itemId, uint32 needed);
++bool LivingGear_VaultCoversReagent(Player* player, uint32 itemId, uint32 needed);
++void LivingGear_ConsumeReagent(Player* player, uint32 itemId, uint32 count);
+
+@@ Spell::CheckItems, the MAX_SPELL_REAGENTS loop
+-                LivingGear_TopUpReagentFromVault(player, itemid, itemcount);
+-                if (!player->HasItemCount(itemid, itemcount, true))
++                if (!player->HasItemCount(itemid, itemcount, true)
++                    && !LivingGear_VaultCoversReagent(player, itemid, itemcount))
+                     return SPELL_FAILED_REAGENTS;
+
+@@ Spell::TakeReagents, the consumption loop
+-        p_caster->DestroyItemCount(itemid, itemcount, true);
++        LivingGear_ConsumeReagent(p_caster, itemid, itemcount);
+
+@@ Spell::WriteCastResultInfo, SPELL_FAILED_REAGENTS
+-                    if (!caster->HasItemCount(itemid, itemcount))
++                    if (!caster->HasItemCount(itemid, itemcount)
++                        && !LivingGear_VaultCoversReagent(caster, itemid, itemcount))

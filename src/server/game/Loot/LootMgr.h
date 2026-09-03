@@ -59,7 +59,8 @@ enum LootMethod
     ROUND_ROBIN                         = 1,
     MASTER_LOOT                         = 2,
     GROUP_LOOT                          = 3,
-    NEED_BEFORE_GREED                   = 4
+    NEED_BEFORE_GREED                   = 4,
+    PERSONAL_LOOT                       = 5
 };
 
 enum PermissionTypes
@@ -320,7 +321,7 @@ struct Loot
     std::vector<LootItem> items;
     std::vector<LootItem> quest_items;
     uint32 gold;
-    uint8 unlootedCount{0};
+    uint32 unlootedCount{0};
     ObjectGuid roundRobinPlayer;        // GUID of the player having the Round-Robin ownership for the loot. If 0, round robin owner has released.
     ObjectGuid lootOwnerGUID;
     LootType loot_type{LOOT_NONE};      // required for achievement system

@@ -48,13 +48,15 @@ struct npc_vh_teleportation_portal : public NullCreatureAI
         _isKeeperOrGuardian = false;
         _spawned = false;
 
-        if (_wave < 12)
-            _addValue = 0;
-        else
+        // Report #173: boss waves are the even ones (2..12) -- one trash
+        // portal between releases. The back half still sends bigger groups.
+        if (_wave >= 7)
             _addValue = 1;
+        else
+            _addValue = 0;
 
-        if (_wave % 6 != 0)
-            _events.RescheduleEvent(RAND(EVENT_SUMMON_KEEPER_OR_GUARDIAN, EVENT_SUMMON_ELITES), 10s);
+        if (_wave % 2 != 0)
+            _events.RescheduleEvent(RAND(EVENT_SUMMON_KEEPER_OR_GUARDIAN, EVENT_SUMMON_ELITES), 5s);
         else
             _events.RescheduleEvent(EVENT_SUMMON_SABOTEOUR, 3s);
     }
@@ -123,7 +125,7 @@ struct npc_vh_teleportation_portal : public NullCreatureAI
     void JustDied(Unit* /*killer*/) override
     {
         _events.Reset();
-        if (_wave % 6 == 0)
+        if (_wave % 2 == 0)
             return;
         _instance->DoAction(ACTION_PORTAL_DEFEATED);
     }
@@ -830,9 +832,7 @@ struct npc_azure_saboteur : public npc_escortAI
     npc_azure_saboteur(Creature* c) : npc_escortAI(c)
     {
         _instance = c->GetInstanceScript();
-        _boss = _instance->GetData(DATA_WAVE_COUNT) == 6
-            ? _instance->GetPersistentData(PERSISTENT_DATA_FIRST_BOSS)
-            : _instance->GetPersistentData(PERSISTENT_DATA_SECOND_BOSS);
+        _boss = _instance->GetData(DATA_BOSS_FOR_CURRENT_WAVE);
         _isOpening = false;
     }
 
@@ -920,7 +920,7 @@ struct npc_azure_saboteur : public npc_escortAI
                     DoCastSelf(SABOTEUR_SHIELD_DISRUPTION);
                     ++_count;
                     if (_count < 3)
-                        _events.RescheduleEvent(EVENT_SABOTEUR_SHIELD_DISRUPTION, 1s);
+                        _events.RescheduleEvent(EVENT_SABOTEUR_SHIELD_DISRUPTION, 500ms);
                     else
                     {
                         _instance->DoAction(ACTION_RELEASE_BOSS);

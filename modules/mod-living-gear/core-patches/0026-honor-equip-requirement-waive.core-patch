@@ -1,0 +1,33 @@
+Honor TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT in CheckItems' weapon checks.
+
+Touches: src/server/game/Spells/Spell.cpp
+
+Why: bug reports #28/#42/#90 -- "still not seeing garrote or ambush cast
+when i use hemorrhage" / "Shadowstep aoe pickpocket doesn't appear to
+work" / pickpocket redesign request. Log forensics on Server.log found
+~532,000 failed Ambush casts from Living Gear's Hemorrhage spread, all
+with SPELL_FAILED_EQUIPPED_ITEM_CLASS_MAINHAND.
+
+The module casts Ambush with TRIGGERED_IGNORE_EQUIPPED_ITEM_REQUIREMENT
+(0x00080000) specifically to waive Ambush's dagger requirement, because a
+"spread an Ambush" perk cannot sensibly require the rogue to carry a
+dagger when Hemorrhage itself takes axes, maces, swords, staves and fists.
+But the guard at the top of the weapon-presence block in Spell::CheckItems
+had the flag check commented out:
+
+    if (/*never skip those checks !HasTriggeredCastFlag(...) &&*/ ...)
+
+so the flag was a no-op for the ATTR3_REQUIRES_MAIN_HAND_WEAPON /
+REQUIRES_OFF_HAND_WEAPON presence-and-fit checks. Every Ambush landed
+result 30 and was silently swallowed by TRIGGERED_DONT_REPORT_CAST_ERROR.
+
+The fix re-enables the guard. The flag sits OUTSIDE TRIGGERED_FULL_MASK,
+so it is only ever set by explicitly-flagged triggered casts; ordinary
+player casts of Ambush still demand the dagger exactly as before.
+
+Secondary module-side fix (mod-living-gear, not this patch): the same log
+showed ~115k OUT_OF_RANGE / UNIT_NOT_INFRONT Garrote+Ambush failures
+because the spread cast melee-range spells at targets up to 15 yards away
+and behind the player, plus ~1.7k BAD_TARGETS on skeletons that cannot
+bleed. The spread now gates to melee range + front arc + bleedable
+creature types.

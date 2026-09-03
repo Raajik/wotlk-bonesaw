@@ -108,6 +108,7 @@ enum Events
     EVENT_BERSERK                           = 2,
     EVENT_DREAM_PORTAL                      = 3,
     EVENT_DREAM_SLIP                        = 4,
+    EVENT_AUTO_FULL_HEAL                    = 100,
 
     // The Lich King
     EVENT_GLUTTONOUS_ABOMINATION_SUMMONER   = 5,
@@ -318,6 +319,11 @@ public:
             _events.Reset();
             _events.ScheduleEvent(EVENT_INTRO_TALK, 15s);
             _events.ScheduleEvent(EVENT_DREAM_PORTAL, 45s, 48s);
+            // Report #214: playerbots never heal Valithria, so the encounter
+            // can never complete. Five seconds into combat she is restored to
+            // full health, which finishes the fight through the normal success
+            // path (achievement, Dreamwalker's Rage, dream slip).
+            _events.ScheduleEvent(EVENT_AUTO_FULL_HEAL, 5s);
             if (IsHeroic())
                 _events.ScheduleEvent(EVENT_BERSERK, 7min);
         }
@@ -445,6 +451,23 @@ public:
                     break;
                 case EVENT_DREAM_SLIP:
                     me->CastSpell(me, SPELL_DREAM_SLIP, false);
+                    break;
+                case EVENT_AUTO_FULL_HEAL:
+                    // Report #214: same completion path a real heal to 100%
+                    // would take (see HealReceived).
+                    if (!_done)
+                    {
+                        _done = true;
+                        Talk(SAY_VALITHRIA_SUCCESS);
+                        _instance->SendEncounterUnit(ENCOUNTER_FRAME_DISENGAGE, me);
+                        me->RemoveAurasDueToSpell(SPELL_CORRUPTION_VALITHRIA);
+                        me->CastSpell(me, SPELL_ACHIEVEMENT_CHECK, true);
+                        me->CastSpell((Unit*)nullptr, SPELL_DREAMWALKERS_RAGE, false);
+                        me->SetFullHealth();
+                        _events.ScheduleEvent(EVENT_DREAM_SLIP, 3500ms);
+                        if (Creature* lichKing = ObjectAccessor::GetCreature(*me, _instance->GetGuidData(DATA_VALITHRIA_LICH_KING)))
+                            lichKing->AI()->EnterEvadeMode();
+                    }
                     break;
                 default:
                     break;
