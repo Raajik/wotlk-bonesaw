@@ -112,7 +112,7 @@ except Exception: print("")' 2>/dev/null | grep -qx "$WM_CLASS"
 # Everything is guarded on the game holding focus, because a stray keystroke
 # here lands in whatever the player has in front of them.
 autologin() {
-    local acct="$1"
+    local acct="$1" game_pid="${2:-}"
     have ydotool || { echo "bonesaw: ydotool not installed, skipping auto-login" >&2; return; }
     have secret-tool || return
     if [[ ! -S "$YDOTOOL_SOCKET" ]]; then
@@ -128,6 +128,12 @@ autologin() {
     # which is the property that actually matters.
     local deadline=$((SECONDS + WINDOW_TIMEOUT)) held=0
     while (( SECONDS < deadline )); do
+        # Give up immediately if the player quit: otherwise this keeps polling
+        # for the rest of the timeout after the game is gone, and the launcher
+        # sits there long after the window has closed.
+        if [[ -n "$game_pid" ]] && ! kill -0 "$game_pid" 2>/dev/null; then
+            return
+        fi
         if focused_is_game; then
             (( ++held >= SETTLE )) && break
         else
@@ -185,7 +191,7 @@ cd "$GAME_DIR"
 if [[ -n "$ACCOUNT" ]]; then
     wine Wow.exe "$@" &
     game_pid=$!
-    autologin "$ACCOUNT"
+    autologin "$ACCOUNT" "$game_pid"
     wait "$game_pid"
 else
     exec wine Wow.exe "$@"
