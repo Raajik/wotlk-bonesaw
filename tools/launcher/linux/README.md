@@ -17,8 +17,22 @@ tools/launcher/linux/install.sh "/path/to/World of Warcraft/3.3.5/Bonesaw"
 Installs `bonesaw` to `~/.local/bin`, a desktop entry with the Bonesaw mark,
 and remembers the client directory. No root, nothing outside `~/.local`.
 
-Dependencies: `wine` to play, plus `wtype` and `libsecret` for auto-login.
+Dependencies: `wine` to play, plus `ydotool` and `libsecret` for auto-login.
 The installer names the package for your distro if anything is missing.
+
+Auto-login also needs the `ydotoold` daemon, since `/dev/uinput` is root-only:
+
+```bash
+sudo install -m644 ydotoold.service /etc/systemd/system/
+sudo sed -i "s/1000:1000/$(id -u):$(id -g)/" /etc/systemd/system/ydotoold.service
+sudo systemctl daemon-reload && sudo systemctl enable --now ydotoold
+```
+
+It runs as root but with `--mouse-off` and a `0600` control socket owned by your
+user, so only you can inject input. That is deliberately *not* the usual "add
+yourself to the `input` group" advice, which would grant read access to every
+input device on the machine — a keylogging surface. Without the daemon the
+launcher still starts the game, it just skips auto-login.
 
 ## Use
 
@@ -38,27 +52,30 @@ second design:
 - The **account name** is written to `WTF/Config.wtf` as `SET accountName`, so
   the *client* prefills the field. The launcher never types it. This happens
   before the game starts, because WoW rewrites `Config.wtf` on a clean exit.
-- The **password** is read from the Secret Service keyring and piped to `wtype`
-  on **stdin**. Passing it as an argument would expose it in `ps` to every
-  process on the machine.
+- The **password** is read from the Secret Service keyring and piped to
+  `ydotool type --file -` on **stdin**. Passing it as an argument would expose
+  it in `ps` to every process on the machine.
 - With the account prefilled the client focuses the password field itself, so
   the password is typed straight in and `Return` pressed 250ms later. **No Tab**
   — a Tab moves focus off the password field and the password ends up somewhere
   visible.
 
-Timing matches `paste_login()` on Windows: a 12s window timeout, a 6s settle
-once the game has focus, then 250ms before `Return`. Keystrokes are spaced 12ms
-apart (`wtype` defaults to 0, which fires the whole password at XWayland in one
-burst and can wedge the client).
+Timing follows `paste_login()` on Windows: the game must hold focus for 6
+seconds, then 250ms between the password and `Return`.
 
-`Return` is pressed and released as explicit ops with a trailing sleep, not as a
-single `-k`. From `wtype(1)`: *"modifiers get released automatically once the
-program terminates"* — `wtype` drops its virtual keyboard the moment it exits,
-so a release racing that teardown leaves the client seeing `Return` held down,
-which wedges it on the login screen.
+### Why ydotool and not wtype
 
-If the client still locks up on the synthetic `Return`, type the password but
-press Enter yourself:
+`wtype` looks like the obvious tool here and it does type correctly, but it
+**reliably wedges the Wine client**. It creates a Wayland virtual keyboard with
+its own keymap and tears it down when it exits, and Wine does not survive that
+keymap churn — the client keeps rendering but never receives input again.
+
+This was confirmed by suppressing `Return` entirely: the client still froze with
+no Enter ever sent, which ruled out every key-timing explanation. `ydotool`
+injects through `/dev/uinput` as a real kernel input device, so there is no
+virtual keyboard, no keymap swap, and nothing torn down afterwards.
+
+If you ever need to type the password but press Enter yourself:
 
 ```bash
 BONESAW_SEND_ENTER=0 bonesaw
@@ -68,7 +85,7 @@ The password is never written to disk. Only the account name is, in
 `~/.config/bonesaw/account`.
 
 On Linux this is a little safer than the Windows path, which pastes via the
-clipboard and briefly exposes the password to any clipboard watcher. `wtype`
+clipboard and briefly exposes the password to any clipboard watcher. `ydotool`
 injects keystrokes directly, so nothing reaches the clipboard.
 
 ### The focus guard
@@ -122,8 +139,9 @@ happily open sideways on it.
 | variable | default | meaning |
 |---|---|---|
 | `BONESAW_DIR` | `~/.config/bonesaw/gamedir` | client directory |
-| `BONESAW_SETTLE` | `6` | seconds after focus before typing |
-| `BONESAW_WINDOW_TIMEOUT` | `12` | seconds to wait for the game window |
-| `BONESAW_KEY_DELAY` | `12` | milliseconds between keystrokes |
+| `BONESAW_SETTLE` | `6` | seconds the game must hold focus before typing |
+| `BONESAW_WINDOW_TIMEOUT` | `90` | overall budget to start, focus and settle |
+| `BONESAW_KEY_DELAY` | `20` | milliseconds between keystrokes |
+| `YDOTOOL_SOCKET` | `/run/ydotoold.socket` | ydotoold control socket |
 | `BONESAW_SEND_ENTER` | `1` | `0` types the password but leaves Enter to you |
 | `WINEPREFIX` | `~/.local/share/wineprefixes/bonesaw` | Wine prefix |

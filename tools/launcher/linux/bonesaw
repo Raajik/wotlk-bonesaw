@@ -8,11 +8,12 @@
 #   bonesaw --set-dir DIR   remember where the client lives
 #
 # The password is kept in the Secret Service keyring (gnome-keyring, KWallet),
-# never on disk, and is handed to wtype on stdin so it never appears in argv
+# never on disk, and is handed to ydotool on stdin so it never appears in argv
 # where ps would show it. Only the account name reaches Config.wtf, which is
 # what the client already stores itself.
 #
-# Requires: wine, wtype, libsecret (secret-tool), and a running Secret Service.
+# Requires: wine, ydotool (+ the ydotoold daemon), libsecret (secret-tool), and
+# a running Secret Service. See README.md for the ydotoold unit.
 set -euo pipefail
 
 STATE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/bonesaw"
@@ -20,15 +21,20 @@ ACCOUNT_FILE="$STATE_DIR/account"
 GAMEDIR_FILE="$STATE_DIR/gamedir"
 WM_CLASS="wow.exe"
 
-# Seconds to wait after the game window takes focus before typing. A late
-# keystroke is harmless -- the client drops it and you log in by hand. Raise it
-# if the login screen is slow to appear on your machine. Both values match the
-# Windows launcher's SETTLE and WINDOW_TIMEOUT.
+# Seconds the game must hold focus continuously before anything is typed.
+# Matches the Windows launcher's SETTLE.
 SETTLE="${BONESAW_SETTLE:-6}"
-WINDOW_TIMEOUT="${BONESAW_WINDOW_TIMEOUT:-12}"
-# Milliseconds between keystrokes. wtype defaults to 0, which fires the whole
-# password at XWayland in one burst and can wedge the client.
-KEY_DELAY="${BONESAW_KEY_DELAY:-12}"
+# Overall budget for the game to start, take focus and settle. Windows uses 12s
+# for its window wait, but that launcher starts a client that is already warm;
+# here the client needs ~30s to reach the login screen from a cold start.
+WINDOW_TIMEOUT="${BONESAW_WINDOW_TIMEOUT:-90}"
+# Milliseconds between keystrokes.
+KEY_DELAY="${BONESAW_KEY_DELAY:-20}"
+# ydotoold's control socket. Input is injected through /dev/uinput as a real
+# kernel input device -- wtype's Wayland virtual keyboard reliably wedges the
+# Wine client, see README.md.
+export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-/run/ydotoold.socket}"
+KEY_ENTER=28  # linux/input-event-codes.h KEY_ENTER
 # Set to 0 to type the password but leave Enter to you. The fallback if the
 # client ever wedges on the synthetic Return again.
 SEND_ENTER="${BONESAW_SEND_ENTER:-1}"
@@ -107,21 +113,32 @@ except Exception: print("")' 2>/dev/null | grep -qx "$WM_CLASS"
 # here lands in whatever the player has in front of them.
 autologin() {
     local acct="$1"
-    have wtype || { echo "bonesaw: wtype not installed, skipping auto-login" >&2; return; }
+    have ydotool || { echo "bonesaw: ydotool not installed, skipping auto-login" >&2; return; }
     have secret-tool || return
+    if [[ ! -S "$YDOTOOL_SOCKET" ]]; then
+        echo "bonesaw: no ydotoold socket at $YDOTOOL_SOCKET, skipping auto-login" >&2
+        return
+    fi
 
-    local deadline=$((SECONDS + WINDOW_TIMEOUT))
+    # Wait for the game to hold focus for SETTLE seconds *continuously*. The
+    # earlier version sampled focus at two instants six seconds apart, so a
+    # glance at another window between them cancelled auto-login outright.
+    # Losing focus should postpone the keystrokes, not abandon them -- and
+    # requiring an unbroken run means the game is still focused when we type,
+    # which is the property that actually matters.
+    local deadline=$((SECONDS + WINDOW_TIMEOUT)) held=0
     while (( SECONDS < deadline )); do
-        focused_is_game && break
+        if focused_is_game; then
+            (( ++held >= SETTLE )) && break
+        else
+            held=0
+        fi
         sleep 1
     done
-    focused_is_game || { echo "bonesaw: game never took focus, skipping auto-login" >&2; return; }
-
-    sleep "$SETTLE"
-
-    # Re-check right before typing: the player may have alt-tabbed away during
-    # the settle, and the password must never go to another window.
-    focused_is_game || { echo "bonesaw: focus left the game, skipping auto-login" >&2; return; }
+    if (( held < SETTLE )); then
+        echo "bonesaw: game did not hold focus for ${SETTLE}s, skipping auto-login" >&2
+        return
+    fi
 
     local pw
     if ! pw=$(secret-tool lookup service bonesaw account "$acct" 2>/dev/null) || [[ -z "$pw" ]]; then
@@ -129,22 +146,16 @@ autologin() {
         return
     fi
 
-    # One wtype invocation: each call creates and tears down a virtual keyboard,
-    # and back-to-back ones can drop keystrokes. -s 250 matches the Windows gap
-    # between the paste and Enter. The password arrives on stdin, never argv.
-    #
-    # Return is pressed and released explicitly with a trailing sleep rather
-    # than as one -k. wtype drops its virtual keyboard the moment it exits (see
-    # wtype(1): "modifiers get released automatically once the program
-    # terminates"), so a release racing that teardown leaves the client seeing
-    # Return held down -- which wedges it on the login screen.
+    # --file - keeps the password off argv, where ps would show it.
+    printf '%s' "$pw" | ydotool type --key-delay "$KEY_DELAY" --file -
+    unset pw
+
     if [[ "$SEND_ENTER" == "1" ]]; then
-        printf '%s' "$pw" | wtype -d "$KEY_DELAY" - -s 250 -P Return -s 80 -p Return -s 600
+        sleep 0.25   # the 250ms the Windows launcher waits before Enter
+        ydotool key "${KEY_ENTER}:1" "${KEY_ENTER}:0"
     else
-        printf '%s' "$pw" | wtype -d "$KEY_DELAY" - -s 300
         echo "bonesaw: password typed; press Enter to log in" >&2
     fi
-    unset pw
 }
 
 case "${1:-}" in

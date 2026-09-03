@@ -56,16 +56,26 @@ if [[ -n "${1:-}" ]]; then
 fi
 
 missing=()
-for t in wine wtype secret-tool; do
+for t in wine ydotool secret-tool; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
 done
 if (( ${#missing[@]} )); then
     echo
     echo "missing: ${missing[*]}"
-    echo "  Arch:            sudo pacman -S wine wtype libsecret"
-    echo "  Debian/Ubuntu:   sudo apt install wine wtype libsecret-tools"
-    echo "  Fedora:          sudo dnf install wine wtype libsecret"
-    echo "(wtype and secret-tool are only needed for auto-login)"
+    echo "  Arch:            sudo pacman -S wine ydotool libsecret"
+    echo "  Debian/Ubuntu:   sudo apt install wine ydotool libsecret-tools"
+    echo "  Fedora:          sudo dnf install wine ydotool libsecret"
+    echo "(ydotool and secret-tool are only needed for auto-login)"
+fi
+
+# ydotool talks to a daemon that owns /dev/uinput, which is root-only. Without
+# it the launcher still starts the game, it just skips auto-login.
+if [[ ! -S /run/ydotoold.socket ]]; then
+    echo
+    echo "auto-login also needs the ydotoold daemon. To install it:"
+    echo "  sudo install -m644 $HERE/ydotoold.service /etc/systemd/system/"
+    echo "  sudo sed -i \"s/1000:1000/\$(id -u):\$(id -g)/\" /etc/systemd/system/ydotoold.service"
+    echo "  sudo systemctl daemon-reload && sudo systemctl enable --now ydotoold"
 fi
 
 case ":$PATH:" in
