@@ -155,3 +155,17 @@ tools/client-update/soap.env
 # 9GB MySQL datadir + 3GB client data -- never commit these.
 /data/mysql/
 /data/client-data/
+
+# Transient build/ship logs. These used to accumulate in the repo root, one per
+# ship, until `git status` was too noisy for the ship preflight's "working tree
+# must be clean" check to mean anything. Write new ones under .logs/.
+/.logs/
+/.build*.log
+/.build*.err.log
+/.ship*.log
+/.ship*.err.log
+/.crash*.log
+/.sweep-*
+# Created by running PowerShell's `> $null` idiom in a shell where it is just a
+# filename. Ignored so it stops coming back as a phantom untracked file.
+/$null

@@ -24,6 +24,9 @@ PAYLOAD = HERE / "payload"
 UPDATE = ROOT / "tools" / "client-update"
 MANIFEST = UPDATE / "Bonesaw.manifest.txt"
 BUILT = HERE / "target" / "release" / "Bonesaw.exe"
+# The launcher is a Windows binary wherever it is built from.
+WIN_TARGET = "x86_64-pc-windows-gnu"
+CROSS_BUILT = HERE / "target" / WIN_TARGET / "release" / "Bonesaw.exe"
 DIST = HERE / "dist" / "Bonesaw.exe"
 RELEASE_URL = "https://github.com/Raajik/wotlk-bonesaw/releases/download/v{version}/Bonesaw.exe"
 
@@ -105,19 +108,32 @@ def main() -> None:
             print(f"payload  {name}  {src.stat().st_size:,} bytes")
 
     print("building Bonesaw.exe ...")
-    # The msvc toolchain needs link.exe, which left this machine with Visual
-    # Studio; the container cross-build (tools/_launcher_build.cmd, mingw-w64
-    # inside rust:latest) produces the same Windows exe without it.
-    try:
-        subprocess.run(["cargo", "build", "--release"], cwd=HERE, check=True)
-        built = BUILT
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        print(f"msvc build unavailable ({exc.__class__.__name__}); cross-building in a container ...")
-        subprocess.run([str(ROOT / "tools" / "_launcher_build.cmd")], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
-        built = HERE / "target" / "x86_64-pc-windows-gnu" / "release" / "Bonesaw.exe"
+    if sys.platform != "win32":
+        # Off Windows the only sane target is the mingw cross-build. Needs
+        # `rustup target add x86_64-pc-windows-gnu` and mingw-w64-gcc, whose
+        # windres also lets build.rs embed the icon and version resource --
+        # winresource only warns when that fails, so a missing windres would
+        # quietly ship an exe with no icon.
+        subprocess.run(
+            ["cargo", "build", "--release", "--target", WIN_TARGET], cwd=HERE, check=True
+        )
+        built = CROSS_BUILT
         if not built.exists():
-            raise SystemExit("cross-build produced no exe")
+            raise SystemExit(f"cross-build produced no exe at {built}")
+    else:
+        # The msvc toolchain needs link.exe, which left this machine with Visual
+        # Studio; the container cross-build (tools/_launcher_build.cmd, mingw-w64
+        # inside rust:latest) produces the same Windows exe without it.
+        try:
+            subprocess.run(["cargo", "build", "--release"], cwd=HERE, check=True)
+            built = BUILT
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            print(f"msvc build unavailable ({exc.__class__.__name__}); cross-building in a container ...")
+            subprocess.run([str(ROOT / "tools" / "_launcher_build.cmd")], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            built = CROSS_BUILT
+            if not built.exists():
+                raise SystemExit("cross-build produced no exe")
 
     # The release artifact is a stable copy, so re-running this script cannot
     # quietly replace the file whose hash went into the manifest.
