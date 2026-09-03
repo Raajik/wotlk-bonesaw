@@ -25,7 +25,7 @@ Order of operations (tag-last ordering: the ship tag is the FINISH line, so
  11. gh release edit vX.Y.Z --notes-file
  12. commit patch notes ("Patch notes X.Y.Z")
  13. tag ship/X.Y.Z  (LAST, after every artifact commit)
- 14. push Playerbot + tag
+ 14. push the current branch + tag
 
 Requires: gh authenticated, docker NOT required, network for github.
 """
@@ -294,7 +294,11 @@ def main() -> None:
 
     # 13-14. tag LAST, then push everything together
     run(f'git tag "{tag}"')
-    run(f"git push origin Playerbot \"{tag}\"")
+    # The fork migration moved the working branch from Playerbot to main; a
+    # hardcoded branch here pushed the tag while leaving the shipped commits
+    # unpushed (0.1.133).
+    branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True).strip()
+    run(f"git push origin {branch} \"{tag}\"")
 
     print()
     print(f"Ship {version} bookkeeping complete. Tag {tag} is the finish line; "
