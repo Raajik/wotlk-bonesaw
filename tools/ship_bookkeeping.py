@@ -182,13 +182,51 @@ def main() -> None:
         print("  version already bumped to " + version)
 
     if client:
-        # 2-5. MPQs, launcher, release, verify
-        run("python tools/client-patch/build_patch.py")
-        run("python tools/launcher/build_launcher.py")
-        run(f'gh release create v{version} --repo {REPO} --latest '
-            f'--title "Bonesaw client {version}" --notes "Run Bonesaw.exe." '
-            f'"{LAUNCHER_EXE}"')
-        run("python tools/launcher/build_launcher.py --verify")
+        # 2-5. MPQs, launcher, release, verify.
+        #
+        # Only when the release does not exist yet. Both stages used to run this
+        # block, so --post rebuilt the exe that --notes-only had already
+        # published -- and the exe is not byte-reproducible, so the rebuilt one
+        # hashed differently and the manifest stopped describing the asset
+        # players download. Then `gh release create` aborted on the existing
+        # tag, leaving the ship half-done with a manifest that would have
+        # stranded everyone on a hash mismatch. Publishing is done once.
+        already = subprocess.run(
+            f"gh release view v{version} --repo {REPO}",
+            shell=True, cwd=ROOT, capture_output=True, text=True,
+        ).returncode == 0
+        if already:
+            print(f"  release v{version} already published -- not rebuilding "
+                  "(the exe is not byte-reproducible; a rebuild here would stop "
+                  "the manifest matching the asset players download)")
+            # The published asset is the only thing that matters, so check the
+            # manifest against that rather than against whatever is in dist/.
+            import hashlib
+            import tempfile
+            with tempfile.TemporaryDirectory() as td:
+                got = Path(td) / "Bonesaw.exe"
+                run(f'gh release download v{version} --repo {REPO} '
+                    f'--pattern Bonesaw.exe --output "{got}" --clobber')
+                published = hashlib.sha256(got.read_bytes()).hexdigest()
+            want = ""
+            for line in MANIFEST.read_text().splitlines():
+                if line.startswith("file "):
+                    want = line.split()[1]
+            if published != want:
+                sys.exit(
+                    f"manifest describes {want[:16]}... but the published asset is "
+                    f"{published[:16]}...\nThe two must agree or every player fails "
+                    "the hash check. Re-upload the exe the manifest describes, or "
+                    "regenerate the manifest from the published asset."
+                )
+            print(f"  manifest matches the published asset ({published[:16]}...)")
+        else:
+            run("python tools/client-patch/build_patch.py")
+            run("python tools/launcher/build_launcher.py")
+            run(f'gh release create v{version} --repo {REPO} --latest '
+                f'--title "Bonesaw client {version}" --notes "Run Bonesaw.exe." '
+                f'"{LAUNCHER_EXE}"')
+            run("python tools/launcher/build_launcher.py --verify")
 
         # 6. manifest commit
         run(f'git add "{MANIFEST.relative_to(ROOT)}" && '
