@@ -51,6 +51,19 @@ once the game has focus, then 250ms before `Return`. Keystrokes are spaced 12ms
 apart (`wtype` defaults to 0, which fires the whole password at XWayland in one
 burst and can wedge the client).
 
+`Return` is pressed and released as explicit ops with a trailing sleep, not as a
+single `-k`. From `wtype(1)`: *"modifiers get released automatically once the
+program terminates"* — `wtype` drops its virtual keyboard the moment it exits,
+so a release racing that teardown leaves the client seeing `Return` held down,
+which wedges it on the login screen.
+
+If the client still locks up on the synthetic `Return`, type the password but
+press Enter yourself:
+
+```bash
+BONESAW_SEND_ENTER=0 bonesaw
+```
+
 The password is never written to disk. Only the account name is, in
 `~/.config/bonesaw/account`.
 
@@ -112,4 +125,5 @@ happily open sideways on it.
 | `BONESAW_SETTLE` | `6` | seconds after focus before typing |
 | `BONESAW_WINDOW_TIMEOUT` | `12` | seconds to wait for the game window |
 | `BONESAW_KEY_DELAY` | `12` | milliseconds between keystrokes |
+| `BONESAW_SEND_ENTER` | `1` | `0` types the password but leaves Enter to you |
 | `WINEPREFIX` | `~/.local/share/wineprefixes/bonesaw` | Wine prefix |

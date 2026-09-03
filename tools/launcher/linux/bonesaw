@@ -29,6 +29,9 @@ WINDOW_TIMEOUT="${BONESAW_WINDOW_TIMEOUT:-12}"
 # Milliseconds between keystrokes. wtype defaults to 0, which fires the whole
 # password at XWayland in one burst and can wedge the client.
 KEY_DELAY="${BONESAW_KEY_DELAY:-12}"
+# Set to 0 to type the password but leave Enter to you. The fallback if the
+# client ever wedges on the synthetic Return again.
+SEND_ENTER="${BONESAW_SEND_ENTER:-1}"
 
 die() { echo "bonesaw: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -127,10 +130,20 @@ autologin() {
     fi
 
     # One wtype invocation: each call creates and tears down a virtual keyboard,
-    # and back-to-back ones can drop keystrokes. -s matches the Windows 250ms
-    # gap between the paste and Enter. The password arrives on stdin so it is
-    # never in argv.
-    printf '%s' "$pw" | wtype -d "$KEY_DELAY" - -s 250 -k Return
+    # and back-to-back ones can drop keystrokes. -s 250 matches the Windows gap
+    # between the paste and Enter. The password arrives on stdin, never argv.
+    #
+    # Return is pressed and released explicitly with a trailing sleep rather
+    # than as one -k. wtype drops its virtual keyboard the moment it exits (see
+    # wtype(1): "modifiers get released automatically once the program
+    # terminates"), so a release racing that teardown leaves the client seeing
+    # Return held down -- which wedges it on the login screen.
+    if [[ "$SEND_ENTER" == "1" ]]; then
+        printf '%s' "$pw" | wtype -d "$KEY_DELAY" - -s 250 -P Return -s 80 -p Return -s 600
+    else
+        printf '%s' "$pw" | wtype -d "$KEY_DELAY" - -s 300
+        echo "bonesaw: password typed; press Enter to log in" >&2
+    fi
     unset pw
 }
 
