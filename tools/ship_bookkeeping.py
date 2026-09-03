@@ -130,6 +130,21 @@ def write_patch_notes(version: str) -> Path:
     return path
 
 
+def commit_if_changed(rel_path, message):
+    """git commit that is safe to re-run.
+
+    `git commit` exits 1 when there is nothing staged, so a stage-2 re-run of a
+    step stage 1 already committed used to abort the whole ship. Committing only
+    when the file actually differs makes these steps idempotent.
+    """
+    subprocess.run(f'git add "{rel_path}"', shell=True, cwd=ROOT, check=True)
+    staged = subprocess.run("git diff --cached --quiet", shell=True, cwd=ROOT).returncode
+    if staged == 0:
+        print(f"  {rel_path} already committed -- nothing to do")
+        return
+    run(f'git commit -m "{message}"')
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", required=True,
@@ -229,8 +244,7 @@ def main() -> None:
             run("python tools/launcher/build_launcher.py --verify")
 
         # 6. manifest commit
-        run(f'git add "{MANIFEST.relative_to(ROOT)}" && '
-            f'git commit -m "Manifest {version}"')
+        commit_if_changed(MANIFEST.relative_to(ROOT), f"Manifest {version}")
 
         # 7-8. publish + verify the live manifest
         run(f"gh release upload updater \"{MANIFEST}\" --repo {REPO} --clobber")
@@ -273,8 +287,7 @@ def main() -> None:
         # Create a server-only release so the notes still live on the tag page.
         run(f'gh release create v{version} --repo {REPO} --latest '
             f'--title "Bonesaw {version}" --notes-file "{notes}"')
-    run(f'git add "{notes_rel}" && '
-        f'git commit -m "Patch notes {version}"')
+    commit_if_changed(notes_rel, f"Patch notes {version}")
 
     # 13-14. tag LAST, then push everything together
     run(f'git tag "{tag}"')
