@@ -42,6 +42,7 @@ bonesaw --set-login     # store account + password
 bonesaw --forget-login  # remove them
 bonesaw --no-login      # skip auto-login for one launch
 bonesaw --set-dir DIR   # point at a different client
+bonesaw --sessions      # show recorded session/shutdown timings
 ```
 
 ## How auto-login works
@@ -134,6 +135,40 @@ Pin the workspace to the right monitor if any of your displays are rotated — a
 `transform` makes a 1920x1080 panel report as 1080x1920, and the game will
 happily open sideways on it.
 
+## Session tracing
+
+Every launch appends a row to `~/.local/state/bonesaw/sessions.csv`:
+
+```bash
+bonesaw --sessions
+```
+
+```
+started                    session_s  quiet_s  wineserver_s  peak_rss_mb  threads  samples
+2026-09-02T22:53:05-06:00  38         5        4             416          50       38
+```
+
+| column | meaning |
+|---|---|
+| `session_s` | how long the client ran |
+| `quiet_s` | seconds it sat with no CPU before the process exited |
+| `wineserver_s` | extra seconds `wineserver` lingered after that |
+| `peak_rss_mb` | peak resident memory |
+
+`quiet_s` is the "closing takes forever" number. The launcher cannot see the
+keypress that closed the window, so it infers when shutdown began from the
+render loop: the client burns CPU continuously while running, and that stops the
+moment it starts shutting down. Collecting this across real sessions shows
+whether teardown scales with session length or peak memory, which a short test
+session never reveals.
+
+Sampling is one row per second from `/proc` — a few file reads, no subprocesses.
+Set `BONESAW_TRACE=0` to disable.
+
+Caveat: on the login and character-select screens the client uses little CPU, so
+`quiet_s` can read high for sessions that never entered the world. In-world
+sessions give a clean signal.
+
 ## Environment
 
 | variable | default | meaning |
@@ -143,5 +178,6 @@ happily open sideways on it.
 | `BONESAW_WINDOW_TIMEOUT` | `90` | overall budget to start, focus and settle |
 | `BONESAW_KEY_DELAY` | `20` | milliseconds between keystrokes |
 | `YDOTOOL_SOCKET` | `/run/ydotoold.socket` | ydotoold control socket |
+| `BONESAW_TRACE` | `1` | `0` disables session tracing |
 | `BONESAW_SEND_ENTER` | `1` | `0` types the password but leaves Enter to you |
 | `WINEPREFIX` | `~/.local/share/wineprefixes/bonesaw` | Wine prefix |
