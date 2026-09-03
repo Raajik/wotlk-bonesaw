@@ -41,8 +41,15 @@ second design:
 - The **password** is read from the Secret Service keyring and piped to `wtype`
   on **stdin**. Passing it as an argument would expose it in `ps` to every
   process on the machine.
-- One `Tab` moves from the prefilled account field to the password field, then
-  the password is typed and `Return` pressed.
+- With the account prefilled the client focuses the password field itself, so
+  the password is typed straight in and `Return` pressed 250ms later. **No Tab**
+  — a Tab moves focus off the password field and the password ends up somewhere
+  visible.
+
+Timing matches `paste_login()` on Windows: a 12s window timeout, a 6s settle
+once the game has focus, then 250ms before `Return`. Keystrokes are spaced 12ms
+apart (`wtype` defaults to 0, which fires the whole password at XWayland in one
+burst and can wedge the client).
 
 The password is never written to disk. Only the account name is, in
 `~/.config/bonesaw/account`.
@@ -65,7 +72,7 @@ caveat and handles it the same way, with a generous settle. Raise it if the
 login screen is slow to appear:
 
 ```bash
-BONESAW_SETTLE=15 bonesaw
+BONESAW_SETTLE=12 bonesaw
 ```
 
 ## Hyprland / Omarchy
@@ -102,6 +109,7 @@ happily open sideways on it.
 | variable | default | meaning |
 |---|---|---|
 | `BONESAW_DIR` | `~/.config/bonesaw/gamedir` | client directory |
-| `BONESAW_SETTLE` | `9` | seconds after focus before typing |
-| `BONESAW_WINDOW_TIMEOUT` | `60` | seconds to wait for the game window |
+| `BONESAW_SETTLE` | `6` | seconds after focus before typing |
+| `BONESAW_WINDOW_TIMEOUT` | `12` | seconds to wait for the game window |
+| `BONESAW_KEY_DELAY` | `12` | milliseconds between keystrokes |
 | `WINEPREFIX` | `~/.local/share/wineprefixes/bonesaw` | Wine prefix |

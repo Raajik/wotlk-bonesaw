@@ -22,9 +22,13 @@ WM_CLASS="wow.exe"
 
 # Seconds to wait after the game window takes focus before typing. A late
 # keystroke is harmless -- the client drops it and you log in by hand. Raise it
-# if the login screen is slow to appear on your machine.
-SETTLE="${BONESAW_SETTLE:-9}"
-WINDOW_TIMEOUT="${BONESAW_WINDOW_TIMEOUT:-60}"
+# if the login screen is slow to appear on your machine. Both values match the
+# Windows launcher's SETTLE and WINDOW_TIMEOUT.
+SETTLE="${BONESAW_SETTLE:-6}"
+WINDOW_TIMEOUT="${BONESAW_WINDOW_TIMEOUT:-12}"
+# Milliseconds between keystrokes. wtype defaults to 0, which fires the whole
+# password at XWayland in one burst and can wedge the client.
+KEY_DELAY="${BONESAW_KEY_DELAY:-12}"
 
 die() { echo "bonesaw: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -90,8 +94,12 @@ try: print(json.load(sys.stdin).get("class",""))
 except Exception: print("")' 2>/dev/null | grep -qx "$WM_CLASS"
 }
 
-# Mirrors the Windows launcher: the client has already focused the account
-# field with the prefilled name, so one Tab reaches the password field.
+# Mirrors paste_login() in the Windows launcher: with the account prefilled
+# from Config.wtf the client focuses the password field itself, so the password
+# is typed straight in with no Tab. (A Tab moves focus OFF the password field
+# and the password lands somewhere visible -- the comment in login.rs about
+# "our one Tab" describes a mechanism that was removed.)
+#
 # Everything is guarded on the game holding focus, because a stray keystroke
 # here lands in whatever the player has in front of them.
 autologin() {
@@ -118,10 +126,12 @@ autologin() {
         return
     fi
 
-    wtype -k Tab
-    printf '%s' "$pw" | wtype -
+    # One wtype invocation: each call creates and tears down a virtual keyboard,
+    # and back-to-back ones can drop keystrokes. -s matches the Windows 250ms
+    # gap between the paste and Enter. The password arrives on stdin so it is
+    # never in argv.
+    printf '%s' "$pw" | wtype -d "$KEY_DELAY" - -s 250 -k Return
     unset pw
-    wtype -k Return
 }
 
 case "${1:-}" in
