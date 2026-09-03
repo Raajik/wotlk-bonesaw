@@ -62,11 +62,45 @@ table list itself if new tables appear.
 import argparse
 import hashlib
 import pathlib
+import re
 import subprocess
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TABLE_LIST = REPO / "tools" / "db" / "bonesaw_tables.txt"
+
+# SQL the updater applies that is NOT Bonesaw's. Any table created here is
+# owned by upstream or by a module and must be left completely alone -- do not
+# create it, and above all do not seed it. Seeding one is actively harmful:
+# creature_multispawn is populated by data/sql/updates/db_world/2026_06_16_00.sql,
+# and pre-seeding it before that update runs left the table at 984 rows where
+# live has 1020.
+UPSTREAM_SQL_DIRS = [
+    "data/sql/base",
+    "data/sql/updates/db_world",
+    "data/sql/updates/db_characters",
+    "data/sql/updates/db_auth",
+    "modules/mod-playerbots/data/sql",
+    "modules/mod-ale",
+]
+
+CREATE_TABLE_RE = re.compile(
+    rb"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"]?([A-Za-z0-9_]+)", re.I)
+
+
+def upstream_owned_tables():
+    """Table names created by SQL that is not Bonesaw's."""
+    owned = set()
+    for d in UPSTREAM_SQL_DIRS:
+        path = REPO / d
+        if not path.exists():
+            continue
+        for f in path.rglob("*.sql"):
+            if f.name.startswith("zzz_bonesaw_base"):
+                continue
+            for m in CREATE_TABLE_RE.findall(f.read_bytes()):
+                owned.add(m.decode().lower())
+    return owned
 
 # database -> (base output file, pending updates directory)
 TARGETS = {
@@ -129,13 +163,21 @@ def main():
     ap.add_argument("--password", default="password")
     args = ap.parse_args()
 
+    upstream = upstream_owned_tables()
     tables = {}
+    skipped = []
     for line in TABLE_LIST.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         db, table = line.split(".", 1)
+        if table.lower() in upstream:
+            skipped.append(line)
+            continue
         tables.setdefault(db, []).append(table)
+    if skipped:
+        print(f"skipping {len(skipped)} upstream-owned tables: "
+              + ", ".join(s.split(".", 1)[1] for s in skipped))
 
     for db, (out_path, pending_dir) in TARGETS.items():
         names = sorted(tables.get(db, []))
