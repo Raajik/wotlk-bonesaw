@@ -17,7 +17,7 @@ made the move onto slower hardware viable.
 | running realm | `lohk:/mnt/boot/appdata/bonesaw` |
 | source tree (build here) | `zahir:/home/muckfup/wow-bonesaw` |
 | compose runner on lohk | Compose Manager Plus plugin (`docker compose v5.5.0`) |
-| realm address | `lohk.tail5dde0e.ts.net:8215` (`acore_auth.realmlist` id 1) |
+| realm address | `100.89.249.40:8215` (`acore_auth.realmlist` id 1) — IP, not a name, see below |
 | client launcher | `zahir:~/.local/bin/bonesaw` |
 
 Only these are copied to lohk — **not** the source tree, `var/`, `tools/`, or
@@ -103,6 +103,35 @@ data/sql/updates/pending_db_world/rev_1787007899449162800.sql
 
 Note `MinRecordUpdateTimeDiff = 100` — the server only *logs* diff above
 100ms. "No diff entries" means diff is under 100ms, not that diff is unmeasured.
+
+## The realm address must be an IP, not a MagicDNS name
+
+`acore_auth.realmlist.address` is resolved **by the authserver**, inside its
+container, on lohk. It cannot be a `*.ts.net` name there:
+
+```
+Could not resolve address lohk.tail5dde0e.ts.net for realm "AzerothCore" id 1
+```
+
+Unraid's Tailscale plugin runs with `--accept-dns=false` (`CorpDNS: false`), so
+lohk's `/etc/resolv.conf` points at the router and MagicDNS is never consulted
+— even though MagicDNS is enabled tailnet-wide. Containers inherit that. The
+desktop *does* accept Tailscale DNS, so the name resolves there, which makes
+this look like a client problem when it is entirely server-side.
+
+Realm 1 therefore holds the **tailnet IP `100.89.249.40`**, which needs no DNS
+at all. `tailscale set --accept-dns=true` on lohk would also work, but changes
+the resolver for every other container on that host to fix one database string
+— not worth it.
+
+The client's `realmlist.wtf` still uses the **name** (`lohk.tail5dde0e.ts.net`)
+and that is fine: the client resolves the *auth* address itself, on a host that
+does accept Tailscale DNS. The two are independent. If a player's machine
+cannot resolve MagicDNS, point them at `100.89.249.40` instead.
+
+Symptom to recognise: client config looks perfectly correct, realm list is
+empty or unreachable. Check `docker logs ac-authserver` before touching the
+client.
 
 ## Gotchas that cost time, so they are written down
 
