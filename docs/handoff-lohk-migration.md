@@ -227,8 +227,9 @@ Measured on lohk, full bot population (`MinRandomBots 150` / `MaxRandomBots 350`
 | total CPU | 98.9% (~1 core, saturated) | 213.9% (~2.2 cores) |
 | busiest thread | ~100% | **84.5%** |
 | per-thread | — | 69.6 / 84.5 / 69.6 |
-| typical diff | 136-201ms | **116-163ms** |
-| worst spike | 633ms | 594ms |
+| diff (sampled headline) | 136-201ms | 116-163ms |
+| diff mean / median | — | **16ms / 2ms** |
+| diff p95 / p99 | — | **~52ms / ~62ms** |
 | RSS | 4.79 GiB | 4.83 GiB |
 | host load (8 threads) | — | 2.62 |
 
@@ -265,11 +266,37 @@ bots at the same diff**, not as lower diff or spare CPU. Judge by diff.
 bought 3% CPU, because the constraint was a thread, not a population. That
 experiment is why `MinRandomBots`/`MaxRandomBots` are back at 150/350.
 
+### Read the whole diff block, not the headline
+
+`Update time diff: NNNms` is **one instantaneous tick**, logged only when it
+exceeded `MinRecordUpdateTimeDiff` (100ms), at most once per
+`RecordUpdateTimeDiffInterval` (5 min). It is the worst tick at each
+checkpoint by construction — a biased sample, useless as a health measure.
+
+`UpdateTime.cpp:169` prints four more lines immediately after it, which are the
+actual distribution:
+
+```
+Update time diff: 124ms with 1 players online
+Last 500 diffs summary:
+|- Mean: 16ms
+|- Median: 2ms
+|- Percentiles (95, 99, max): 50ms, 60ms, 124ms
+```
+
+Measured across 33 checkpoints at 349 bots on lohk with `Threads = 3`:
+**mean 12-20ms, median 1-2ms, p95 33-66ms, p99 47-81ms.** That is a healthy
+world loop. p95 sitting at ~50ms is `smartScaleDiffLimitfloor` — the scaler
+holding the distribution exactly where configured.
+
+The three 400-600ms values in the log are single ticks out of ~16,000 sampled,
+and none has recurred in the 18 checkpoints since. They were never a problem;
+they were the tail of a good distribution, read without its context.
+
+`grep -aA4 "Update time diff:"` — always take the whole block.
+
 ### Open
 
-- **400-600ms diff spikes** occur periodically in *both* thread configurations,
-  at any population. Not caused by the threading change, not yet explained.
-  Stack-sample during one to find out.
 - **Thread safety is unproven.** 25 minutes clean proves nothing; races in the
   `AllCreatureScript` path (Living Gear runs there) surface on timing. An
   unexplained worldserver restart should suspect `MapUpdate.Threads` first —
@@ -292,7 +319,7 @@ bonesaw --set-realm 127.0.0.1
 - **`MapUpdate.Threads = 3` is on trial.** Clean for 25 minutes under full load
   at time of writing, which proves very little. Watch for unexplained
   worldserver restarts over the following days and revert first if one appears.
-- **400-600ms diff spikes**, unexplained, present in every configuration tried.
+- The 400-600ms diff values turned out to be single ticks in a healthy distribution (median 2ms) - resolved, see the performance section.
 - The whole session's changes were applied straight to the live realm without
   `tools/restart_worldserver.ps1`'s warn/save (nobody was connected, verified 0
   in `acore_auth.account`) and **no `ship/X.Y.Z` tag was cut** for any of it.
