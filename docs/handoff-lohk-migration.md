@@ -5,10 +5,15 @@ assumed. Read this before touching the server or wondering where it went.
 
 ## The one-line summary
 
-**The realm moved off this desktop (`zahir`) to the Unraid box (`lohk`).** On
-the way, a stock AzerothCore content bug that was burning ~23% of the
-worldserver's CPU on an invisible fight was found and fixed — that fix is what
-made the move onto slower hardware viable.
+**The realm moved off this desktop (`zahir`) to the Unraid box (`lohk`).** Two
+things turned up on the way that matter more than the move itself:
+
+- a stock AzerothCore content bug burning ~23% of worldserver CPU on a fight
+  nobody could see (Warsong Hold), since fixed; and
+- **`MapUpdate.Threads = 1`** — AzerothCore's untuned default, and the actual
+  performance ceiling all along. Raising it to 3 took the realm from a
+  saturated single core at 211 bots to 2.2 cores at **349** bots with *better*
+  diff. This applies to any AzerothCore install, zahir included.
 
 ## Where things live now
 
@@ -207,47 +212,69 @@ BONESAW_REALM=... bonesaw                    # one-off override
 The spare client on `/run/media/muckfup/bok/Games/WoW 3.3.5/Bonesaw` was not
 updated; point `--set-dir` at it and the launcher will fix it.
 
-## Performance on the i5 — EMPTY REALM ONLY, not yet load tested
+## Performance: the real bottleneck was `MapUpdate.Threads = 1`
 
-| | zahir (Ryzen 5 7600X) | lohk (i5-1145G7) |
+**AzerothCore updates every map on a single thread by default, and nobody had
+ever changed it.** That one line was the whole performance story. On the
+7600X's fast core it was survivable; on a 15W mobile i5 it saturates, which is
+why the move initially looked like "this hardware is too slow".
+
+Measured on lohk, full bot population (`MinRandomBots 150` / `MaxRandomBots 350`):
+
+| | `Threads = 1` | `Threads = 3` |
 |---|---|---|
-| worldserver CPU (mean) | 70.5% | 83.2% |
-| `Update time diff` >100ms | none | none |
-| RSS | 3.61 GiB | 3.59 GiB |
-| bots running | **no** | **no** |
+| bots online | 211 | **349** (at the cap) |
+| total CPU | 98.9% (~1 core, saturated) | 213.9% (~2.2 cores) |
+| busiest thread | ~100% | **84.5%** |
+| per-thread | — | 69.6 / 84.5 / 69.6 |
+| typical diff | 136-201ms | **116-163ms** |
+| worst spike | 633ms | 594ms |
+| RSS | 4.79 GiB | 4.83 GiB |
+| host load (8 threads) | — | 2.62 |
 
-**Both rows are an empty realm with zero bots.**
-`AiPlayerbot.DisabledWithoutRealPlayer = 1` (30s login delay), so random bots
-spawn only once a real player connects, and none was connected for either
-measurement. The comparison is like-for-like and the ~1.2x ratio is real, but
-**neither number reflects gameplay load.** The i5 is not yet proven to carry
-this realm.
+65% more bots, slightly better typical diff, nothing saturated. Staying at 3:
+bots are already capped, so a 4th thread would only shave diff a little while
+widening the concurrency surface across custom module code.
 
-To actually test it: connect a client, wait past the 30s delay plus bot ramp,
-then sample. That has not been done.
+### How it was found
 
-Two ways this measurement misleads, both walked into during the migration:
+Stack-sampling the busy thread — the same poor-man's-profiler trick that
+settled the Warsong bug. Find the hot thread on the host, map it into the
+container, then attach gdb a few times and look at where it actually is:
 
-- `characters.online` reads 0 even with bots running — Playerbots does not set
-  it. The `Update time diff` line's "players online" counts real players only.
-  Neither is a bot count.
-- `creature_respawn` row count **falls** as respawn timers expire. A copied
-  database drains its inherited rows for a while with nothing alive in the
-  world, which reads exactly like ongoing kills if you only see the counter
-  move. It is not evidence of activity in either direction.
+```
+cat /proc/<host-tid>/status | grep NSpid      # host TID -> container LWP
+docker exec -u 0 ac-worldserver gdb -p 1 -batch -nx -x /tmp/prof.gdb
+```
 
-The reliable check is the conf, not the symptom — see the 0.1.130 wiki entry.
+Five samples with zero players and zero bots: two idle, one in
+`ScriptMgr::OnCreatureUpdate` iterating the `AllCreatureScript` map, two in
+VMAP ray intersection (`BIH::intersectRay` -> `WorldModel::GetLocationInfo`)
+reached from `WorldObject::UpdatePositionData` <- `Map::CreatureRelocation` <-
+`Unit::UpdateSplineMovement`. All inside a single `MapUpdater::WorkerThread`.
+Creature movement doing full terrain/collision queries, all on one thread.
 
-**Open question, pre-existing and not caused by the move:** an empty realm with
-no bots still burns 70-83% of one core on a single thread. That is high for a
-server with nothing in it, it reproduces on both hosts, and nobody has yet
-worked out what that thread is doing.
+### Two traps in measuring this
 
-When bots do run, `AiPlayerbot.botActiveAloneSmartScale` holds diff between
-`smartScaleDiffLimitfloor` (50ms) and `Ceiling` (200ms) by raising and lowering
-how many get full AI. It is elastic — it consumes spare CPU rather than idling
-— so expect CPU above these figures under load. If diff starts logging above
-100ms regularly, lower `AiPlayerbot.MaxRandomBots` (350) before anything else.
+**CPU% is not a headroom metric here.** `botActiveAloneSmartScale` raises bot
+activity until diff climbs off its 50ms floor, so the worldserver trends toward
+saturating whatever it is given. Extra capacity shows up as **more active
+bots at the same diff**, not as lower diff or spare CPU. Judge by diff.
+
+**Bot population is not the lever it looks like.** Cutting 211 -> 100 bots
+bought 3% CPU, because the constraint was a thread, not a population. That
+experiment is why `MinRandomBots`/`MaxRandomBots` are back at 150/350.
+
+### Open
+
+- **400-600ms diff spikes** occur periodically in *both* thread configurations,
+  at any population. Not caused by the threading change, not yet explained.
+  Stack-sample during one to find out.
+- **Thread safety is unproven.** 25 minutes clean proves nothing; races in the
+  `AllCreatureScript` path (Living Gear runs there) surface on timing. An
+  unexplained worldserver restart should suspect `MapUpdate.Threads` first —
+  revert with `env/dist/etc/worldserver.conf.bak-mapthreads`.
+
 
 ## Rollback
 
@@ -262,6 +289,13 @@ bonesaw --set-realm 127.0.0.1
 
 ## Open items
 
+- **`MapUpdate.Threads = 3` is on trial.** Clean for 25 minutes under full load
+  at time of writing, which proves very little. Watch for unexplained
+  worldserver restarts over the following days and revert first if one appears.
+- **400-600ms diff spikes**, unexplained, present in every configuration tried.
+- The whole session's changes were applied straight to the live realm without
+  `tools/restart_worldserver.ps1`'s warn/save (nobody was connected, verified 0
+  in `acore_auth.account`) and **no `ship/X.Y.Z` tag was cut** for any of it.
 - `46bab7ff7d` (the SQL fix) sits on `fix/warsong-sky-darkener-despawn`, not
   merged to `main`.
 - `db-import` images stale on both hosts, as above.
