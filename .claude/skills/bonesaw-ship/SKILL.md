@@ -28,6 +28,40 @@ carry on to a later phase to "get most of it out".
 Announce which phase you are entering as you go, so an interrupted ship can be
 resumed from a known point.
 
+## The realm is NOT on this machine any more
+
+Since 2026-09-06 the live realm runs on the Unraid box **`lohk`**
+(`/mnt/boot/appdata/bonesaw`). This repo stays on `zahir` and is still where
+you build. Every phase below is therefore split:
+
+| phase | runs where |
+|---|---|
+| 0 preflight, 1 build | **zahir** (this machine) |
+| 2 warn/save, 3 replace | **lohk** |
+| 4-6 bookkeeping | **zahir** (git/gh/Discord only, no docker) |
+
+Point docker at the realm with the SSH transport — the existing tools
+(`bonesaw_status.py`, `save_world.py`) then work unchanged:
+
+```
+export DOCKER_HOST=ssh://lohk      # uses the Host lohk block in ~/.ssh/config
+```
+
+Use `ssh://lohk`, not `ssh://root@10.0.0.10` — the bare host/IP form skips that
+config block, cannot find the key, and just hangs until it times out.
+
+**Unset it before building.** `docker compose build` must run locally on zahir;
+with `DOCKER_HOST` set it would build on the i5, which takes hours.
+
+Images reach lohk by hand, because there is no registry:
+
+```
+docker save acore/ac-wotlk-worldserver:master acore/ac-wotlk-db-import:master \
+  | ssh -C lohk 'docker load'
+```
+
+Full architecture, ports and gotchas: `docs/handoff-lohk-migration.md`.
+
 ## Phase 0 - preflight
 
 ```
@@ -42,6 +76,11 @@ python tools/bonesaw_status.py
   ship. Say so and stop.
 
 ### Glance at the disk (not every ship - roughly monthly)
+
+**Obsolete on Linux.** The WSL2/`docker_data.vhdx` problem below belonged to
+the old Windows host. zahir uses native Docker with no growing virtual disk,
+and the realm's disk now lives on lohk (`df -h /mnt/boot`, 150GB free at the
+migration). Kept for the history; skip the powershell.
 
 Phase 1 builds an image every single ship, and WSL2 virtual disks only ever
 grow. Nothing shrinks `docker_data.vhdx` on its own, so it creeps until C: is
@@ -82,7 +121,15 @@ Discord thread both key off it.
 ## Phase 1 - build before anything live moves
 
 ```
+unset DOCKER_HOST                                    # build LOCALLY on zahir
 docker compose build ac-worldserver ac-db-import
+```
+
+Then put them on the realm host, or the build changed nothing that players see:
+
+```
+docker save acore/ac-wotlk-worldserver:master acore/ac-wotlk-db-import:master \
+  | ssh -C lohk 'docker load'
 ```
 
 **Both images. This is not optional and it is the bug that keeps recurring.**
@@ -106,8 +153,13 @@ empty realm is just five minutes. Playerbots do not count - they have no
 progress a restart can cost them.
 
 ```
-docker compose exec -T ac-database mysql -uroot -ppassword -N -e "SELECT COUNT(*) FROM acore_characters.characters c JOIN acore_auth.account a ON a.id = c.account WHERE c.online = 1 AND a.username NOT LIKE 'RNDBOT%';"
+export DOCKER_HOST=ssh://lohk        # the realm is on lohk; without this you
+                                     # query zahir's stopped stack and always get 0
+docker exec ac-database mysql -uroot -ppassword -N -e "SELECT COUNT(*) FROM acore_characters.characters c JOIN acore_auth.account a ON a.id = c.account WHERE c.online = 1 AND a.username NOT LIKE 'RNDBOT%';"
 ```
+
+`compose exec` needs the compose project directory, which lives on lohk, so use
+plain `docker exec` from zahir with `DOCKER_HOST` set.
 
 Bot accounts are all named `RNDBOT*` (144 of 147 accounts at the time of
 writing), so excluding them is what makes this count mean "humans". Do NOT use
@@ -120,7 +172,7 @@ includes bots, so it reads non-zero on an empty realm.
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/save_world.ps1
 ```
 
-**On the Linux host, use `python3 tools/save_world.py` instead.** There is no
+**On the Linux host, use `DOCKER_HOST=ssh://lohk python3 tools/save_world.py` instead.** There is no
 PowerShell there, and the `.ps1`'s documented fallback `tools/worldserver_cli.py`
 is Windows-only too (it opens the Docker named pipe through `ctypes.WinDLL`), so
 with SOAP disabled the entire warn/save path is unavailable and the ship silently
@@ -163,15 +215,18 @@ kill it mid-countdown, which is exactly how that happened.
 ## Phase 3 - replace the server
 
 ```
-docker compose up -d ac-db-import
-docker compose up -d ac-worldserver
+ssh lohk 'cd /mnt/boot/appdata/bonesaw && docker compose up -d ac-db-import'
+ssh lohk 'cd /mnt/boot/appdata/bonesaw && docker compose up -d ac-worldserver'
 ```
+
+Run these over ssh rather than with `DOCKER_HOST`: compose needs the project
+directory and `.env`, and those live on lohk.
 
 db-import first and let it complete; worldserver depends on it. Then confirm
 the module actually loaded and no migration errored:
 
 ```
-docker logs --tail 200 ac-worldserver | grep -iE "living gear|error|Applying"
+DOCKER_HOST=ssh://lohk docker logs --tail 200 ac-worldserver | grep -iE "living gear|error|Applying"
 ```
 
 Re-run `python tools/bonesaw_status.py` - `pending SQL` must now read

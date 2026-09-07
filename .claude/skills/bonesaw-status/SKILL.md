@@ -8,12 +8,22 @@ description: Report what is committed, built, imported and published for Bonesaw
 Run:
 
 ```
-python tools/bonesaw_status.py
+DOCKER_HOST=ssh://lohk python3 tools/bonesaw_status.py
 ```
 
+**`DOCKER_HOST` is required.** Since 2026-09-06 the live realm runs on the
+Unraid box `lohk`, not this machine. The script inspects `ac-worldserver` and
+`ac-database` through plain `docker`, so without it you are reporting on
+zahir's *stopped* stack: it will read "docker down, or never built", show no
+imported SQL and no online players, and none of that describes the realm.
+
+Use the `ssh://lohk` alias, not `ssh://root@10.0.0.10` — the bare host form
+skips the `Host lohk` block in `~/.ssh/config`, cannot find the key, and hangs
+until it times out. See `docs/handoff-lohk-migration.md`.
+
 The script derives the repo from its own location, so if the session did not
-start in `A:/wow-bonesaw` (a t3 worktree, say), invoke it by absolute path
-instead -- `python A:/wow-bonesaw/tools/bonesaw_status.py` -- and it still
+start in `/home/muckfup/wow-bonesaw` (a worktree, say), invoke it by absolute path
+instead -- `python3 /home/muckfup/wow-bonesaw/tools/bonesaw_status.py` -- and it still
 reports on the real checkout.
 
 Report its output to the user, then interpret it. Exit code 0 means everything
