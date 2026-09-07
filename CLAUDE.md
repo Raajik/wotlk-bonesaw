@@ -68,10 +68,15 @@ sessions ran against this repo without ever seeing any of it.
   spec-by-spec class audit is item 1.
 - `modules/mod-living-gear/core-patches/*.core-patch` -- one per core-engine
   change, describing what and why.
+- `docs/handoff-lohk-migration.md` -- **the realm runs on the Unraid box
+  (`lohk`), not this desktop.** Where everything lives, the remapped ports, the
+  build-here-ship-there flow, rollback, and the Warsong Hold event bug that was
+  costing ~23% of worldserver CPU. Read before touching the server.
 - `tools/bug-reports/README.md` -- how player reports reach Discord.
 - `tools/client-update/README.md` -- how a client patch reaches players.
 - `A:/obsidian/jeremy/wiki/Bonesaw.md` -- durable learnings, appended every
-  ship. The single densest source of "do not repeat this mistake".
+  ship. The single densest source of "do not repeat this mistake". Reachable
+  from Linux at `/run/media/muckfup/aba/obsidian/jeremy/wiki/Bonesaw.md`.
 
 ## Where things are
 
