@@ -15,18 +15,16 @@ report type, reporter's name, level, map, zone, exact coordinates and current ta
 That context is most of the value — "the chest doesn't open" is close to
 unactionable on its own.
 
-The worldserver never contacts Discord or GitHub. It only writes rows.
+The worldserver never contacts GitHub. It only writes rows.
 
 ## GitHub tracking
 
-The same scheduled digest now makes GitHub the work tracker. Before posting a
-new Discord notification it:
+A scheduled sync makes GitHub the work tracker. For each report it:
 
 1. searches for an existing `[Report #N]` or `[Feature #N]` issue (safe for
    historical manually-mirrored reports),
 2. creates one when none exists,
-3. stores the issue number and URL on `lg_bug_report`, and
-4. includes the GitHub link in the Discord notification.
+3. stores the issue number and URL on `lg_bug_report`.
 
 Creation is idempotent: a retry searches before creating, and the database has
 a unique issue-number key. Only `open` and `attempted` reports are backfilled;
@@ -36,9 +34,9 @@ Bug reports receive `bug`; feature requests receive `enhancement`. Workflow
 labels are created/updated automatically:
 `source:in-game`, `status:needs-triage`, `status:awaiting-retest`,
 `status:verified`, and explicit resolution labels. Closing through
-`bug_resolve.py` updates the database, edits the original Discord message, and
-updates the linked GitHub issue. A GitHub outage never blocks in-game intake;
-the row remains unlinked and is retried on the next run.
+`bug_resolve.py` updates the database and the linked GitHub issue. A GitHub
+outage never blocks in-game intake; the row remains unlinked and is retried on
+the next run.
 
 The repository is public. Issue bodies deliberately omit account IDs. They do
 include character name, in-game coordinates and selected target because that
@@ -46,48 +44,48 @@ context is what makes an in-game report actionable.
 
 ## Delivering them
 
-`bug_digest.py` posts anything with `posted = 0` to Discord and then marks
-those rows posted.
+`bug_sync.py` files a GitHub issue for every `open` or `attempted` report that
+does not have one yet.
 
 ```
-python tools/bug-reports/bug_digest.py            # post anything new
-python tools/bug-reports/bug_digest.py --dry-run  # print, change nothing
-python tools/bug-reports/bug_digest.py --test     # post a test message only
+python tools/bug-reports/bug_sync.py            # file anything unlinked
+python tools/bug-reports/bug_sync.py --dry-run  # print, change nothing
 ```
 
-`--dry-run` and `--test` never create or modify GitHub issues.
+Reaching the database means reaching the Docker daemon that runs
+`ac-database`. On lohk that is local and nothing extra is needed; from a
+workstation, `export DOCKER_HOST=ssh://lohk` first.
 
-### The scheduled task
+### No more Discord
 
-The task calls `run_digest_hidden.vbs`, not `run_digest.cmd` directly. That
-shim exists purely to launch the batch file with window style 0 -- calling the
-`.cmd` straight from the task threw a console window into the foreground every
-fifteen minutes, on top of whatever was on screen. The task has to stay
-"Interactive only" (the digest reaches the database through `docker exec`, so
-it cannot work when nobody is logged on), and an interactive task showing a
-console is Windows behaving as designed. The shim is the fix; do not repoint
-the task back at the `.cmd`.
+Until 2026-09-07 the same job also mirrored every new report into a Discord
+channel, and `bug_resolve.py` struck the message through when the report was
+closed. Both halves were removed. GitHub is the canonical tracker, the
+notifications were noise, and the delivery path had been dead since the realm
+moved to lohk without anyone noticing — which is the argument against a
+notification channel, not for one.
 
-A Windows scheduled task named **`Bonesaw Bug Digest`** runs
-`run_digest.cmd` every 15 minutes. That wrapper exists so the task has one
-stable thing to call and so every run is logged to `bug_digest.log` beside
-it.
+The `posted` and `discord_message_id` columns still exist on `lg_bug_report`.
+Nothing reads them; they are left alone rather than migrated away, since the
+table is append-only history.
+
+### The scheduled job
+
+The sync runs on **lohk**, not on a workstation, because that is the box that
+is always up and holds the database. It is an Unraid User Scripts entry named
+`bonesaw-bug-sync`, on a `*/15 * * * *` schedule, logging to
+`/boot/config/bonesaw/bug_sync.log`.
+
+The failure mode worth guarding against is the job quietly stopping: reports
+keep accumulating and nobody notices, because an empty tracker looks exactly
+like "no bugs today". That is not hypothetical — it is what happened between
+2026-09-03 and 2026-09-07, and six reports sat unfiled. Check the log, which
+records a timestamp and exit code for every run.
 
 ```
-schtasks /Query /TN "Bonesaw Bug Digest" /V /FO LIST     # check it
-schtasks /Run   /TN "Bonesaw Bug Digest"                 # force a run
-schtasks /Change /TN "Bonesaw Bug Digest" /DISABLE       # pause it
+ssh lohk 'tail -20 /boot/config/bonesaw/bug_sync.log'
+ssh lohk '/boot/config/bonesaw/run_bug_sync.sh'      # force a run
 ```
-
-It runs as `jeremy` and only while that user is logged on, which is
-correct: the digest reaches the database through `docker exec`, so it
-cannot work when Docker Desktop is not running anyway.
-
-The failure mode worth guarding against is the task quietly stopping.
-Reports keep accumulating and nobody notices, because a silent Discord
-channel looks exactly like "no bugs today". Check `bug_digest.log` — it
-records a timestamp and exit code for every run, whether or not anything
-was posted.
 
 ## Closing reports
 
@@ -103,59 +101,40 @@ python tools/bug-reports/bug_resolve.py 4 wontfix "needs client DBC work"
 python tools/bug-reports/bug_resolve.py 21 open              # reopen
 ```
 
-Marking a report **edits its original Discord message in place** — the
-description is struck through and the resolution appended — rather than posting
-a second message nobody would connect to the first. Webhooks can edit their own
-messages, which is why `bug_digest.py` now posts one message per report and
-records the id; batching several into one message would make striking a single
-report impossible.
-
-Reports posted before that change have no id on file. They are still updated in
-the database, and the tool says so rather than failing.
+Marking a report updates the row and the linked GitHub issue: the status label
+changes and the resolution note is added as a comment. A report with no linked
+issue is still updated in the database, and the tool says so rather than
+failing.
 
 **Use `attempted` when that is the truth.** #15 (solid chests) was instrumented,
 not solved. Calling that "fixed" is a lie that costs someone an afternoon when
 it comes back.
 
 Where this fits: resolve reports as part of the ship that carries the fix, so
-the database, GitHub issue and Discord channel match what players actually
-have. Use `attempted` for a shipped diagnostic/change awaiting proof; use
+the database and the GitHub issue match what players actually have. Use `attempted` for a shipped diagnostic/change awaiting proof; use
 `fixed` only when that is the honest final state.
 
 ## Durability
 
-Every active report exists in four places, and losing Discord loses none of them:
+Every active report exists in three places:
 
-1. **`lg_bug_report`** — the authoritative copy. Rows are *never deleted*,
-   including after posting; `posted` only tracks delivery. This table can
-   rebuild the Discord channel from scratch.
+1. **`lg_bug_report`** — the authoritative copy. Rows are *never deleted*.
+   This table can rebuild the GitHub tracker from scratch.
 2. **GitHub** — the canonical triage and work tracker.
-3. **Discord** — a notification and conversation mirror.
-4. **The worldserver log** — a line is written at report time, so a report
+3. **The worldserver log** — a line is written at report time, so a report
    survives even the characters database being rolled back.
 
-Delivery cannot lose a report. Rows are marked `posted = 1` only *after*
-Discord returns success, so a failed run leaves them queued for the next
-one rather than dropping them, and a re-run cannot double-post. Discord
-rejects any message over 2000 characters with a bare HTTP 400, so batches
-are split at 1800.
+Delivery cannot lose a report. The issue number is stored on the row only
+*after* GitHub confirms creation, so a failed run leaves reports queued for the
+next one rather than dropping them, and a re-run searches before creating, so
+it cannot file a duplicate.
 
-To re-post history into a fresh channel, clear the flag for the range you
-want and let the next run pick it up:
+## Credentials
 
-```sql
-UPDATE lg_bug_report SET posted = 0 WHERE id BETWEEN 1 AND 50;
-```
+Filing issues needs `gh` authenticated. On lohk the token lives at
+`/boot/config/bonesaw/gh.token` (mode 600, flash-persistent) and the run script
+exports it as `GH_TOKEN`. It is a fine-grained PAT scoped to `Issues: read and
+write` on this repository only — deliberately not the workstation's OAuth
+token, which carries `repo` and `workflow` across every repo you own.
 
-## The webhook
-
-Put the Discord webhook URL in `discord.webhook` in this directory, one
-line, no quotes. See `discord.webhook.example`.
-
-That filename is covered by the `*.webhook` rule in `.gitignore` and must
-never be committed. If the file is absent the script exits quietly, so a
-scheduled run on a machine without the secret does nothing rather than
-failing.
-
-Note this is a *different* webhook from `tools/client-update/discord.webhook`,
-which posts patch notes. Do not cross them.
+Never commit a token, echo one into a log, or paste one into a chat transcript.

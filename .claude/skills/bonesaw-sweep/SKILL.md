@@ -63,9 +63,9 @@ python tools/bug-reports/bug_resolve.py <id> wontfix|duplicate "<reason>"
 
 ## Do not
 
-- Do not create GitHub issues by hand for in-game reports -- the digest does
-  it idempotently on its 15-minute run (or run
-  `python tools/bug-reports/bug_digest.py` to force it).
+- Do not create GitHub issues by hand for in-game reports -- the sync does
+  it idempotently on its 15-minute run on lohk (or run
+  `DOCKER_HOST=ssh://lohk python3 tools/bug-reports/bug_sync.py` to force it).
 - Do not edit the issue title's `[Report #N]` / `[Feature #N]` prefix; the
   router keys on it.
 - Do not ship from this skill. Sweep -> fixes committed -> user says ship ->

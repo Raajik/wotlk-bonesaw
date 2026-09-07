@@ -31,9 +31,8 @@ class FakeGitHub:
 class BugResolveTests(unittest.TestCase):
     def test_resolve_updates_linked_github_issue(self):
         FakeGitHub.calls = []
-        query_row = bug_resolve.SEP.join(["102", "555", "102"])
+        query_row = bug_resolve.SEP.join(["102", "102"])
         with patch.object(bug_resolve, "run_sql", side_effect=[query_row, ""]), \
-             patch.object(bug_resolve, "edit_discord", return_value="Discord updated"), \
              patch.object(bug_resolve, "GitHubCLI", FakeGitHub):
             result = bug_resolve.resolve(102, "fixed", "Shipped in 0.1.92", "pw")
         self.assertEqual(result, 0)

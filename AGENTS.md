@@ -26,7 +26,10 @@ AzerothCore is a C++ MMORPG server emulator for World of Warcraft 3.3.5a (WotLK)
   `findings.md`, and `progress.md` (load the `planning-with-files` skill first
   if its conventions are not already in context), then run
   `git log ship/<latest-tag>..HEAD --oneline` for the unshipped list and
-  `python tools/bug_resolve.py --all` for the live queue. No manual invocation
+  `DOCKER_HOST=ssh://lohk python3 tools/bug-reports/bug_resolve.py --all` for the
+  live queue (the database is on lohk; without `DOCKER_HOST` it finds nothing).
+  New reports are filed as GitHub issues by a 15-minute cron on lohk, not from
+  here. No manual invocation
   from the user is needed — this instruction is the trigger.
 - **Update continuously:** after each meaningful unit, append a line to
   `progress.md`; new discoveries/gotchas go to `findings.md` (permanent
