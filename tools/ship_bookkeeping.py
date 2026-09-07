@@ -246,18 +246,38 @@ def main() -> None:
                 f'"{LAUNCHER_EXE}"')
             run("python tools/launcher/build_launcher.py --verify")
 
-        # 6. manifest commit
-        commit_if_changed(MANIFEST.relative_to(ROOT), f"Manifest {version}")
+    # 6-8. manifest commit, publish, verify.
+    #
+    # OUTSIDE the `if client:` block on purpose. These used to sit inside it,
+    # so a --no-client ship could never republish the manifest -- and the
+    # manifest carries `realmlist`, not just client hashes. On 2026-09-07 the
+    # realm moved hosts, the manifest was edited to match, and the server-only
+    # ship reported success while still serving the OLD address to every
+    # launcher: players would have been sent to a machine that no longer ran
+    # the realm. Publish whenever the file differs from what is live.
+    commit_if_changed(MANIFEST.relative_to(ROOT), f"Manifest {version}")
 
-        # 7-8. publish + verify the live manifest
+    local_manifest = MANIFEST.read_text(encoding="utf-8")
+    live_now = run(f'curl -sfL "{MANIFEST_URL}?pre={version}"', capture=True, check=False)
+    if (live_now.stdout or "").strip() == local_manifest.strip():
+        print("  live manifest already matches the local file -- no upload needed")
+    else:
         run(f"gh release upload updater \"{MANIFEST}\" --repo {REPO} --clobber")
         chk = run(f'curl -sfL "{MANIFEST_URL}?v={version}"', capture=True)
-        head = (chk.stdout or "").splitlines()
+        served_text = (chk.stdout or "").strip()
+        head = served_text.splitlines()
         served = next((l.split()[1] for l in head if l.startswith("version ")), "?")
-        if served != version:
+        if client and served != version:
             sys.exit(f"live manifest serves {served}, not {version} -- "
                      "upload did not take effect; re-run step 7 before continuing")
-        print(f"  live manifest serves {version} -- OK")
+        # A server-only ship leaves the manifest's own `version` at the last
+        # CLIENT version by design, so comparing it to the ship version would
+        # fail every time. Compare the content that was actually uploaded.
+        if served_text != local_manifest.strip():
+            sys.exit("live manifest does not match the local file after upload -- "
+                     "re-run step 7 before continuing")
+        realm = next((l.split(None, 1)[1] for l in head if l.startswith("realmlist ")), "?")
+        print(f"  live manifest published -- version {served}, realmlist {realm}")
 
     # 9-12. patch notes -- STAGE 1 ends here; nothing is posted until --post.
     notes_rel = str((NOTES_DIR / f"{version}.md").relative_to(ROOT))
